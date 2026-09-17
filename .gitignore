@@ -1,0 +1,63 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+.yarn/install-state.gz
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files
+.env*.local
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+**/.next
+**/*.db
+**/.env
+
+# local database backups and generated local (SQLite) Prisma schema
+**/*.db.backup*
+**/*.db-journal
+frontend/prisma/schema.sqlite.prisma
+frontend/lib/generated/
+**/.env.*
+!**/.env.example
+
+# logs, local scratch/debug scripts and test assets (may contain session cookies, emails or hashes)
+*.log
+frontend/error.html
+frontend/get_*.js
+frontend/check_*.js
+frontend/test*.js
+frontend/test*.ts
+frontend/test*.jpg
+frontend/scratch_*
+frontend/inspect_glb.*
+frontend/patch_parser.js
+frontend/uv_analyzer.js
+.DS_Store
+strix_runs/

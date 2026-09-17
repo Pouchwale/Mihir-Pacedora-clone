@@ -1,0 +1,46 @@
+# Render Blueprint: web app + PostgreSQL database
+# Render dashboard -> New -> Blueprint -> select this repository. See DEPLOY_RENDER.md.
+#
+# Plans below are the recommendation for ~100 users (see DEPLOY_RENDER.md for the reasoning).
+# Region "singapore" is closest to users in India; web service and database must share a region.
+
+databases:
+  - name: gpp-mockup-db
+    plan: basic-1gb            # 1 GB RAM Postgres
+    region: singapore
+    databaseName: gpp_mockup
+    user: gpp_mockup
+    postgresMajorVersion: "16"
+    diskSizeGB: 15             # designs, uploaded models and briefs are stored in the database
+    ipAllowList: []            # only Render services (internal URL) can connect; add your office IP temporarily to copy data
+
+services:
+  - type: web
+    name: gpp-mockup
+    runtime: node
+    plan: standard             # 1 CPU / 2 GB RAM (3D model uploads are large; 512 MB plans can run out of memory)
+    region: singapore
+    buildCommand: npm ci --include=dev && npm run build
+    preDeployCommand: npm run db:deploy
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gpp-mockup-db
+          property: connectionString
+      - key: NEXTAUTH_SECRET
+        generateValue: true
+      # Leave empty to use the onrender.com URL; set it to https://your-domain when using a custom domain
+      - key: NEXTAUTH_URL
+        sync: false
+      # First administrator (only used while no active administrator exists)
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: HF_API_KEY
+        sync: false

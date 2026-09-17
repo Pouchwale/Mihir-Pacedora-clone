@@ -1,0 +1,520 @@
+[
+  {
+    "slug": "quad-seal-pouch",
+    "name": "Quad Seal Pouch",
+    "description": "Flat pouch with side gussets for capacity.",
+    "modelFile": "two_side_gusset.obj",
+    "thumbnail": null,
+    "isPublic": true,
+    "isDefault": true,
+    "editorState": {
+      "bgColor": "#f8f9fa",
+      "bgType": "solid",
+      "showGrid": true,
+      "showShadow": true,
+      "enableFloat": true,
+      "keyLightIntensity": 0.8,
+      "fillLightIntensity": 0.4,
+      "rimLightIntensity": 0.3,
+      "ambientLightIntensity": 0.5,
+      "scale": 1.1,
+      "rotation": [
+        0,
+        20,
+        0
+      ],
+      "textures": {
+        "front": null,
+        "back": null,
+        "left": null,
+        "right": null,
+        "top": null,
+        "bottom": null,
+        "overall": null,
+        "label": null
+      },
+      "materials": {
+        "Front": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Back": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Left": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Right": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Top": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Bottom": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        }
+      }
+    }
+  },
+  {
+    "slug": "center-spout-pouch",
+    "name": "Center Spout Pouch",
+    "description": "Flexible liquid packaging pouch with a top-centered pour spout and rigid cap.",
+    "modelFile": "center_spout_pouch.glb",
+    "thumbnail": "/images/center_spout_pouch.png",
+    "isPublic": true,
+    "isDefault": true,
+    "editorState": {
+      "bgColor": "#f8f9fa",
+      "bgType": "solid",
+      "showGrid": true,
+      "showShadow": true,
+      "enableFloat": true,
+      "keyLightIntensity": 0.8,
+      "fillLightIntensity": 0.4,
+      "rimLightIntensity": 0.3,
+      "ambientLightIntensity": 0.5,
+      "scale": 1.1,
+      "rotation": [
+        0,
+        20,
+        0
+      ],
+      "textures": {
+        "front": null,
+        "back": null,
+        "left": null,
+        "right": null,
+        "top": null,
+        "bottom": null,
+        "overall": null,
+        "label": null
+      },
+      "materials": {
+        "Front": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Back": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Left": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Right": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Top": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Bottom": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        }
+      }
+    }
+  },
+  {
+    "slug": "center-seal",
+    "name": "Center Seal",
+    "description": "Classic flat pillow pouch packaging with center-back fin seal configuration.",
+    "modelFile": "center_seal.obj",
+    "thumbnail": "/images/center_seal.png",
+    "isPublic": true,
+    "isDefault": true,
+    "editorState": {
+      "bgColor": "#f8f9fa",
+      "bgType": "solid",
+      "showGrid": true,
+      "showShadow": true,
+      "enableFloat": true,
+      "keyLightIntensity": 0.8,
+      "fillLightIntensity": 0.4,
+      "rimLightIntensity": 0.3,
+      "ambientLightIntensity": 0.5,
+      "scale": 1.1,
+      "rotation": [
+        0,
+        20,
+        0
+      ],
+      "textures": {
+        "front": null,
+        "back": null,
+        "left": null,
+        "right": null,
+        "top": null,
+        "bottom": null,
+        "overall": null,
+        "label": null
+      },
+      "materials": {
+        "Front": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Back": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Left": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Right": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Top": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Bottom": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        }
+      }
+    }
+  },
+  {
+    "slug": "side-spout-pouch",
+    "name": "Side Spout Pouch",
+    "description": "Flexible stand-up pouch featuring an off-center corner spout and rigid cap.",
+    "modelFile": "corner_spout_pouch.obj",
+    "thumbnail": "/images/corner_spout_pouch.png",
+    "isPublic": true,
+    "isDefault": true,
+    "editorState": {
+      "bgColor": "#f8f9fa",
+      "bgType": "solid",
+      "showGrid": true,
+      "showShadow": true,
+      "enableFloat": true,
+      "keyLightIntensity": 0.8,
+      "fillLightIntensity": 0.4,
+      "rimLightIntensity": 0.3,
+      "ambientLightIntensity": 0.5,
+      "scale": 1.1,
+      "rotation": [
+        0,
+        20,
+        0
+      ],
+      "textures": {
+        "front": null,
+        "back": null,
+        "left": null,
+        "right": null,
+        "top": null,
+        "bottom": null,
+        "overall": null,
+        "label": null
+      },
+      "materials": {
+        "Front": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Back": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Left": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Right": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Top": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Bottom": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        }
+      }
+    }
+  },
+  {
+    "slug": "chocolate-bar-wrapper",
+    "name": "chocolate bar wrapper",
+    "description": "Modern, professional chocolate bar wrap packaging with realistic fin seals.",
+    "modelFile": "chocolate_bar_wrapper.obj",
+    "thumbnail": "/images/chocolate_bar_wrapper.png",
+    "isPublic": true,
+    "isDefault": true,
+    "editorState": {
+      "bgColor": "#f8f9fa",
+      "bgType": "solid",
+      "showGrid": true,
+      "showShadow": true,
+      "enableFloat": true,
+      "keyLightIntensity": 0.8,
+      "fillLightIntensity": 0.4,
+      "rimLightIntensity": 0.3,
+      "ambientLightIntensity": 0.5,
+      "scale": 1.1,
+      "rotation": [
+        0,
+        20,
+        0
+      ],
+      "textures": {
+        "front": null,
+        "back": null,
+        "left": null,
+        "right": null,
+        "top": null,
+        "bottom": null,
+        "overall": null,
+        "label": null
+      },
+      "materials": {
+        "Front": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Back": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Left": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Right": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Top": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Bottom": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        }
+      }
+    }
+  },
+  {
+    "slug": "stand-up-pouch",
+    "name": "Stand-Up Pouch",
+    "description": "Classic, versatile stand-up pouch packaging mockup with broad bottom gusset.",
+    "modelFile": "standup_pouch.obj",
+    "thumbnail": "/images/standup-pouch.png",
+    "isPublic": true,
+    "isDefault": true,
+    "editorState": {
+      "bgColor": "#f8f9fa",
+      "bgType": "solid",
+      "showGrid": true,
+      "showShadow": true,
+      "enableFloat": true,
+      "keyLightIntensity": 0.8,
+      "fillLightIntensity": 0.4,
+      "rimLightIntensity": 0.3,
+      "ambientLightIntensity": 0.5,
+      "scale": 1.1,
+      "rotation": [
+        0,
+        20,
+        0
+      ],
+      "textures": {
+        "front": null,
+        "back": null,
+        "left": null,
+        "right": null,
+        "top": null,
+        "bottom": null,
+        "overall": null,
+        "label": null
+      },
+      "materials": {
+        "Front": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Back": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Left": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Right": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Top": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Bottom": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        }
+      }
+    }
+  },
+  {
+    "slug": "three-side-seal",
+    "name": "Three side Seal",
+    "description": "Classic vertical three-side seal flat pouch sachet packaging model.",
+    "modelFile": "three_side_seal.obj",
+    "thumbnail": "/images/three_side_seal.png",
+    "isPublic": true,
+    "isDefault": true,
+    "editorState": {
+      "bgColor": "#f8f9fa",
+      "bgType": "solid",
+      "showGrid": true,
+      "showShadow": true,
+      "enableFloat": true,
+      "keyLightIntensity": 0.8,
+      "fillLightIntensity": 0.4,
+      "rimLightIntensity": 0.3,
+      "ambientLightIntensity": 0.5,
+      "scale": 1.1,
+      "rotation": [
+        0,
+        20,
+        0
+      ],
+      "textures": {
+        "front": null,
+        "back": null,
+        "left": null,
+        "right": null,
+        "top": null,
+        "bottom": null,
+        "overall": null,
+        "label": null
+      },
+      "materials": {
+        "Front": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Back": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Left": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Right": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Top": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        },
+        "Bottom": {
+          "color": "#ffffff",
+          "roughness": 0.3,
+          "metalness": 0,
+          "emissive": 0
+        }
+      }
+    }
+  }
+]
