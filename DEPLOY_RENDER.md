@@ -54,7 +54,7 @@ The app was load-tested on PostgreSQL with 100 simultaneous requests:
 
 ## 2. Before you deploy
 
-1. **Commit and push** the project to GitHub (repository `hajraritesh/ritesh-gpp-site`).
+1. **Commit and push** the project to GitHub (repository `Pouchwale/Mihir-Pacedora-clone`, branch `main`).
    Check that these are *not* committed (they are in `.gitignore`): `frontend/.env`, `frontend/dev.db`,
    `*.db.backup*`, `.next/`, `node_modules/`.
 2. Choose the first administrator login you will use on the live site:
