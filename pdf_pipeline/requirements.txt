@@ -1,0 +1,7 @@
+# Everything runs locally: no network calls, no API keys.
+pymupdf>=1.24
+rapidocr-onnxruntime>=1.3
+numpy
+pillow
+opencv-python
+pytest
