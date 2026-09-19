@@ -25,6 +25,14 @@ python -m venv .venv
 Each job folder holds `job.json` (input, extracted specs, panels, warnings, output paths), `job.log`,
 and per panel `artwork_full_bleed.png` + `texture.png`. `output/jobs.jsonl` lists every job.
 
+## In the app
+
+Designers open **PDF to Mockup** on the dashboard (`/pdf-mockup`): attach the sheets, watch progress,
+review the specs in a form, check each panel's artwork and the warnings, then **Build 3D mockup**.
+The app starts `python -m pouchpdf job …` from `pdf_pipeline/.venv`; uploads are kept in
+`output/library`, jobs in `output/webjobs`. This needs Python on the machine that runs the app
+(a plain Render web service has none).
+
 ## Stages (one module each)
 
 | Module | Stage | Notes |

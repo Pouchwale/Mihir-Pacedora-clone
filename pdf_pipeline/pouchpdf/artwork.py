@@ -33,6 +33,7 @@ class ArtworkResult:
     dpi: int = ARTWORK_DPI
     full_png: str = ""               # TrimBox incl. bleed
     texture_png: str = ""            # finished pouch size
+    web_jpg: str = ""                # texture at max 2048 px for the browser and the 3D editor
     average_rgb: tuple[int, int, int] = (0, 0, 0)
     warnings: list[str] = field(default_factory=list)
 
@@ -129,4 +130,8 @@ def extract_artwork(path: str, out_dir: str, pouch_w_mm: float | None, pouch_h_m
     res.texture_png = os.path.join(out_dir, "texture.png")
     cv2.imwrite(res.full_png, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
     cv2.imwrite(res.texture_png, cv2.cvtColor(texture, cv2.COLOR_RGB2BGR))
+    scale = min(1.0, 2048 / max(texture.shape[:2]))
+    web = cv2.resize(texture, (int(texture.shape[1] * scale), int(texture.shape[0] * scale)), interpolation=cv2.INTER_AREA) if scale < 1 else texture
+    res.web_jpg = os.path.join(out_dir, "texture_web.jpg")
+    cv2.imwrite(res.web_jpg, cv2.cvtColor(web, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 90])
     return res

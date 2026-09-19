@@ -107,6 +107,9 @@ export default async function Home() {
           </Link>
           <span className="text-slate-300">|</span>
           <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">{isCustomer ? "Review Department" : "Library"}</span>
+          {isDesigner && (
+            <Link href="/pdf-mockup" className="text-xs font-bold text-brand-600 hover:text-brand-700 uppercase tracking-widest">PDF to Mockup</Link>
+          )}
         </div>
         
         <div className="flex items-center gap-4">

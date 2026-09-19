@@ -7,7 +7,8 @@ import time
 
 from .artwork import extract_artwork
 from .indexer import Index, item_no_from_name, panels_from_name
-from .specs import extract_specs
+from .pdfio import has_real_trimbox, open_page, page_geometry
+from .specs import extract_specs, validate
 
 
 def _specs_for(index: Index | None, path: str, log) -> dict:
@@ -23,10 +24,12 @@ def _specs_for(index: Index | None, path: str, log) -> dict:
     return specs
 
 
-def run_job(pdf_path: str, out_root: str, index: Index | None = None) -> dict:
+def run_job(pdf_path: str, out_root: str, index: Index | None = None, job_dir: str | None = None, on_stage=None, reviewed_specs: dict | None = None) -> dict:
+    """reviewed_specs: values the user confirmed in the form. They replace OCR and are validated again."""
     pdf_path = os.path.abspath(pdf_path)
     item_no = item_no_from_name(pdf_path) or "UNKNOWN"
-    job_dir = os.path.join(out_root, f"{time.strftime('%Y%m%d-%H%M%S')}_{item_no}")
+    job_dir = job_dir or os.path.join(out_root, f"{time.strftime('%Y%m%d-%H%M%S')}_{item_no}")
+    stage = on_stage or (lambda name: None)
     os.makedirs(job_dir, exist_ok=True)
     lines: list[str] = []
 
@@ -37,8 +40,17 @@ def run_job(pdf_path: str, out_root: str, index: Index | None = None) -> dict:
     log(f"job start: {pdf_path}")
 
     # Stage 2 + 3 for the uploaded sheet
-    specs = _specs_for(index, pdf_path, log)
+    stage("specs")
+    if reviewed_specs is not None:
+        _doc, page = open_page(pdf_path)
+        geo = page_geometry(page)
+        issues = validate(reviewed_specs, geo.trim_w_mm, geo.trim_h_mm, has_real_trimbox(page))
+        specs = {**reviewed_specs, "trimbox_mm": [round(geo.trim_w_mm, 3), round(geo.trim_h_mm, 3)], "confidence": {}, "issues": issues, "needs_review": bool(issues), "reviewed_by_user": True}
+        log(f"specs: reviewed by the user, {len(issues)} issue(s) after validation")
+    else:
+        specs = _specs_for(index, pdf_path, log)
     job["specs"] = specs
+    stage("artwork")
     main_panel = (panels_from_name(pdf_path) or ["front"])[0]
     w, h = specs.get("pouch_closed_width_mm"), specs.get("pouch_height_mm")
     art = extract_artwork(pdf_path, os.path.join(job_dir, main_panel), w, h)
@@ -47,6 +59,7 @@ def run_job(pdf_path: str, out_root: str, index: Index | None = None) -> dict:
     log(f"artwork[{main_panel}]: method={art.method} texture={art.texture_mm} mm")
 
     # Stage 4: linked panels through the index
+    stage("linking")
     for panel, code_key in (("back", "back_code"), ("gusset", "gusset_code")):
         if panel == main_panel:
             continue

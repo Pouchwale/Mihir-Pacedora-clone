@@ -21,6 +21,11 @@ def main(argv=None):
         sub.add_parser(name).add_argument("folder")
     sub.add_parser("specs").add_argument("pdf")
     sub.add_parser("list")
+    j = sub.add_parser("job", help="used by the web app: fixed job folder + status.json")
+    j.add_argument("--job-dir", required=True)
+    j.add_argument("--library", required=True)
+    j.add_argument("--main", required=True)
+    j.add_argument("--reviewed", help="JSON file with the specs the user confirmed")
     r = sub.add_parser("run")
     r.add_argument("pdf")
     r.add_argument("--folder", help="folder to index first (default: the PDF's folder)")
@@ -41,6 +46,28 @@ def main(argv=None):
         from .specs import extract_specs
 
         print(json.dumps(extract_specs(a.pdf), indent=2))
+    elif a.cmd == "job":
+        import time, traceback
+
+        os.makedirs(a.job_dir, exist_ok=True)
+        status_path = os.path.join(a.job_dir, "status.json")
+
+        def status(stage, **extra):
+            tmp = status_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"stage": stage, "time": time.time(), **extra}, f)
+            os.replace(tmp, status_path)
+
+        try:
+            status("indexing")
+            index.scan(a.library)
+            reviewed = json.load(open(a.reviewed, encoding="utf-8")) if a.reviewed else None
+            run_job(a.main, a.out, index, job_dir=a.job_dir, on_stage=status, reviewed_specs=reviewed)
+            status("done")
+        except Exception as e:  # the web app shows this message
+            traceback.print_exc()
+            status("error", message=f"{type(e).__name__}: {e}")
+            return 1
     elif a.cmd == "run":
         index.scan(a.folder or os.path.dirname(os.path.abspath(a.pdf)))
         job = run_job(a.pdf, a.out, index)
