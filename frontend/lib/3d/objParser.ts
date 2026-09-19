@@ -68,6 +68,86 @@ function base64ToUint32Array(base64: string): Uint32Array {
 }
 
 // Unified processor: Takes a loaded 3D Group/Scene and extracts/classifies its geometry
+// Marks triangles that clearly face INTO the pouch (e.g. the inner wall of a double-walled panel).
+// They are never seen from outside, but through a transparent window they showed as artwork inside
+// the pouch; the editor hides them for designs with windows or clear plastic. 1 = inner surface.
+function markInsideFaces(geo: THREE.BufferGeometry): void {
+  const pos = geo.attributes.position;
+  const flags = new Float32Array(pos.count);
+  geo.computeBoundingBox();
+  const center = geo.boundingBox!.getCenter(new THREE.Vector3());
+  const size = geo.boundingBox!.getSize(new THREE.Vector3());
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  const ab = new THREE.Vector3(), cb = new THREE.Vector3();
+  for (let i = 0; i + 2 < pos.count; i += 3) {
+    a.fromBufferAttribute(pos, i);
+    b.fromBufferAttribute(pos, i + 1);
+    c.fromBufferAttribute(pos, i + 2);
+    const n = cb.subVectors(c, b).cross(ab.subVectors(a, b)).normalize();
+    // Front/back walls only: side gussets (and their folds near the left/right edges) turn inwards
+    // on purpose and must stay visible
+    if (Math.abs(n.z) < 0.7 || !size.z || !size.x) continue;
+    const relX = ((a.x + b.x + c.x) / 3 - center.x) / (size.x / 2);
+    if (Math.abs(relX) > 0.75) continue;
+    const rel = ((a.z + b.z + c.z) / 3 - center.z) / (size.z / 2);
+    if (Math.abs(rel) >= 0.35 && Math.sign(rel) !== Math.sign(n.z)) {
+      flags[i] = flags[i + 1] = flags[i + 2] = 1;
+    }
+  }
+  geo.setAttribute('insideFace', new THREE.BufferAttribute(flags, 1));
+}
+
+// Some model files are built inside-out: (almost) every triangle faces into the pouch. The outside
+// print is then culled and the inner lining shows on the outside, so turn such models the right way
+// out. Only clear cases are flipped; folds and zippers legitimately have some inward faces.
+function flipIfInsideOut(geo: THREE.BufferGeometry): boolean {
+  const pos = geo.attributes.position;
+  if (!pos || pos.count < 3) return false;
+  geo.computeBoundingBox();
+  const center = geo.boundingBox!.getCenter(new THREE.Vector3());
+  const size = geo.boundingBox!.getSize(new THREE.Vector3());
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  const ab = new THREE.Vector3(), cb = new THREE.Vector3(), mid = new THREE.Vector3();
+  let outward = 0, inward = 0;
+  for (let i = 0; i + 2 < pos.count; i += 3) {
+    a.fromBufferAttribute(pos, i);
+    b.fromBufferAttribute(pos, i + 1);
+    c.fromBufferAttribute(pos, i + 2);
+    const n = cb.subVectors(c, b).cross(ab.subVectors(a, b));
+    mid.copy(a).add(b).add(c).divideScalar(3).sub(center);
+    const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
+    const axis = ax >= ay && ax >= az ? 'x' : ay >= az ? 'y' : 'z';
+    const half = size[axis] / 2;
+    if (!half || Math.abs(mid[axis]) < half * 0.3) continue; // too close to the middle to tell
+    if (Math.sign(mid[axis]) === Math.sign(n[axis])) outward++;
+    else inward++;
+  }
+  if (inward + outward < 50 || inward < (inward + outward) * 0.8) return false;
+
+  const swap = (attr: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined) => {
+    if (!attr) return;
+    for (let i = 0; i + 2 < attr.count; i += 3) {
+      for (let k = 0; k < attr.itemSize; k++) {
+        const t = attr.getComponent(i + 1, k);
+        attr.setComponent(i + 1, k, attr.getComponent(i + 2, k));
+        attr.setComponent(i + 2, k, t);
+      }
+    }
+    attr.needsUpdate = true;
+  };
+  swap(pos);
+  swap(geo.attributes.uv);
+  const normal = geo.attributes.normal;
+  swap(normal);
+  if (normal) {
+    for (let i = 0; i < normal.count; i++) {
+      normal.setXYZ(i, -normal.getX(i), -normal.getY(i), -normal.getZ(i));
+    }
+    normal.needsUpdate = true;
+  }
+  return true;
+}
+
 function processGroup(
   group: THREE.Group | THREE.Object3D, 
   fileName?: string,
@@ -123,17 +203,17 @@ function processGroup(
       if (mesh.geometry) {
         const clonedGeom = mesh.geometry.clone();
         clonedGeom.applyMatrix4(mesh.matrixWorld);
-        
+
         if (!clonedGeom.attributes.normal) {
           clonedGeom.computeVertexNormals();
         }
-        
+
         const niGeom = clonedGeom.index ? clonedGeom.toNonIndexed() : clonedGeom;
 
         let side: Side | undefined;
         const name = (mesh.name || '').toLowerCase();
         const parentName = (mesh.parent?.name || '').toLowerCase();
-        
+
         let materialName = '';
         if (mesh.material) {
           if (Array.isArray(mesh.material)) {
@@ -198,6 +278,8 @@ function processGroup(
 
   // 3. Convert to NON-INDEXED geometry so every triangle owns its own vertices.
   const niGeo = rawGeo.index ? rawGeo.toNonIndexed() : rawGeo.clone();
+  // Animated glTF scenes are rendered from their own meshes, so only static geometry is corrected
+  if (!gltfScene || !animations || animations.length === 0) flipIfInsideOut(niGeo);
   niGeo.computeBoundingBox();
 
   const pos = niGeo.attributes.position;
@@ -272,7 +354,7 @@ function processGroup(
         const centerX = (vA.x + vB.x + vC.x) / 3;
         const centerZ = (vA.z + vB.z + vC.z) / 3;
         const relativeY = modelHeight > 0 ? (centerY - modelMinY) / modelHeight : 0;
-        
+
         let threshold = -0.5; // strict threshold for main body to avoid Front bulges
         if (relativeY < 0.08) {
           threshold = -0.24; // Precision threshold to eliminate front starburst
@@ -281,8 +363,11 @@ function processGroup(
         // Detect inner cavity walls (normals pointing towards the vertical center axis)
         const dotCenter = (centerX * smoothNormal.x) + (centerZ * smoothNormal.z);
         const isInnerWall = dotCenter < -0.001;
-        
-        if (smoothNormal.y < threshold || (relativeY < 0.15 && isInnerWall)) {
+
+        // Only the base can be the bottom panel: the lower front/back of a filled pouch also faces
+        // downwards and must keep the artwork
+        const facesMostlyDown = smoothNormal.y < threshold && ny > nz;
+        if ((facesMostlyDown && relativeY < 0.12) || (relativeY < 0.15 && isInnerWall && ny > nz)) {
           side = 'Bottom';
         } else {
           side = smoothNormal.z >= 0 ? 'Front' : 'Back';
@@ -291,10 +376,14 @@ function processGroup(
         // Zipper Pouch / Gusset Pouches
         const centerX = (vA.x + vB.x + vC.x) / 3;
         const modelCenterX = (bb.min.x + bb.max.x) / 2;
-        
+        const halfWidth = (bb.max.x - bb.min.x) / 2 || 1;
+        // Gusset: facing sideways, or tilted sideways right at the pouch edge. Wrinkles on the
+        // front/back panels tilt triangles a little too; those showed as white shards.
+        const nearEdge = Math.abs(centerX - modelCenterX) > halfWidth * 0.85;
+
         if (ny > nx && ny > nz && smoothNormal.y < 0) {
           side = 'Bottom';
-        } else if (nx > nz * 0.08) {
+        } else if (nx > nz || (nearEdge && nx > nz * 0.08)) {
           side = centerX > modelCenterX ? 'Right' : 'Left';
         } else {
           side = smoothNormal.z >= 0 ? 'Front' : 'Back';
@@ -318,7 +407,7 @@ function processGroup(
   // Enforce explicit sides for specific built-in presets
   const lowerName = shapeName.toLowerCase().replace(/_/g, ' ');
   let allowedSides: Side[] | null = null;
-  
+
   if (lowerName.includes("3 gusset") || lowerName.includes("3_gusset") || lowerName.includes("kurkure")) {
     allowedSides = ["Front", "Back", "Left", "Right", "Bottom"];
   } else if (lowerName.includes("two side gusset") || lowerName.includes("two_side_gusset")) {
@@ -342,7 +431,7 @@ function processGroup(
       if (!allowedSides.includes(triSide[t])) {
         const s = triSide[t];
         sideCounts[s]--;
-        
+
         // Fallback extraneous sides to Front/Back
         const i = t * 3;
         vA.set(pos.getX(i), pos.getY(i), pos.getZ(i));
@@ -351,7 +440,7 @@ function processGroup(
         cb.subVectors(vC, vB);
         ab.subVectors(vA, vB);
         const faceNormal = cb.cross(ab).normalize();
-        
+
         let smoothNormal = faceNormal;
         if (niGeo.attributes.normal) {
           const normAttr = niGeo.attributes.normal;
@@ -360,7 +449,7 @@ function processGroup(
           const nC = new THREE.Vector3(normAttr.getX(i + 2), normAttr.getY(i + 2), normAttr.getZ(i + 2));
           smoothNormal = new THREE.Vector3().addVectors(nA, nB).add(nC).normalize();
         }
-        
+
         const nxFallback = Math.abs(smoothNormal.x);
         const nzFallback = Math.abs(smoothNormal.z);
         let target: Side = smoothNormal.z >= 0 ? 'Front' : 'Back';
@@ -447,7 +536,7 @@ function processGroup(
         const v = finalUVs[vi * 2 + 1];
         let normU = (u - minU) / rangeU;
         let normV = (v - minV) / rangeV;
-        
+
         // Mirror bottom side texture horizontally
         if (g.side === 'Bottom' && !hasAutoUnwrappedData) {
           normU = 1 - normU;
@@ -522,7 +611,8 @@ function processGroup(
   if (!normAttr) {
     finalGeo.computeVertexNormals();
   }
-  
+
+  markInsideFaces(finalGeo);
   finalGeo.computeBoundingBox();
 
   // 10. Normalize size
@@ -542,7 +632,7 @@ function processGroup(
 
   // 11. Build detectedSides list
   let detectedSides: string[] = groupInfo.map(g => g.side);
-  
+
   if (lowerName.includes("spout")) {
     detectedSides = detectedSides.filter(s => s !== 'Top');
   }
@@ -560,24 +650,24 @@ export function parseOBJ(text: string, fileName?: string): ParseResult {
 // Asynchronous unified model parser supporting both OBJ, GLB/GLTF, and compact JSON geometry data
 export function parseModelAsync(data: string, fileName: string): Promise<ParseResult> {
   return new Promise((resolve, reject) => {
-    const isJson = fileName.toLowerCase().endsWith('.json') || 
+    const isJson = fileName.toLowerCase().endsWith('.json') ||
                    data.trim().startsWith('{') ||
                    data.trim().startsWith('[');
 
     const isGlb = !isJson && (
-                  fileName.toLowerCase().endsWith('.glb') || 
-                  fileName.toLowerCase().endsWith('.gltf') || 
+                  fileName.toLowerCase().endsWith('.glb') ||
+                  fileName.toLowerCase().endsWith('.gltf') ||
                   data.startsWith('data:'));
 
     const isDae = !isJson && !isGlb && (
-                  fileName.toLowerCase().endsWith('.dae') || 
+                  fileName.toLowerCase().endsWith('.dae') ||
                   fileName.toLowerCase().endsWith('.dea'));
 
     if (isJson) {
       try {
         const json = JSON.parse(data);
         const geo = new THREE.BufferGeometry();
-        
+
         if (json.packed) {
           // Decode binary Base64 strings directly to typed arrays
           if (json.positions) {
@@ -607,11 +697,11 @@ export function parseModelAsync(data: string, fileName: string): Promise<ParseRe
             geo.setIndex(new THREE.BufferAttribute(new Uint32Array(json.indices), 1));
           }
         }
-        
+
         const mesh = new THREE.Mesh(geo);
         const group = new THREE.Group();
         group.add(mesh);
-        
+
         resolve(processGroup(group, fileName));
       } catch (err) {
         reject(err);

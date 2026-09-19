@@ -31,14 +31,15 @@ pushd frontend
 findstr /r /c:"^DATABASE_URL=.*postgres" .env >nul 2>&1
 if not errorlevel 1 (
   echo [2/4] Using PostgreSQL database from frontend\.env - applying migrations...
-  call npx prisma generate >nul || (popd & goto :fail)
+  rem The engine file is locked while another server such as npm run dev is running; the existing client is then reused
+  call npx prisma generate >nul 2>&1 || (if exist "..\node_modules\.prisma\client\index.js" (echo   Note: Prisma client is in use by another running server - keeping the current one) else (popd & goto :fail))
   call npx prisma migrate deploy || (popd & goto :fail)
   call node scripts\seed.js || (popd & goto :fail)
 ) else (
   echo [2/4] Preparing local SQLite database and Prisma client...
   call node scripts\make-sqlite-schema.js >nul || (popd & goto :fail)
   call npx prisma db push --schema prisma\schema.sqlite.prisma --skip-generate >nul || (popd & goto :fail)
-  call npx prisma generate --schema prisma\schema.sqlite.prisma >nul || (popd & goto :fail)
+  call npx prisma generate --schema prisma\schema.sqlite.prisma >nul 2>&1 || (if exist "..\node_modules\.prisma\client\index.js" (echo   Note: Prisma client is in use by another running server - keeping the current one) else (popd & goto :fail))
 )
 popd
 

@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSession } from 'next-auth/react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { pouchTypeForModel } from '@/lib/dieline/types';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Slider } from '@/components/ui/slider';
 import { Label } from '@/components/ui/label';
@@ -40,6 +41,21 @@ export function RightPanel() {
   } = useEditorStore(
     useShallow((s) => ({ scale: s.scale, setScale: s.setScale, sizeScale: s.sizeScale, setSizeScale: s.setSizeScale, bgColor: s.bgColor, bgType: s.bgType, bgImage: s.bgImage, setBgColor: s.setBgColor, setBgType: s.setBgType, setBgImage: s.setBgImage, materials: s.materials, updateMaterial: s.updateMaterial, setAllMaterialColors: s.setAllMaterialColors, keyLightIntensity: s.keyLightIntensity, fillLightIntensity: s.fillLightIntensity, rimLightIntensity: s.rimLightIntensity, ambientLightIntensity: s.ambientLightIntensity, setLightIntensity: s.setLightIntensity, keyLightColor: s.keyLightColor, keyLightPosition: s.keyLightPosition, keyLightFocus: s.keyLightFocus, fillLightColor: s.fillLightColor, fillLightPosition: s.fillLightPosition, fillLightFocus: s.fillLightFocus, rimLightColor: s.rimLightColor, rimLightPosition: s.rimLightPosition, rimLightFocus: s.rimLightFocus, ambientLightColor: s.ambientLightColor, updateLightConfig: s.updateLightConfig, resetLighting: s.resetLighting, resetModelPosition: s.resetModelPosition, showGrid: s.showGrid, showShadow: s.showShadow, showTable: s.showTable, tableTexture: s.tableTexture, setTableTexture: s.setTableTexture, floorImage: s.floorImage, setFloorImage: s.setFloorImage, enableFloat: s.enableFloat, punchType: s.punchType, punchSize: s.punchSize, punchPositionY: s.punchPositionY, cornerStyles: s.cornerStyles, cornerSizes: s.cornerSizes, linkCorners: s.linkCorners, isClearPlastic: s.isClearPlastic, isOneSideClearPlastic: s.isOneSideClearPlastic, setToggle: s.setToggle, textures: s.textures, textureTransforms: s.textureTransforms, setTexture: s.setTexture, setTextureTransform: s.setTextureTransform, detectedSides: s.detectedSides, documentData: s.documentData, documentName: s.documentName, setDocument: s.setDocument, activeSide: s.activeSide, facingSide: s.facingSide, setActiveSide: s.setActiveSide, fileName: s.fileName, spoutSize: s.spoutSize, windowCutouts: s.windowCutouts, addWindowCutout: s.addWindowCutout, updateWindowCutout: s.updateWindowCutout, removeWindowCutout: s.removeWindowCutout }))
   );
+  const filmFinish = useEditorStore((s) => s.filmFinish);
+  const innerLayer = useEditorStore((s) => s.innerLayer);
+  const floorFit = useEditorStore((s) => s.floorFit);
+  const floorSize = useEditorStore((s) => s.floorSize);
+  const floorTiles = useEditorStore((s) => s.floorTiles);
+  const floorOffsetX = useEditorStore((s) => s.floorOffsetX);
+  const floorOffsetZ = useEditorStore((s) => s.floorOffsetZ);
+  const floorRotation = useEditorStore((s) => s.floorRotation);
+  const bgScale = useEditorStore((s) => s.bgScale);
+  const bgOffsetX = useEditorStore((s) => s.bgOffsetX);
+  const bgOffsetY = useEditorStore((s) => s.bgOffsetY);
+  const setMaterialPreset = useEditorStore((s) => s.setMaterialPreset);
+  const setFilmAddon = useEditorStore((s) => s.setFilmAddon);
+  const dieline = useEditorStore((s) => s.dieline);
+  const dielinePouchType = pouchTypeForModel(fileName);
 
   const [unit, setUnit] = useState<'cm' | 'in'>('cm');
   const [windowUnit, setWindowUnit] = useState<'%' | 'cm' | 'in'>('%');
@@ -341,6 +357,24 @@ export function RightPanel() {
               <div>
                 <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400 mb-3 block">Artwork Manager</span>
 
+                {/* 2D dieline editor: place artwork on the flat keyline (front, back, seals, gusset) */}
+                {dielinePouchType ? (
+                  <button
+                    type="button"
+                    onClick={() => setToggle('editorView', 'dieline')}
+                    className="w-full mb-4 p-3 rounded-lg border-2 border-brand-200 bg-brand-50/40 hover:bg-brand-50 text-left transition-colors cursor-pointer"
+                  >
+                    <span className="text-[10px] font-extrabold text-brand-700 uppercase tracking-wider block">Open 2D Dieline / Keyline</span>
+                    <span className="text-[9px] text-slate-500 block mt-0.5">
+                      {dieline && dieline.items.length > 0
+                        ? `${dieline.items.length} item(s) placed on the dieline. Side artwork below is generated from it.`
+                        : 'Place artwork on the flat keyline with seals, zipper, bleed and gusset in mm.'}
+                    </span>
+                  </button>
+                ) : (
+                  <p className="text-[9px] text-slate-400 mb-4">The 2D dieline editor is available for the Stand-Up Pouch and flat three-side-seal pouches.</p>
+                )}
+
                 {/* 3D Realtime Side Sync Status Panel */}
                 <div className="mb-4 bg-slate-50 border border-slate-100 rounded-lg p-3 flex justify-between items-center text-xs">
                   <div>
@@ -378,6 +412,8 @@ export function RightPanel() {
                     };
 
                     const tTransform = textureTransforms[slot.id] || { rotation: 0, flipX: false, flipY: false };
+                    // Front, back and bottom come from the 2D dieline while it has artwork on it
+                    const managedByDieline = !!dieline && dieline.items.length > 0 && ['front', 'back', 'bottom'].includes(slot.id);
 
                     return (
                       <div
@@ -410,7 +446,21 @@ export function RightPanel() {
                             </div>
                           )}
 
-                          {textures[slot.id as keyof typeof textures] ? (
+                          {managedByDieline ? (
+                            <>
+                              {textures[slot.id as keyof typeof textures] && (
+                                <img src={textures[slot.id as keyof typeof textures]!} alt={slot.label} className="absolute inset-0 w-full h-full object-cover" />
+                              )}
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); setToggle('editorView', 'dieline'); }}
+                                className="absolute inset-0 bg-slate-900/55 text-white flex flex-col items-center justify-center gap-1 text-[9px] font-bold uppercase tracking-wider opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                              >
+                                <span>From 2D dieline</span>
+                                <span className="bg-white text-slate-800 px-2 py-0.5 rounded normal-case tracking-normal">Edit dieline</span>
+                              </button>
+                            </>
+                          ) : textures[slot.id as keyof typeof textures] ? (
                             <>
                               <img
                                 src={textures[slot.id as keyof typeof textures]!}
@@ -523,65 +573,234 @@ export function RightPanel() {
                     </div>
                   ))}
                 </div>
+
+                {/* Background photo placement */}
+                {bgType === 'image' && bgImage && (
+                  <div className="mt-3 p-3 rounded-lg border border-slate-100 bg-slate-50/60 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">Background photo</span>
+                      <button
+                        type="button"
+                        aria-label="Reset background photo"
+                        onClick={() => { setToggle('bgScale', 100); setToggle('bgOffsetX', 0); setToggle('bgOffsetY', 0); }}
+                        className="text-[9px] font-bold text-brand-600 hover:text-brand-700 cursor-pointer"
+                      >
+                        Reset
+                      </button>
+                    </div>
+                    {[
+                      { key: 'bgScale', label: 'Size', value: bgScale, min: 30, max: 300, step: 5, unit: '%' },
+                      { key: 'bgOffsetX', label: 'Left / Right', value: bgOffsetX, min: -50, max: 50, step: 1, unit: '%' },
+                      { key: 'bgOffsetY', label: 'Down / Up', value: bgOffsetY, min: -50, max: 50, step: 1, unit: '%' },
+                    ].map((ctl) => (
+                      <label key={ctl.key} className="block">
+                        <span className="flex justify-between text-[9px] font-bold text-slate-500 uppercase tracking-wider">
+                          <span>{ctl.label}</span><span>{ctl.value}{ctl.unit}</span>
+                        </span>
+                        <input type="range" min={ctl.min} max={ctl.max} step={ctl.step} value={ctl.value} aria-label={`Background ${ctl.label}`} onChange={(e) => setToggle(ctl.key, Number(e.target.value))} className="w-full accent-brand-600" />
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                {/* Floor photo placement */}
+                {floorImage && (
+                  <div className="mt-3 p-3 rounded-lg border border-slate-100 bg-slate-50/60 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">Floor photo</span>
+                      <button
+                        type="button"
+                        aria-label="Reset floor photo"
+                        onClick={() => { setToggle('floorSize', 8); setToggle('floorTiles', 4); setToggle('floorOffsetX', 0); setToggle('floorOffsetZ', 0); setToggle('floorRotation', 0); }}
+                        className="text-[9px] font-bold text-brand-600 hover:text-brand-700 cursor-pointer"
+                      >
+                        Reset
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5" role="radiogroup" aria-label="Floor photo placement">
+                      {[
+                        { id: 'single', label: 'Single photo', desc: 'Shown once, not repeated' },
+                        { id: 'tile', label: 'Repeat (tiles)', desc: 'Pattern across the floor' },
+                      ].map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={floorFit === opt.id}
+                          onClick={() => setToggle('floorFit', opt.id)}
+                          className={`p-2 rounded-md border text-left transition-colors cursor-pointer ${floorFit === opt.id ? 'border-brand-600 bg-brand-50/30' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
+                        >
+                          <div className="text-[10px] font-bold text-slate-700">{opt.label}</div>
+                          <div className="text-[8px] text-slate-400">{opt.desc}</div>
+                        </button>
+                      ))}
+                    </div>
+                    <label className="block">
+                      <span className="flex justify-between text-[9px] font-bold text-slate-500 uppercase tracking-wider">
+                        <span>{floorFit === 'tile' ? 'Floor size' : 'Photo size'}</span><span>{floorSize}</span>
+                      </span>
+                      <input type="range" min={2} max={100} step={1} value={floorSize} aria-label={floorFit === 'tile' ? 'Floor size' : 'Floor photo size'} onChange={(e) => setToggle('floorSize', Number(e.target.value))} className="w-full accent-brand-600" />
+                    </label>
+                    {[
+                      { key: 'floorOffsetX', label: 'Left / Right', value: floorOffsetX, min: -30, max: 30, step: 0.5, unit: '' },
+                      { key: 'floorOffsetZ', label: 'Back / Forward', value: floorOffsetZ, min: -30, max: 30, step: 0.5, unit: '' },
+                      { key: 'floorRotation', label: 'Rotate', value: floorRotation, min: 0, max: 360, step: 5, unit: '°' },
+                    ].map((ctl) => (
+                      <label key={ctl.key} className="block">
+                        <span className="flex justify-between text-[9px] font-bold text-slate-500 uppercase tracking-wider">
+                          <span>{ctl.label}</span><span>{ctl.value}{ctl.unit}</span>
+                        </span>
+                        <input type="range" min={ctl.min} max={ctl.max} step={ctl.step} value={ctl.value} aria-label={`Floor ${ctl.label}`} onChange={(e) => setToggle(ctl.key, Number(e.target.value))} className="w-full accent-brand-600" />
+                      </label>
+                    ))}
+                    {floorFit === 'tile' && (
+                      <label className="block">
+                        <span className="flex justify-between text-[9px] font-bold text-slate-500 uppercase tracking-wider">
+                          <span>Repeats</span><span>{floorTiles} × {floorTiles}</span>
+                        </span>
+                        <input type="range" min={2} max={12} step={1} value={floorTiles} onChange={(e) => setToggle('floorTiles', Number(e.target.value))} className="w-full accent-brand-600" />
+                      </label>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="h-px bg-slate-100 my-4" />
 
-              {/* Material Presets: a base finish plus an optional transparency add-on */}
+              {/* Material Presets */}
               <div>
-                <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400 mb-3 block">Material Presets</span>
+                <div className="flex items-center justify-between mb-2.5">
+                  <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">Material Presets</span>
+                  <span className="text-[9px] text-slate-400 font-medium">Base finish</span>
+                </div>
                 <div className="grid grid-cols-2 gap-2">
                   {[
-                    { id: 'plastic_glossy', label: 'Plastic Glossy', r: 0.1, m: 0.0, desc: 'High-gloss plastic surface' },
-                    { id: 'plastic_matte', label: 'Plastic Matte', r: 0.7, m: 0.0, desc: 'Soft diffused matte surface' },
-                    { id: 'aluminium_glossy', label: 'Aluminium Glossy', r: 0.15, m: 0.9, desc: 'Highly reflective polished foil' },
-                    { id: 'aluminium_matte', label: 'Aluminium Matte', r: 0.6, m: 0.9, desc: 'Satin brushed metallic finish' },
+                    {
+                      id: 'plastic_glossy' as const,
+                      label: 'Plastic Glossy',
+                      desc: 'High-gloss plastic surface',
+                      r: 0.08,
+                      m: 0.0,
+                      swatch: 'linear-gradient(135deg, #ffffff 0%, #cbd5e1 50%, #94a3b8 100%)',
+                      glossSheen: true,
+                    },
+                    {
+                      id: 'plastic_matte' as const,
+                      label: 'Plastic Matte',
+                      desc: 'Soft diffused matte surface',
+                      r: 0.70,
+                      m: 0.0,
+                      swatch: 'linear-gradient(135deg, #f8fafc 0%, #94a3b8 100%)',
+                      glossSheen: false,
+                    },
+                    {
+                      id: 'aluminium_glossy' as const,
+                      label: 'Aluminium Glossy',
+                      desc: 'Highly reflective polished foil',
+                      r: 0.15,
+                      m: 0.95,
+                      swatch: 'linear-gradient(135deg, #ffffff 0%, #94a3b8 35%, #ffffff 65%, #475569 100%)',
+                      glossSheen: true,
+                    },
+                    {
+                      id: 'aluminium_matte' as const,
+                      label: 'Aluminium Matte',
+                      desc: 'Satin brushed metallic finish',
+                      r: 0.55,
+                      m: 0.90,
+                      swatch: 'linear-gradient(135deg, #cbd5e1 0%, #64748b 50%, #94a3b8 100%)',
+                      glossSheen: false,
+                    },
                   ].map(preset => {
                     const front = materials.Front || (materials as any).Overall || {};
-                    const isSelected = front.roughness === preset.r && front.metalness === preset.m;
+                    const isSelected = Math.abs((front.roughness ?? 0.5) - preset.r) <= 0.08 && Math.abs((front.metalness ?? 0) - preset.m) <= 0.15;
                     return (
                       <button
                         type="button"
                         key={preset.id}
-                        aria-pressed={isSelected}
-                        onClick={() => {
-                          // Base finishes only change the surface, so an active add-on stays on
-                          ['Front', 'Back', 'Left', 'Right', 'Top', 'Bottom'].forEach(g =>
-                            updateMaterial(g, { roughness: preset.r, metalness: preset.m })
-                          );
-                        }}
-                        className={`p-2 rounded-lg border-2 text-left transition-all cursor-pointer hover:shadow-sm ${isSelected ? 'border-brand-600 bg-brand-50/20' : 'border-slate-200 bg-slate-50 hover:bg-slate-100/60'}`}
+                        role="radio"
+                        aria-checked={isSelected}
+                        onClick={() => setMaterialPreset(preset.id)}
+                        className={`p-2.5 rounded-lg border-2 text-left transition-all cursor-pointer relative group overflow-hidden ${
+                          isSelected
+                            ? 'border-brand-600 bg-brand-50/40 shadow-xs ring-2 ring-brand-500/20'
+                            : 'border-slate-200 bg-slate-50/60 hover:bg-white hover:border-slate-300 hover:shadow-2xs'
+                        }`}
                       >
-                        <div className="text-[10px] font-bold text-slate-700">{preset.label}</div>
-                        <div className="text-[8px] text-slate-400 leading-normal mt-0.5">{preset.desc}</div>
+                        <div className="flex items-center justify-between gap-1.5 mb-1">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <div
+                              className="w-3.5 h-3.5 rounded-full border border-slate-300/80 shrink-0 shadow-2xs relative overflow-hidden"
+                              style={{ background: preset.swatch }}
+                            >
+                              {preset.glossSheen && (
+                                <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/50 to-transparent pointer-events-none" />
+                              )}
+                            </div>
+                            <span className="text-[10px] font-bold text-slate-800 tracking-tight leading-tight truncate">{preset.label}</span>
+                          </div>
+                          {isSelected && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-brand-600 shrink-0" />
+                          )}
+                        </div>
+                        <div className="text-[8px] text-slate-400 leading-normal pl-5">{preset.desc}</div>
                       </button>
                     );
                   })}
                 </div>
 
-                <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400 mt-4 mb-2 block">Add-ons (optional)</span>
+                {/* Add-ons (optional) */}
+                <div className="flex items-center justify-between mt-5 mb-2.5">
+                  <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">Add-ons (optional)</span>
+                  <span className="text-[9px] text-slate-400 font-medium">Clear / Frosted film</span>
+                </div>
                 <div className="grid grid-cols-2 gap-2">
                   {(() => {
-                    const front = materials.Front || (materials as any).Overall || {};
-                    const back = materials.Back || (materials as any).Overall || {};
-                    const frontOpacity = front.opacity ?? 1.0;
-                    const backOpacity = back.opacity ?? 1.0;
-                    const activeAddon = isOneSideClearPlastic ? 'one_side_clear_plastic'
-                      : isClearPlastic ? 'clear_plastic'
-                      : frontOpacity < 1 && backOpacity === 1 ? 'one_side_transparent'
-                      : frontOpacity < 1 ? 'transparent'
-                      : null;
-                    const sides = ['Front', 'Back', 'Left', 'Right', 'Top', 'Bottom'];
-                    const clearAddons = () => {
-                      if (isClearPlastic) setToggle('isClearPlastic', false);
-                      if (isOneSideClearPlastic) setToggle('isOneSideClearPlastic', false);
-                      sides.forEach(g => updateMaterial(g, { opacity: 1.0 }));
-                    };
+                    const scope = isClearPlastic ? 'all' : isOneSideClearPlastic ? 'front' : null;
+                    const activeAddon = scope ? `${filmFinish}_${scope}` : null;
                     return [
-                      { id: 'transparent', label: 'Transparent', desc: 'Semi-transparent packaging' },
-                      { id: 'one_side_transparent', label: 'One Side Transparent', desc: 'Clear front, opaque back' },
-                      { id: 'clear_plastic', label: 'Clear Plastic', desc: 'Physical clear plastic effect' },
-                      { id: 'one_side_clear_plastic', label: 'One Side Clear Plastic', desc: 'Clear front plastic, opaque back' },
+                      {
+                        id: 'clear_all' as const,
+                        label: 'Clear Plastic',
+                        desc: 'Glossy crystal-clear film on every side. Print stays solid.',
+                        icon: (
+                          <div className="w-3.5 h-3.5 rounded border border-sky-300 bg-sky-50/80 shadow-3xs flex items-center justify-center shrink-0">
+                            <span className="text-[6.5px] font-black text-sky-600">360°</span>
+                          </div>
+                        ),
+                      },
+                      {
+                        id: 'clear_front' as const,
+                        label: 'Clear Front',
+                        desc: 'Crystal-clear front, printed opaque back.',
+                        icon: (
+                          <div className="w-3.5 h-3.5 rounded border border-slate-300 overflow-hidden flex shadow-3xs shrink-0">
+                            <div className="w-1/2 h-full bg-sky-100 border-r border-sky-300" />
+                            <div className="w-1/2 h-full bg-slate-300" />
+                          </div>
+                        ),
+                      },
+                      {
+                        id: 'frosted_all' as const,
+                        label: 'Frosted / Matt Clear',
+                        desc: 'Soft frosted see-through film on every side.',
+                        icon: (
+                          <div className="w-3.5 h-3.5 rounded border border-slate-300 bg-slate-100 shadow-3xs flex items-center justify-center shrink-0">
+                            <span className="text-[6px] font-black text-slate-500">MATT</span>
+                          </div>
+                        ),
+                      },
+                      {
+                        id: 'frosted_front' as const,
+                        label: 'Frosted Front',
+                        desc: 'Frosted see-through front, printed opaque back.',
+                        icon: (
+                          <div className="w-3.5 h-3.5 rounded border border-slate-300 overflow-hidden flex shadow-3xs shrink-0">
+                            <div className="w-1/2 h-full bg-slate-100 border-r border-slate-300" />
+                            <div className="w-1/2 h-full bg-slate-400" />
+                          </div>
+                        ),
+                      },
                     ].map(addon => {
                       const isOn = activeAddon === addon.id;
                       return (
@@ -590,22 +809,27 @@ export function RightPanel() {
                           key={addon.id}
                           role="switch"
                           aria-checked={isOn}
-                          onClick={() => {
-                            // Add-ons are exclusive; clicking the active one turns it off
-                            clearAddons();
-                            if (isOn) return;
-                            if (addon.id === 'transparent') sides.forEach(g => updateMaterial(g, { opacity: 0.4 }));
-                            if (addon.id === 'one_side_transparent') updateMaterial('Front', { opacity: 0.4 });
-                            if (addon.id === 'clear_plastic') setToggle('isClearPlastic', true);
-                            if (addon.id === 'one_side_clear_plastic') setToggle('isOneSideClearPlastic', true);
-                          }}
-                          className={`p-2 rounded-lg border-2 text-left transition-all cursor-pointer hover:shadow-sm ${isOn ? 'border-brand-600 bg-brand-50/20' : 'border-dashed border-slate-200 bg-white hover:bg-slate-50'}`}
+                          onClick={() => setFilmAddon(isOn ? 'none' : addon.id)}
+                          className={`p-2.5 rounded-lg border-2 text-left transition-all cursor-pointer relative group overflow-hidden ${
+                            isOn
+                              ? 'border-brand-600 bg-brand-50/30 shadow-xs ring-1 ring-brand-500/20'
+                              : 'border-dashed border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/60'
+                          }`}
                         >
-                          <div className="flex items-center justify-between gap-1">
-                            <span className="text-[10px] font-bold text-slate-700">{addon.label}</span>
-                            <span className={`text-[8px] font-bold px-1 rounded ${isOn ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-400'}`}>{isOn ? 'ON' : 'OFF'}</span>
+                          <div className="flex items-center justify-between gap-1 mb-1">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span aria-hidden="true" className="contents">{addon.icon}</span>
+                              <span className="text-[10px] font-bold text-slate-800 tracking-tight leading-tight truncate">{addon.label}</span>
+                            </div>
+                            <span
+                              className={`text-[8px] font-black px-1.5 py-0.5 rounded shrink-0 shadow-3xs transition-colors ${
+                                isOn ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-400 group-hover:bg-slate-200 group-hover:text-slate-600'
+                              }`}
+                            >
+                              {isOn ? 'ON' : 'OFF'}
+                            </span>
                           </div>
-                          <div className="text-[8px] text-slate-400 leading-normal mt-0.5">{addon.desc}</div>
+                          <div className="text-[8px] text-slate-400 leading-normal pl-5">{addon.desc}</div>
                         </button>
                       );
                     });
@@ -672,6 +896,37 @@ export function RightPanel() {
               {isDesigner && (
               <div>
                 <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400 mb-3 block">Transparent Window</span>
+
+                {/* Inner laminate seen through windows and clear film */}
+                <div className="mb-3">
+                  <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider block mb-1.5">Pouch inner layer</span>
+                  <div className="grid grid-cols-2 gap-1.5" role="radiogroup" aria-label="Pouch inner layer">
+                    {[
+                      { id: 'bopp', label: 'BOPP / Transparent', desc: 'Glossy clear laminate inside', swatch: 'linear-gradient(135deg,#ffffff 0%,#e2e8f0 100%)' },
+                      { id: 'met_pet', label: 'Met PET', desc: 'Shiny silver metallised', swatch: 'linear-gradient(135deg,#f1f5f9 0%,#94a3b8 50%,#e2e8f0 100%)' },
+                      { id: 'milky_white', label: 'Milky White', desc: 'Opaque milky-white PE', swatch: '#f6f6f1' },
+                      { id: 'matt_pet', label: 'Matt PET', desc: 'Soft frosted film', swatch: 'linear-gradient(135deg,#f8fafc 0%,#cbd5e1 100%)' },
+                    ].map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={innerLayer === opt.id}
+                        onClick={() => setToggle('innerLayer', opt.id)}
+                        className={`p-2 rounded-md border text-left flex items-start gap-2 transition-colors cursor-pointer ${innerLayer === opt.id ? 'border-brand-600 bg-brand-50/30' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
+                      >
+                        <span className="w-4 h-4 rounded-full border border-slate-300 shrink-0 mt-0.5" style={{ background: opt.swatch }} />
+                        <span>
+                          <span className="block text-[10px] font-bold text-slate-700 leading-tight">{opt.label}</span>
+                          <span className="block text-[8px] text-slate-400">{opt.desc}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                  {windowCutouts.length === 0 && !isClearPlastic && !isOneSideClearPlastic && (
+                    <p className="text-[9px] text-slate-400 mt-1.5">Seen through a window or a clear / frosted add-on.</p>
+                  )}
+                </div>
 
                 {/* Add Window Button */}
                 <button

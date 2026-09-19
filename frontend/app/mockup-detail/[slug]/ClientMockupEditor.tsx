@@ -5,6 +5,9 @@ import { Header } from "@/components/layout/Header";
 import { useEditorStore } from "@/store/useEditorStore";
 import { useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
+import { CustomerDisclaimer } from "@/components/ui/CustomerDisclaimer";
+import { DielineWorkspace } from "@/components/dieline/DielineWorkspace";
+import { DielineSync } from "@/components/dieline/DielineSync";
 
 // three.js and the editor panels are large, browser-only bundles. They are split out of the page,
 // but their download starts together with the model fetch (see preloadEditorCode) instead of
@@ -105,6 +108,7 @@ export function ClientMockupEditor({
   const isCustomer = session && (session.user as any)?.accountType === "Customer";
 
   const isHeadOfDesigner = session && (session.user as any)?.accountType === "Head of Designer";
+  const editorView = useEditorStore((s) => s.editorView);
 
   // Initialize store with template data
   useEffect(() => {
@@ -178,7 +182,10 @@ export function ClientMockupEditor({
 
         // Background image, table, light colours/positions, model position and artwork transforms
         const extraKeys = [
-          "bgImage", "showTable", "tableTexture", "floorImage",
+          "bgImage", "showTable", "tableTexture", "floorImage", "floorFit", "floorSize", "floorTiles",
+          "filmFinish", "innerLayer",
+          "floorOffsetX", "floorOffsetZ", "floorRotation", "bgScale", "bgOffsetX", "bgOffsetY",
+          "dieline", "insideTextures",
           "keyLightColor", "keyLightPosition", "keyLightFocus",
           "fillLightColor", "fillLightPosition", "fillLightFocus",
           "rimLightColor", "rimLightPosition", "rimLightFocus",
@@ -208,6 +215,17 @@ export function ClientMockupEditor({
               state.materials[group]
             );
           });
+        }
+
+        // The old "Transparent" add-ons faded the whole print (opacity 0.4); they are now frosted film
+        if (!state.isClearPlastic && !state.isOneSideClearPlastic && state.materials && !state.filmFinish) {
+          const opacity = (side: string) => state.materials[side]?.opacity ?? 1;
+          if (opacity("Front") < 1) {
+            const allSides = opacity("Back") < 1;
+            ["Front", "Back", "Left", "Right", "Top", "Bottom"].forEach((side) => useEditorStore.getState().updateMaterial(side, { opacity: 1 }));
+            useEditorStore.getState().setToggle(allSides ? "isClearPlastic" : "isOneSideClearPlastic", true);
+            useEditorStore.setState({ filmFinish: "frosted" });
+          }
         }
 
         if (state.textureTransforms && typeof state.textureTransforms === "object") {
@@ -259,8 +277,10 @@ export function ClientMockupEditor({
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-white">
       <Header template={template} />
       <div className="flex flex-1 overflow-hidden relative">
-        {!isCustomer && <LeftPanel />}
-        <CanvasArea template={template} />
+        {!isCustomer && editorView === '3d' && <LeftPanel />}
+        {!isCustomer && editorView === 'dieline' && <DielineWorkspace />}
+        {!isCustomer && <DielineSync />}
+        <CanvasArea template={template} compact={editorView === 'dieline'} />
         {isCustomer && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 bg-slate-900/90 text-white px-3.5 py-1.5 rounded-full text-[10px] font-bold tracking-wider uppercase flex items-center gap-1.5 shadow backdrop-blur-sm border border-slate-700 animate-pulse">
             🔒 Viewer Mode (Read-Only)
@@ -276,7 +296,10 @@ export function ClientMockupEditor({
             👑 Administrator (Full Access)
           </div>
         )}
-        {!isCustomer && <RightPanel />}
+        {!isCustomer && editorView === '3d' && <RightPanel />}
+        {isCustomer && (
+          <CustomerDisclaimer className="absolute bottom-0 inset-x-0 z-40 bg-white/95 border-t border-red-200 py-2 shadow-sm" />
+        )}
       </div>
     </div>
   );

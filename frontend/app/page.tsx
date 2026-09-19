@@ -7,11 +7,13 @@ import { LibraryGrid } from "@/components/dashboard/LibraryGrid";
 import { HistorySection } from "@/components/dashboard/HistorySection";
 import { AllDesignsSection } from "@/components/dashboard/AllDesignsSection";
 import { UserManagementSection } from "@/components/dashboard/UserManagement";
+import { KeylineDefaultsSection } from "@/components/dashboard/KeylineDefaults";
 import { redirect } from "next/navigation";
 import { FolderHeart, Sparkles } from "lucide-react";
 import { HEAD_OF_DESIGNER, STATUS, canShareWithCustomers } from "@/lib/access";
 import { listVisibleApprovals } from "@/lib/approvals";
 import { withThumbnailUrls } from "@/lib/templateAccess";
+import { CustomerDisclaimer } from "@/components/ui/CustomerDisclaimer";
 
 export default async function Home() {
   const session = await getServerSession(authOptions);
@@ -67,15 +69,15 @@ export default async function Home() {
   ]);
   const approvalRequests = approvalRows.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 
-  // Library cards: the Head of Designer also sees designs waiting for review and approved designs
-  // not yet shared with a customer; customers see the approved designs shared with them.
+  // Library cards: the Head of Designer also sees designs waiting for review and all approved designs
+  // (with the customer they are shared with); customers see the approved designs shared with them.
   let templates: any[] = ownTemplates;
   if (isHead || isCustomer) {
     const extraSlugs = approvalRequests
       .filter((req) =>
         isCustomer
           ? req.customerEmail?.toLowerCase() === userEmail
-          : req.status === STATUS.PENDING || (req.status === STATUS.APPROVED && !req.customerEmail)
+          : req.status === STATUS.PENDING || req.status === STATUS.APPROVED
       )
       .map((req) => req.designSlug);
     if (extraSlugs.length > 0) {
@@ -134,6 +136,9 @@ export default async function Home() {
           {session && role === "Administrator" ? (
             <>
               <UserManagementSection />
+              <div className="pt-8 border-t border-slate-200">
+                <KeylineDefaultsSection />
+              </div>
               {/* Administrators can review and share designs too (e.g. a Head of Designer's own designs) */}
               <div id="history" className="pt-8 border-t border-slate-200">
                 <HistorySection
@@ -173,7 +178,10 @@ export default async function Home() {
               </div>
 
               {/* Grid layout */}
-              <LibraryGrid initialTemplates={libraryTemplates} userId={userId} userRole={role} approvalRequests={approvalRequests} />
+              <LibraryGrid initialTemplates={libraryTemplates} userId={userId} userRole={role} approvalRequests={approvalRequests} customers={customers} />
+              {isCustomer && (
+                <CustomerDisclaimer className="rounded-lg border border-red-200 bg-red-50 py-2.5" />
+              )}
             </>
           )}
 

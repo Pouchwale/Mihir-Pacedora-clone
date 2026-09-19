@@ -12,9 +12,11 @@ interface LibraryGridProps {
   userId?: string | null;
   userRole?: string | null;
   approvalRequests?: any[];
+  /** Customer accounts (Head of Designer / Administrator), used to show who a design is shared with */
+  customers?: { name: string | null; email: string | null }[];
 }
 
-export function LibraryGrid({ initialTemplates, userId, userRole, approvalRequests }: LibraryGridProps) {
+export function LibraryGrid({ initialTemplates, userId, userRole, approvalRequests, customers = [] }: LibraryGridProps) {
   const router = useRouter();
   const [deletingSlug, setDeletingSlug] = useState<string | null>(null);
 
@@ -368,6 +370,24 @@ export function LibraryGrid({ initialTemplates, userId, userRole, approvalReques
                   <div className="pt-2 mt-0.5 border-t border-slate-50/50 text-[10px] text-slate-400 font-medium">
                     Submitted: {new Date(approval.createdAt).toLocaleString()}
                   </div>
+                </div>
+              ) : approval && (userRole === "Head of Designer" || userRole === "Administrator") && approval.status === "APPROVED" ? (
+                <div className="mt-4 pt-3 border-t border-slate-100 flex flex-col gap-1 text-[11px]">
+                  <span className="font-bold text-slate-600">Designer: <span className="font-extrabold text-slate-800">{approval.designerName}</span></span>
+                  {approval.customerEmail ? (() => {
+                    const customer = customers.find((c) => c.email?.toLowerCase() === approval.customerEmail.toLowerCase());
+                    return (
+                      <span className="font-bold text-slate-600">
+                        Customer: <span className="font-extrabold text-slate-800">{customer?.name || approval.customerEmail}</span>
+                        {customer?.name && <span className="font-medium text-slate-400"> ({approval.customerEmail})</span>}
+                        <span className={`ml-1 font-semibold ${approval.customerStatus === "APPROVED" ? "text-emerald-600" : approval.customerStatus === "REJECTED" ? "text-rose-600" : "text-amber-600"}`}>
+                          · {approval.customerStatus === "APPROVED" ? "Approved" : approval.customerStatus === "REJECTED" ? "Requested changes" : "Awaiting review"}
+                        </span>
+                      </span>
+                    );
+                  })() : (
+                    <span className="font-semibold text-amber-600">Not shared with a customer yet</span>
+                  )}
                 </div>
               ) : (
                 <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-400">

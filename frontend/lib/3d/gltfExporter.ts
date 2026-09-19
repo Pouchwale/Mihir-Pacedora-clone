@@ -20,6 +20,7 @@ export async function exportToGLBBase64(data: string, fileName: string): Promise
   // all vertices, so every side would contain the whole model. With an index, each side becomes
   // its own primitive holding only its triangles.
   const geometry = result.geometry.clone();
+  geometry.deleteAttribute('insideFace'); // editor-only; recomputed when the model is loaded
   if (!geometry.index) {
     const count = geometry.attributes.position.count;
     const index = new Uint32Array(count);

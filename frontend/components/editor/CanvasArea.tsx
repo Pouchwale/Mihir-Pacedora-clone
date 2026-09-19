@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useEditorStore } from '@/store/useEditorStore';
 import { useShallow } from "zustand/react/shallow";
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
@@ -21,10 +21,10 @@ function GLTFExportListener({ modelGroupRef }: { modelGroupRef: React.RefObject<
       }
 
       const exporter = new GLTFExporter();
-      
+
       // Create a clone to safely modify materials for maximum export compatibility
       const exportScene = modelGroupRef.current.clone();
-      
+
       exportScene.traverse((child: any) => {
         if (child.isMesh && child.material) {
           const downgradeMaterial = (mat: any) => {
@@ -97,16 +97,63 @@ function SceneBackground({ bgType, bgColor }: { bgType: string; bgColor: string 
 }
 
 // Optional floor image: a large tiled floor under the model
+// Floor photo: "single" shows the photo once at its own proportions (sized by floorSize);
+// "tile" repeats it floorTiles times across a round floor of the same size
 function StudioFloor({ url }: { url: string }) {
-  const texture = useTexture(url);
-  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(6, 6);
-  texture.colorSpace = THREE.SRGBColorSpace;
+  const floorFit = useEditorStore((s) => s.floorFit);
+  const floorSize = useEditorStore((s) => s.floorSize);
+  const floorTiles = useEditorStore((s) => s.floorTiles);
+  const floorOffsetX = useEditorStore((s) => s.floorOffsetX);
+  const floorOffsetZ = useEditorStore((s) => s.floorOffsetZ);
+  const floorRotation = useEditorStore((s) => s.floorRotation);
+  const source = useTexture(url);
+  const texture = useMemo(() => {
+    const t = source.clone();
+    t.colorSpace = THREE.SRGBColorSpace;
+    if (floorFit === 'tile') {
+      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.repeat.set(floorTiles, floorTiles);
+    } else {
+      t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+      t.repeat.set(1, 1);
+    }
+    t.needsUpdate = true;
+    return t;
+  }, [source, floorFit, floorTiles]);
+  useEffect(() => () => texture.dispose(), [texture]);
+
+  const image = source.image as { width?: number; height?: number } | undefined;
+  const aspect = image?.width && image?.height ? image.height / image.width : 1;
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.002, 0]} receiveShadow>
-      <circleGeometry args={[12, 64]} />
-      <meshStandardMaterial map={texture} roughness={0.85} />
+    <mesh
+      rotation={[-Math.PI / 2, 0, (floorRotation * Math.PI) / 180]}
+      position={[floorOffsetX, -0.002, floorOffsetZ]}
+      receiveShadow
+    >
+      {floorFit === 'tile'
+        ? <circleGeometry args={[floorSize / 2, 64]} />
+        : <planeGeometry args={[floorSize, floorSize * aspect]} />}
+      {/* alphaTest: transparent parts of a PNG floor photo show the scene instead of black */}
+      <meshStandardMaterial map={texture} roughness={0.85} alphaTest={0.5} />
     </mesh>
+  );
+}
+
+function BackgroundPhoto({ url }: { url: string }) {
+  const bgScale = useEditorStore((s) => s.bgScale);
+  const bgOffsetX = useEditorStore((s) => s.bgOffsetX);
+  const bgOffsetY = useEditorStore((s) => s.bgOffsetY);
+  return (
+    <div className="absolute inset-0 overflow-hidden pointer-events-none" aria-hidden="true">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={url}
+        alt=""
+        draggable={false}
+        className="w-full h-full object-cover select-none"
+        style={{ transform: `translate(${bgOffsetX}%, ${-bgOffsetY}%) scale(${bgScale / 100})`, transformOrigin: 'center' }}
+      />
+    </div>
   );
 }
 
@@ -129,7 +176,7 @@ function StudioTable({ tableTexture }: { tableTexture: string | null }) {
           <meshStandardMaterial color="#e5e5e5" roughness={0.7} />
         )}
       </mesh>
-      
+
       {/* Table Legs */}
       {[
         [-5.5, -4.2, -3.5],
@@ -146,10 +193,10 @@ function StudioTable({ tableTexture }: { tableTexture: string | null }) {
   );
 }
 
-export function CanvasArea({ template }: { template?: any }) {
-  const { 
+export function CanvasArea({ template, compact = false }: { template?: any; compact?: boolean }) {
+  const {
     bgColor, bgType, bgImage,
-    showGrid, 
+    showGrid,
     showShadow,
     showTable,
     tableTexture,
@@ -191,7 +238,7 @@ export function CanvasArea({ template }: { template?: any }) {
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    
+
     const file = e.dataTransfer.files?.[0];
     if (file) {
       const lowerName = file.name.toLowerCase();
@@ -222,18 +269,19 @@ export function CanvasArea({ template }: { template?: any }) {
   };
 
   return (
-    <div 
-      className="flex-1 relative transition-colors duration-500 ease-in-out" 
-      style={{ 
-        backgroundColor: bgType === 'solid' ? bgColor : 'transparent',
-        backgroundImage: bgType === 'image' && bgImage ? `url(${bgImage})` : 'none',
-        backgroundSize: 'cover',
-        backgroundPosition: 'center'
+    <div
+      className={`${compact ? 'w-[380px] xl:w-[460px] shrink-0 border-l border-slate-200' : 'flex-1'} relative transition-colors duration-500 ease-in-out`}
+      style={{
+        // Solid colour, or the colour shown around a background photo made smaller than the view
+        backgroundColor: bgType === 'solid' || bgType === 'image' ? bgColor : 'transparent',
       }}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
+      {/* Background photo: sized and moved with the Background controls (100% fills the view) */}
+      {bgType === 'image' && bgImage && <BackgroundPhoto url={bgImage} />}
+
       {/* Drop Zone Overlay */}
       {isDragging && (
         <div className="absolute inset-0 z-50 bg-brand-500/10 backdrop-blur-sm border-2 border-dashed border-brand-500 flex flex-col items-center justify-center pointer-events-none">
@@ -245,28 +293,28 @@ export function CanvasArea({ template }: { template?: any }) {
       {/* Canvas Toolbar */}
       <div className="absolute top-4 left-4 z-10 bg-white/90 backdrop-blur border border-white/80 rounded-lg shadow-sm p-1 flex gap-1">
 
-        <button 
+        <button
           title="Wireframe"
           className={`w-8 h-8 rounded flex items-center justify-center transition-colors ${wireframe ? 'bg-brand-600 text-white' : 'text-slate-500 hover:bg-white hover:text-slate-900'}`}
           onClick={() => setWireframe(!wireframe)}
         >
           <Hexagon className="w-4 h-4" />
         </button>
-        <button 
+        <button
           title="Auto Rotate"
           className={`w-8 h-8 rounded flex items-center justify-center transition-colors ${autoRotate ? 'bg-brand-600 text-white' : 'text-slate-500 hover:bg-white hover:text-slate-900'}`}
           onClick={() => setAutoRotate(!autoRotate)}
         >
           <RefreshCw className="w-4 h-4" />
         </button>
-        <button 
+        <button
           title={isAnimationFrozen ? "Play Animation" : "Freeze Animation"}
           className={`w-8 h-8 rounded flex items-center justify-center transition-colors ${isAnimationFrozen ? 'bg-brand-600 text-white' : 'text-slate-500 hover:bg-white hover:text-slate-900'}`}
           onClick={() => setToggle('isAnimationFrozen', !isAnimationFrozen)}
         >
           {isAnimationFrozen ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
         </button>
-        <button 
+        <button
           title="Reset Camera"
           className="w-8 h-8 rounded flex items-center justify-center text-slate-500 hover:bg-white hover:text-slate-900 transition-colors"
           onClick={handleResetCamera}
@@ -277,14 +325,14 @@ export function CanvasArea({ template }: { template?: any }) {
 
 
 
-      <Canvas 
-        shadows 
+      <Canvas
+        shadows
         dpr={[1, 2]}
         camera={{ position: [0, 0, 5], fov: 38 }}
         gl={{ preserveDrawingBuffer: true, toneMappingExposure: 0.7, logarithmicDepthBuffer: true, antialias: true, alpha: true, toneMapping: THREE.ACESFilmicToneMapping }}
       >
         <SceneBackground bgType={bgType} bgColor={bgColor} />
-        
+
         {/* Environment and Lighting */}
         {/* Studio lighting (an uploaded background image is only a backdrop, so the product stays well lit) */}
         <Environment files="/hdri/empty_warehouse_01_1k.hdr" resolution={256} environmentIntensity={ambientLightIntensity * 1.5} />
@@ -297,8 +345,8 @@ export function CanvasArea({ template }: { template?: any }) {
         <PhysicalStudioLight prefix="fillLight" position={fillLightPosition as any} color={fillLightColor} intensity={fillLightIntensity} focus={fillLightFocus} type="softbox" isEditMode={isLightEditMode} />
         <PhysicalStudioLight prefix="rimLight" position={rimLightPosition as any} color={rimLightColor} intensity={rimLightIntensity} focus={rimLightFocus} type="softbox" isEditMode={isLightEditMode} />
 
-        {/* Applying wireframe property globally to the model scene is easiest by wrapping it or handling it inside Model. 
-            For simplicity in this step, we will pass wireframe state via store or props. 
+        {/* Applying wireframe property globally to the model scene is easiest by wrapping it or handling it inside Model.
+            For simplicity in this step, we will pass wireframe state via store or props.
             Since it's local state, we'll pass it as a prop. */}
         {isLightEditMode && (transformMode === 'translate' ? modelGroupRef.current : modelInnerRef.current) ? (
           <TransformControls
@@ -320,29 +368,29 @@ export function CanvasArea({ template }: { template?: any }) {
         <group ref={modelGroupRef} position={modelPosition}>
           <Model ref={modelInnerRef} wireframe={wireframe} />
         </group>
-        
+
         <GLTFExportListener modelGroupRef={modelGroupRef} />
-        
+
         {/* Dynamic Accessory / Spout Model */}
-        <OrbitControls 
+        <OrbitControls
           ref={controlsRef}
-          makeDefault 
-          dampingFactor={0.05} 
+          makeDefault
+          dampingFactor={0.05}
           autoRotate={autoRotate && !isAnimationFrozen}
           autoRotateSpeed={2}
           target={[0, 1, 0]}
         />
-        
+
         {showGrid && <gridHelper args={[10, 30, '#cccccc', '#dddddd']} position={[0, 0, 0]} material-opacity={0.5} material-transparent />}
         {showTable && <StudioTable tableTexture={tableTexture} />}
         {floorImage && !showTable && <StudioFloor url={floorImage} />}
         {showShadow && (
-          <ContactShadows 
-            position={[0, 0, 0]} 
-            opacity={0.4} 
-            scale={10} 
-            blur={2} 
-            far={4} 
+          <ContactShadows
+            position={[0, 0, 0]}
+            opacity={0.4}
+            scale={10}
+            blur={2}
+            far={4}
           />
         )}
         <CameraAnimator controlsRef={controlsRef} />
@@ -397,7 +445,7 @@ function CameraAnimator({ controlsRef }: { controlsRef: React.RefObject<OrbitCon
   useFrame(() => {
     if (animState.current?.active && controlsRef.current) {
       const elapsed = (performance.now() - animState.current.startTime) / 1200; // 1.2s duration
-      
+
       if (elapsed >= 1) {
         camera.position.copy(animState.current.endPos);
         controlsRef.current.target.copy(animState.current.endTarget);

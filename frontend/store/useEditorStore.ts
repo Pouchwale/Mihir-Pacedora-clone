@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage, StateStorage } from 'zustand/middleware';
 import { get, set, del } from 'idb-keyval';
+import type { DielineState } from '@/lib/dieline/types';
 
 const idbStorage: StateStorage = {
   getItem: async (name: string): Promise<string | null> => {
@@ -34,6 +35,22 @@ interface EditorState {
   isAnimationFrozen: boolean;
   isClearPlastic: boolean;
   isOneSideClearPlastic: boolean;
+  /** Look of the clear-plastic add-ons: glossy crystal clear or soft frosted (matt) film */
+  filmFinish: 'clear' | 'frosted';
+  /** Inner laminate seen through windows and clear film */
+  innerLayer: 'bopp' | 'met_pet' | 'milky_white' | 'matt_pet';
+  /** Floor photo: shown once at its own proportions, or repeated as tiles */
+  floorFit: 'single' | 'tile';
+  floorSize: number;
+  floorTiles: number;
+  /** Floor photo placement: offset left/right (X) and forward/back (Z) in scene units, turn in degrees */
+  floorOffsetX: number;
+  floorOffsetZ: number;
+  floorRotation: number;
+  /** Background photo: size in % (100 = fills the view) and offset in % of the view (+X right, +Y up) */
+  bgScale: number;
+  bgOffsetX: number;
+  bgOffsetY: number;
   spoutSize: number;
 
   // Transparent Windows
@@ -64,17 +81,17 @@ interface EditorState {
   keyLightColor: string;
   keyLightPosition: [number, number, number];
   keyLightFocus: number;
-  
+
   fillLightIntensity: number;
   fillLightColor: string;
   fillLightPosition: [number, number, number];
   fillLightFocus: number;
-  
+
   rimLightIntensity: number;
   rimLightColor: string;
   rimLightPosition: [number, number, number];
   rimLightFocus: number;
-  
+
   ambientLightIntensity: number;
   ambientLightColor: string;
 
@@ -104,12 +121,21 @@ interface EditorState {
       metalness: number;
       emissive: number;
       opacity?: number;
+      clearcoat?: number;
     };
   };
 
+  // 2D dieline artwork (null until the designer opens the dieline editor). When it has items, the
+  // per-side textures are rendered from it.
+  dieline: DielineState | null;
+  /** Artwork printed on the inside of the film (rendered from the dieline's "Inside" face) */
+  insideTextures: { front: string | null; back: string | null; bottom: string | null };
+  /** Editor view: the 3D scene or the 2D dieline */
+  editorView: '3d' | 'dieline';
+
   // Custom Templates
   customTemplates: { id: string; name: string; objData: string }[];
-  
+
   documentData: string | null;
   documentName: string | null;
 
@@ -126,6 +152,8 @@ interface EditorState {
   setRotation: (rotation: [number, number, number]) => void;
   setModelPosition: (modelPosition: [number, number, number]) => void;
   updateMaterial: (group: string, updates: Partial<EditorState['materials'][string]>) => void;
+  setMaterialPreset: (presetId: 'plastic_glossy' | 'plastic_matte' | 'aluminium_glossy' | 'aluminium_matte') => void;
+  setFilmAddon: (addonId: 'clear_all' | 'clear_front' | 'frosted_all' | 'frosted_front' | 'none') => void;
   setTexture: (slot: keyof EditorState['textures'], url: string | null) => void;
   textureTransforms: Record<string, { rotation: number, flipX: boolean, flipY: boolean }>;
   setTextureTransform: (slot: string, transform: Partial<{ rotation: number, flipX: boolean, flipY: boolean }>) => void;
@@ -138,6 +166,7 @@ interface EditorState {
   removeCustomTemplate: (id: string) => void;
   setSizeScale: (sizeScale: [number, number, number]) => void;
   setDocument: (name: string | null, data: string | null) => void;
+  setDieline: (dieline: DielineState | null | ((prev: DielineState | null) => DielineState | null)) => void;
   addWindowCutout: (cutout: EditorState['windowCutouts'][0]) => void;
   updateWindowCutout: (id: string, updates: Partial<EditorState['windowCutouts'][0]>) => void;
   removeWindowCutout: (id: string) => void;
@@ -145,6 +174,30 @@ interface EditorState {
   resetLighting: () => void;
   resetModelPosition: () => void;
 }
+
+// Default studio lighting: used on first load, when a template opens and by "Reset lighting", so all
+// three always give the same result
+const DEFAULT_LIGHTING = {
+  keyLightIntensity: 1.8,
+  keyLightColor: '#ffffff',
+  keyLightPosition: [5, 4, 3] as [number, number, number],
+  keyLightFocus: 0.5,
+  fillLightIntensity: 1.2,
+  fillLightColor: '#e6f0ff',
+  fillLightPosition: [-4, 2, 4] as [number, number, number],
+  fillLightFocus: 0.5,
+  rimLightIntensity: 1.5,
+  rimLightColor: '#fff0e6',
+  rimLightPosition: [2, 3, -4] as [number, number, number],
+  rimLightFocus: 0.5,
+  ambientLightIntensity: 0.8,
+  ambientLightColor: '#ffffff',
+};
+
+const MATERIAL_SIDES = ['Front', 'Back', 'Left', 'Right', 'Top', 'Bottom', 'Side'];
+// Default finish: glossy printed plastic
+const defaultMaterials = (): EditorState['materials'] =>
+  Object.fromEntries(MATERIAL_SIDES.map((side) => [side, { color: '#ffffff', roughness: 0.08, metalness: 0.0, emissive: 0, opacity: 1.0, clearcoat: 1.0 }]));
 
 export const useEditorStore = create<EditorState>()(
   persist(
@@ -167,6 +220,17 @@ export const useEditorStore = create<EditorState>()(
   isAnimationFrozen: false,
   isClearPlastic: false,
   isOneSideClearPlastic: false,
+  filmFinish: 'clear',
+  innerLayer: 'bopp',
+  floorFit: 'single',
+  floorSize: 8,
+  floorTiles: 4,
+  floorOffsetX: 0,
+  floorOffsetZ: 0,
+  floorRotation: 0,
+  bgScale: 100,
+  bgOffsetX: 0,
+  bgOffsetY: 0,
   spoutSize: 10,
   windowCutouts: [],
 
@@ -180,23 +244,7 @@ export const useEditorStore = create<EditorState>()(
 
   isLightEditMode: false,
 
-  keyLightIntensity: 1.8,
-  keyLightColor: '#ffffff',
-  keyLightPosition: [4, 4, 4],
-  keyLightFocus: 0.5,
-
-  fillLightIntensity: 1.2,
-  fillLightColor: '#f2f7ff',
-  fillLightPosition: [-4, 3, 4],
-  fillLightFocus: 0.5,
-
-  rimLightIntensity: 1.5,
-  rimLightColor: '#ffffff',
-  rimLightPosition: [0, 4, -5],
-  rimLightFocus: 0.5,
-
-  ambientLightIntensity: 0.8,
-  ambientLightColor: '#ffffff',
+  ...DEFAULT_LIGHTING,
 
   scale: 1,
   rotation: [0, 0, 0],
@@ -216,15 +264,11 @@ export const useEditorStore = create<EditorState>()(
 
   textureTransforms: {},
 
-  materials: {
-    Front: { color: '#ffffff', roughness: 0.45, metalness: 0.05, emissive: 0, opacity: 1.0 },
-    Back: { color: '#ffffff', roughness: 0.45, metalness: 0.05, emissive: 0, opacity: 1.0 },
-    Left: { color: '#ffffff', roughness: 0.45, metalness: 0.05, emissive: 0, opacity: 1.0 },
-    Right: { color: '#ffffff', roughness: 0.45, metalness: 0.05, emissive: 0, opacity: 1.0 },
-    Top: { color: '#ffffff', roughness: 0.45, metalness: 0.05, emissive: 0, opacity: 1.0 },
-    Bottom: { color: '#ffffff', roughness: 0.45, metalness: 0.05, emissive: 0, opacity: 1.0 },
-    Side: { color: '#ffffff', roughness: 0.45, metalness: 0.05, emissive: 0, opacity: 1.0 },
-  },
+  materials: defaultMaterials(),
+
+  dieline: null,
+  insideTextures: { front: null, back: null, bottom: null },
+  editorView: '3d',
 
   customTemplates: [],
   documentData: null,
@@ -249,7 +293,7 @@ export const useEditorStore = create<EditorState>()(
   setRotation: (rotation) => set({ rotation }),
   setModelPosition: (modelPosition) => set({ modelPosition }),
   setSizeScale: (sizeScale) => set({ sizeScale }),
-  
+
   updateMaterial: (group, updates) =>
     set((state) => ({
       materials: {
@@ -258,7 +302,50 @@ export const useEditorStore = create<EditorState>()(
       },
     })),
 
-  setTexture: (slot, url) => 
+  setMaterialPreset: (presetId) =>
+    set((state) => {
+      const presets: Record<string, { roughness: number; metalness: number; clearcoat?: number }> = {
+        plastic_glossy: { roughness: 0.08, metalness: 0.0, clearcoat: 1.0 },
+        plastic_matte: { roughness: 0.70, metalness: 0.0, clearcoat: 0.0 },
+        aluminium_glossy: { roughness: 0.15, metalness: 0.95, clearcoat: 0.35 },
+        aluminium_matte: { roughness: 0.55, metalness: 0.90, clearcoat: 0.0 },
+      };
+      const cfg = presets[presetId] || presets.plastic_glossy;
+      const newMaterials = { ...state.materials };
+      MATERIAL_SIDES.forEach((side) => {
+        newMaterials[side] = {
+          ...(newMaterials[side] || { color: '#ffffff', emissive: 0, opacity: 1.0 }),
+          roughness: cfg.roughness,
+          metalness: cfg.metalness,
+          clearcoat: cfg.clearcoat,
+        };
+      });
+      return { materials: newMaterials };
+    }),
+
+  // Film add-ons are exclusive. Designs from before the film add-ons faded the print with opacity;
+  // every switch clears that, so the print is always solid.
+  setFilmAddon: (addonId) =>
+    set((state) => {
+      const newMaterials = { ...state.materials };
+      MATERIAL_SIDES.forEach((side) => {
+        if (newMaterials[side] && (newMaterials[side].opacity ?? 1) < 1) {
+          newMaterials[side] = { ...newMaterials[side], opacity: 1.0 };
+        }
+      });
+      if (addonId === 'none') {
+        return { isClearPlastic: false, isOneSideClearPlastic: false, materials: newMaterials };
+      }
+      const isAll = addonId === 'clear_all' || addonId === 'frosted_all';
+      return {
+        isClearPlastic: isAll,
+        isOneSideClearPlastic: !isAll,
+        filmFinish: addonId.startsWith('frosted') ? 'frosted' : 'clear',
+        materials: newMaterials,
+      };
+    }),
+
+  setTexture: (slot, url) =>
     set((state) => ({
       textures: {
         ...state.textures,
@@ -270,7 +357,7 @@ export const useEditorStore = create<EditorState>()(
       }
     })),
 
-  setTextureTransform: (slot, transform) => 
+  setTextureTransform: (slot, transform) =>
     set((state) => {
       const current = state.textureTransforms[slot] || { rotation: 0, flipX: false, flipY: false };
       return {
@@ -291,7 +378,7 @@ export const useEditorStore = create<EditorState>()(
 
   setFacingSide: (side) => set({ facingSide: side }),
 
-  setAllMaterialColors: (color) => 
+  setAllMaterialColors: (color) =>
     set((state) => {
       const newMats = { ...state.materials };
       Object.keys(newMats).forEach(k => {
@@ -300,10 +387,10 @@ export const useEditorStore = create<EditorState>()(
       return { materials: newMats };
     }),
 
-  addCustomTemplate: (name, objData) => 
+  addCustomTemplate: (name, objData) =>
     set((state) => ({
       customTemplates: [
-        ...state.customTemplates, 
+        ...state.customTemplates,
         { id: Math.random().toString(36).substr(2, 9), name, objData }
       ]
     })),
@@ -314,6 +401,7 @@ export const useEditorStore = create<EditorState>()(
     })),
 
   setDocument: (name, data) => set({ documentName: name, documentData: data }),
+  setDieline: (dieline) => set((state) => ({ dieline: typeof dieline === 'function' ? dieline(state.dieline) : dieline })),
 
   addWindowCutout: (cutout) =>
     set((state) => ({
@@ -358,25 +446,20 @@ export const useEditorStore = create<EditorState>()(
       isAnimationFrozen: false,
       isClearPlastic: false,
       isOneSideClearPlastic: false,
+      filmFinish: 'clear',
+      innerLayer: 'bopp',
+      floorFit: 'single',
+      floorSize: 8,
+      floorTiles: 4,
+      floorOffsetX: 0,
+      floorOffsetZ: 0,
+      floorRotation: 0,
+      bgScale: 100,
+      bgOffsetX: 0,
+      bgOffsetY: 0,
       spoutSize: 10,
       windowCutouts: [],
-      keyLightIntensity: 1.8,
-      keyLightColor: '#ffffff',
-      keyLightPosition: [5, 4, 3],
-      keyLightFocus: 0.5,
-      
-      fillLightIntensity: 1.2,
-      fillLightColor: '#e6f0ff',
-      fillLightPosition: [-4, 2, 4],
-      fillLightFocus: 0.5,
-      
-      rimLightIntensity: 1.5,
-      rimLightColor: '#fff0e6',
-      rimLightPosition: [2, 3, -4],
-      rimLightFocus: 0.5,
-      
-      ambientLightIntensity: 0.8,
-      ambientLightColor: '#ffffff',
+      ...DEFAULT_LIGHTING,
       scale: 1,
       rotation: [0, 0, 0],
       sizeScale: [1, 1, 1],
@@ -390,34 +473,14 @@ export const useEditorStore = create<EditorState>()(
         overall: null,
         label: null,
       },
-      materials: {
-        Front: { color: '#ffffff', roughness: 0.45, metalness: 0.05, emissive: 0, opacity: 1.0 },
-        Back: { color: '#ffffff', roughness: 0.45, metalness: 0.05, emissive: 0, opacity: 1.0 },
-        Left: { color: '#ffffff', roughness: 0.45, metalness: 0.05, emissive: 0, opacity: 1.0 },
-        Right: { color: '#ffffff', roughness: 0.45, metalness: 0.05, emissive: 0, opacity: 1.0 },
-        Top: { color: '#ffffff', roughness: 0.45, metalness: 0.05, emissive: 0, opacity: 1.0 },
-        Bottom: { color: '#ffffff', roughness: 0.45, metalness: 0.05, emissive: 0, opacity: 1.0 },
-        Side: { color: '#ffffff', roughness: 0.45, metalness: 0.05, emissive: 0, opacity: 1.0 },
-      },
+      materials: defaultMaterials(),
       documentData: null,
       documentName: null,
+      dieline: null,
+      insideTextures: { front: null, back: null, bottom: null },
+      editorView: '3d',
     }),
-    resetLighting: () => set({
-      keyLightIntensity: 1.8,
-      keyLightColor: '#ffffff',
-      keyLightPosition: [4, 4, 4],
-      keyLightFocus: 0.5,
-      fillLightIntensity: 1.2,
-      fillLightColor: '#f2f7ff',
-      fillLightPosition: [-4, 3, 4],
-      fillLightFocus: 0.5,
-      rimLightIntensity: 1.5,
-      rimLightColor: '#ffffff',
-      rimLightPosition: [0, 4, -5],
-      rimLightFocus: 0.5,
-      ambientLightIntensity: 0.8,
-      ambientLightColor: '#ffffff',
-    }),
+    resetLighting: () => set({ ...DEFAULT_LIGHTING }),
     resetModelPosition: () => set({
       modelPosition: [0, 0, 0],
       rotation: [0, 0, 0],

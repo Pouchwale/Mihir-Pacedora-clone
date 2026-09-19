@@ -313,7 +313,20 @@ export function Header({ template }: { template?: any }) {
         spoutSize: st.spoutSize,
         sizeScale: st.sizeScale,
         windowCutouts: st.windowCutouts,
-        isOneSideClearPlastic: st.isOneSideClearPlastic
+        isOneSideClearPlastic: st.isOneSideClearPlastic,
+        filmFinish: st.filmFinish,
+        innerLayer: st.innerLayer,
+        floorFit: st.floorFit,
+        floorSize: st.floorSize,
+        floorTiles: st.floorTiles,
+        floorOffsetX: st.floorOffsetX,
+        floorOffsetZ: st.floorOffsetZ,
+        floorRotation: st.floorRotation,
+        bgScale: st.bgScale,
+        bgOffsetX: st.bgOffsetX,
+        bgOffsetY: st.bgOffsetY,
+        dieline: st.dieline,
+        insideTextures: st.insideTextures,
       };
 
       // Capturing the 3D view is expensive: at most once a minute during auto-save
@@ -412,6 +425,9 @@ export function Header({ template }: { template?: any }) {
     "ambientLightIntensity", "ambientLightColor", "scale", "rotation", "modelPosition", "textures", "textureTransforms",
     "materials", "punchType", "punchSize", "punchPositionY", "cornerStyles", "cornerSizes", "linkCorners",
     "isAnimationFrozen", "isClearPlastic", "spoutSize", "sizeScale", "windowCutouts", "isOneSideClearPlastic",
+    "filmFinish", "innerLayer", "floorFit", "floorSize", "floorTiles",
+    "floorOffsetX", "floorOffsetZ", "floorRotation", "bgScale", "bgOffsetX", "bgOffsetY",
+    "dieline", "insideTextures",
     "objText", "fileName", "documentData", "documentName",
   ] as const;
 
@@ -534,7 +550,7 @@ export function Header({ template }: { template?: any }) {
       dirtyRef.current = false;
       toast.success("Design submitted", "The Head of Designer has been notified to review it.");
       fetchApprovalStatus();
-      
+
       // Open the newly created copy right away (the button stays disabled until the page changes)
       if (createsCopy) {
         navigating = true;
@@ -604,7 +620,7 @@ export function Header({ template }: { template?: any }) {
             </Link>
             <span className="px-3 py-1.5 text-slate-900 border-b-2 border-brand-600">Editor</span>
           </nav>
-          
+
           {template?.name && (
             <div className="hidden lg:flex items-center gap-2 ml-4 px-3 py-1 bg-slate-100 rounded-full border border-slate-200 animate-fade-in">
               <span className="text-[10px] font-bold text-slate-700 tracking-tight truncate max-w-[120px]">{template.name}</span>
@@ -627,7 +643,7 @@ export function Header({ template }: { template?: any }) {
             </div>
           )}
         </div>
-        
+
         <div className="flex items-center gap-3">
           {/* Auto-save status */}
           {autosaveMode && saveStatus !== "idle" && (
@@ -654,8 +670,8 @@ export function Header({ template }: { template?: any }) {
           {/* Export action dropdown */}
           {/* Export action dropdown */}
           <div className="relative">
-            <Button 
-              size="sm" 
+            <Button
+              size="sm"
               onClick={() => setIsExportOpen(!isExportOpen)}
               className="bg-brand-600 hover:bg-brand-700 text-white gap-2 text-xs font-bold uppercase tracking-wider shrink-0 shadow-sm h-9"
             >
@@ -663,11 +679,11 @@ export function Header({ template }: { template?: any }) {
               Export Render
               <ChevronDown className="w-3 h-3 ml-0.5 opacity-60" />
             </Button>
-            
+
             {/* Invisible backdrop to close dropdown when clicking outside */}
             {isExportOpen && (
-              <div 
-                className="fixed inset-0 z-40" 
+              <div
+                className="fixed inset-0 z-40"
                 onClick={() => setIsExportOpen(false)}
               />
             )}
@@ -794,12 +810,16 @@ export function Header({ template }: { template?: any }) {
                     disabled={sharingDesign}
                     className="w-full bg-transparent border-0 text-slate-800 focus:outline-none text-[11px] font-bold cursor-pointer"
                   >
-                    <option value="">Share with Customer</option>
+                    <option value="">{customers.length ? "Share with Customer" : "No active customer accounts"}</option>
                     {customers.map((c) => (
                       <option key={c.id} value={c.email}>
                         {c.name ? `${c.name} (${c.email})` : c.email}
                       </option>
                     ))}
+                    {/* Keep the current customer visible even if their account is no longer active */}
+                    {selectedCustomerEmail && !customers.some((c) => c.email?.toLowerCase() === selectedCustomerEmail.toLowerCase()) && (
+                      <option value={selectedCustomerEmail}>{selectedCustomerEmail} (inactive)</option>
+                    )}
                   </select>
                 </div>
               )}

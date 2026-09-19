@@ -247,7 +247,7 @@ export function HistorySection({
                     </p>
                     {req.customerEmail && req.status === "APPROVED" && (
                       <p>
-                        Customer: <span className="text-slate-700">{req.customerEmail}</span>{" "}
+                        Customer: <span className="text-slate-700">{(() => { const c = customers.find((x) => x.email?.toLowerCase() === req.customerEmail?.toLowerCase()); return c?.name ? `${c.name} (${req.customerEmail})` : req.customerEmail; })()}</span>{" "}
                         <span className={
                           req.customerStatus === "APPROVED" ? "text-emerald-600" : req.customerStatus === "REJECTED" ? "text-rose-600" : "text-amber-600"
                         }>
@@ -270,12 +270,15 @@ export function HistorySection({
                         onChange={(e) => setShareSelection((prev) => ({ ...prev, [req.id]: e.target.value }))}
                         className="w-full px-2.5 py-1.5 text-[11px] border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-brand-500 bg-white text-slate-800 font-medium"
                       >
-                        <option value="" disabled>Select a customer...</option>
+                        <option value="" disabled>{customers.length ? "Select a customer..." : "No active customer accounts"}</option>
                         {customers.map((c, i) => (
                           <option key={c.email || i} value={c.email || ""}>
                             {c.name || "Unknown"} ({c.email})
                           </option>
                         ))}
+                        {req.customerEmail && !customers.some((c) => c.email?.toLowerCase() === req.customerEmail?.toLowerCase()) && (
+                          <option value={req.customerEmail}>{req.customerEmail} (inactive)</option>
+                        )}
                       </select>
                       <button
                         onClick={() => {
