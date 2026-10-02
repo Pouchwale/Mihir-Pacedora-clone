@@ -1,0 +1,53 @@
+{
+  "spec_table": {
+    "client_name": {"value": "Crystal Enterprises", "confidence": 0.99},
+    "item_name": {"value": "FGPO7215_Dog_Food_Front_App", "confidence": 0.99},
+    "item_no": {"value": "FGPO7215", "confidence": 0.99},
+    "date_of_approval": {"value": "21/08/2026", "confidence": 0.99},
+    "teeth": {"value": 154, "confidence": 0.99},
+    "circumference_mm": {"value": 488.95, "confidence": 0.99},
+    "inside_b2b_width_mm": {"value": 320.0, "confidence": 0.99},
+    "b2b_width_mm": {"value": 330, "confidence": 0.99},
+    "colour_count": {"value": 5, "confidence": 0.99},
+    "ar_ups": {"value": 2, "confidence": 0.99},
+    "ac_ups": {"value": 1, "confidence": 0.99},
+    "inks": {"value": ["Cyan", "Magenta", "Yellow", "Black", "Sp White"], "confidence": 0.98},
+    "value_additions": {"value": null, "confidence": 0.95},
+    "pouch_height_mm": {"value": 312, "confidence": 0.99},
+    "pouch_closed_width_mm": {"value": 240, "confidence": 0.99},
+    "pouch_open_width_mm": {"value": 240, "confidence": 0.99},
+    "layers": {"value": [
+      {"micron": 18, "material": "MATT BOPP"},
+      {"micron": 12, "material": "Met Pet"},
+      {"micron": 75, "material": "Clear LDPE"}
+    ], "confidence": 0.98},
+    "pouch_or_roll_form": {"value": "Pouch Form", "confidence": 0.99},
+    "sealing_type": {"value": "Stand-up", "confidence": 0.99},
+    "gusset_type": {"value": "Bottom", "confidence": 0.99},
+    "gusset_full_width_mm": {"value": 120, "confidence": 0.99},
+    "zipper": {"value": true, "confidence": 0.99},
+    "round_corner": {"value": true, "confidence": 0.99},
+    "transparent_window": {"value": false, "confidence": 0.99},
+    "sealing_width_mm": {"value": 10, "confidence": 0.99},
+    "tear_notch": {"value": "V Notch", "confidence": 0.98},
+    "butterfly_notch": {"value": false, "confidence": 0.99},
+    "finish": {"value": "matt", "confidence": 0.95},
+    "raw_remarks": {"value": "Matt Finish Pouch I Back Code : FGPO7216 | Gusset Code : FGPO7233", "confidence": 0.95}
+  },
+  "measured_keyline": {
+    "overall_width_mm": {"value": 244.475, "confidence": 0.98},
+    "overall_height_mm": {"value": 320, "confidence": 0.98},
+    "bleed_left_mm": {"value": 2.2375, "confidence": 0.97},
+    "bleed_right_mm": {"value": 2.2375, "confidence": 0.97},
+    "bleed_top_mm": {"value": 4, "confidence": 0.95},
+    "bleed_bottom_mm": {"value": 4, "confidence": 0.95},
+    "width_segments_mm": {"value": [10, 220, 10], "confidence": 0.97},
+    "height_segments_mm": {"value": [10, 12, 13, 267, 10], "confidence": 0.95},
+    "zipper_line_drawn": {"value": true, "confidence": 0.95},
+    "zipper_y_mm": [28.0],
+    "labels": [
+      {"text": "244.475 mm", "value_mm": 244.475, "axis": "horizontal", "position": "top"},
+      {"text": "320 mm", "value_mm": 320, "axis": "vertical", "position": "right"}
+    ]
+  }
+}

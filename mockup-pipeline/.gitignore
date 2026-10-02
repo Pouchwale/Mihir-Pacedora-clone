@@ -1,0 +1,10 @@
+.tools/
+**/.venv/
+**/.work/
+**/.env
+**/__pycache__/
+**/.pytest_cache/
+backend/tests/.tmp/
+frontend/node_modules/
+frontend/dist/
+phase1/output/

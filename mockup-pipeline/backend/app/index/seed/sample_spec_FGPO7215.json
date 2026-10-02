@@ -1,0 +1,199 @@
+{
+ "spec_table": {
+  "client_name": {
+   "value": "Crystal Enterprises",
+   "confidence": 0.96
+  },
+  "item_name": {
+   "value": "FGPO7215_Dog_Food_Front_App",
+   "confidence": 0.95
+  },
+  "item_no": {
+   "value": "FGPO7215",
+   "confidence": 0.95
+  },
+  "date_of_approval": {
+   "value": "21/08/2026",
+   "confidence": 0.94
+  },
+  "teeth": {
+   "value": 154.0,
+   "confidence": 0.95
+  },
+  "circumference_mm": {
+   "value": 488.95,
+   "confidence": 0.93
+  },
+  "inside_b2b_width_mm": {
+   "value": 320.0,
+   "confidence": 0.96
+  },
+  "b2b_width_mm": {
+   "value": 330.0,
+   "confidence": 0.96
+  },
+  "colour_count": {
+   "value": 5.0,
+   "confidence": 0.9
+  },
+  "ar_ups": {
+   "value": 2.0,
+   "confidence": 0.92
+  },
+  "ac_ups": {
+   "value": 1.0,
+   "confidence": 0.93
+  },
+  "inks": {
+   "value": [
+    "Cyan",
+    "Magenta",
+    "Yellow",
+    "Black",
+    "Sp White"
+   ],
+   "confidence": 0.93
+  },
+  "value_additions": {
+   "value": null,
+   "confidence": 0.9
+  },
+  "pouch_height_mm": {
+   "value": 312.0,
+   "confidence": 0.85
+  },
+  "pouch_closed_width_mm": {
+   "value": 240.0,
+   "confidence": 0.95
+  },
+  "pouch_open_width_mm": {
+   "value": 240.0,
+   "confidence": 0.96
+  },
+  "layers": {
+   "value": [
+    {
+     "micron": 18.0,
+     "material": "MATT BOPP"
+    },
+    {
+     "micron": 12.0,
+     "material": "Met Pet"
+    },
+    {
+     "micron": 75.0,
+     "material": "Clear LDPE"
+    }
+   ],
+   "confidence": 0.95
+  },
+  "pouch_or_roll_form": {
+   "value": "Pouch Form",
+   "confidence": 0.96
+  },
+  "sealing_type": {
+   "value": "Stand-up",
+   "confidence": 0.96
+  },
+  "gusset_type": {
+   "value": "Bottom",
+   "confidence": 0.96
+  },
+  "gusset_full_width_mm": {
+   "value": 120.0,
+   "confidence": 0.96
+  },
+  "zipper": {
+   "value": true,
+   "confidence": 0.96
+  },
+  "round_corner": {
+   "value": true,
+   "confidence": 0.96
+  },
+  "transparent_window": {
+   "value": false,
+   "confidence": 0.96
+  },
+  "sealing_width_mm": {
+   "value": 10.0,
+   "confidence": 0.91
+  },
+  "tear_notch": {
+   "value": "V Notch",
+   "confidence": 0.91
+  },
+  "butterfly_notch": {
+   "value": false,
+   "confidence": 0.96
+  },
+  "finish": {
+   "value": "matt",
+   "confidence": 0.93
+  },
+  "raw_remarks": {
+   "value": "Matt Finish Pouch Back Code FGPO7216 | Gusset Code FGPO7233",
+   "confidence": 0.93
+  }
+ },
+ "measured_keyline": {
+  "overall_width_mm": {
+   "value": 244.475,
+   "confidence": 0.99
+  },
+  "overall_height_mm": {
+   "value": 320.0,
+   "confidence": 0.99
+  },
+  "bleed_left_mm": {
+   "value": 2.2375,
+   "confidence": 0.99
+  },
+  "bleed_right_mm": {
+   "value": 2.2375,
+   "confidence": 0.99
+  },
+  "bleed_top_mm": {
+   "value": 4.0,
+   "confidence": 0.99
+  },
+  "bleed_bottom_mm": {
+   "value": 4.0,
+   "confidence": 0.99
+  },
+  "width_segments_mm": {
+   "value": [
+    10.0,
+    220.0,
+    10.0
+   ],
+   "confidence": 0.99
+  },
+  "height_segments_mm": {
+   "value": [
+    10.0,
+    12.0,
+    13.0,
+    267.0,
+    10.0
+   ],
+   "confidence": 0.99
+  },
+  "zipper_line_drawn": {
+   "value": true,
+   "confidence": 0.95
+  },
+  "zipper_y_mm": [
+   28.0
+  ],
+  "labels": []
+ },
+ "linked_codes": {
+  "back": "FGPO7216",
+  "gusset": "FGPO7233"
+ },
+ "linked_code_confidence": {
+  "back": 0.43,
+  "gusset": 0.5
+ }
+}

@@ -1,0 +1,680 @@
+# Seed index: loaded into an empty database by `python -m app.cli bootstrap`; later releases add or
+# change entries with `python -m app.cli seed-apply` (ordinary versions, restorable). Between those
+# the index lives in the database and is edited in the admin UI.
+# Blocks named x-* hold YAML anchors shared below; they are not index entries.
+index_format: 1
+
+# ------------------------------------------------------------------ field dictionary (index kind field)
+# Every value read from an approval PDF: printed label (+ variants), how it is read, required /
+# confidence flags and its place in the table. The OCR template is composed from this list.
+field:
+  client_name: {name: Client name, label: "Client Name:", optional: false, required: true, section: true, order: 10}
+  item_name: {name: Item name, label: "Item Name:", optional: false, keep_chars: "_", confirm_with_filename: stem, order: 20}
+  item_no: {name: Item No., label: "Item No.:", kind: code, optional: false, required: true, confirm_with_filename: code, order: 30}
+  inside_b2b_width_mm:
+    name: Inside B2B width
+    label: "In-Side B2B Width:"
+    aliases: ["Inside B2B Width:", "In-B2B Width:", "In B2B Width:"]
+    kind: number
+    unit: mm
+    min: 10
+    max: 2000
+    order: 40
+    description: Printed web width of a roll (bead to bead, inside)
+  date_of_approval: {name: Date of approval, label: "Date of Approval:", kind: date, optional: false, order: 50}
+  b2b_width_mm: {name: B2B width, label: "B2B Width:", kind: number, unit: mm, min: 10, max: 2000, order: 60}
+  colour_count:
+    name: Colours
+    label: "Color:"
+    aliases: ["No. of colours", "No. of colors", "Colours:", "Colors:"]
+    kind: integer
+    min: 1
+    max: 12
+    optional: false
+    order: 70
+  teeth: {name: Teeth, label: "Teeth:", kind: number, min: 1, max: 1000, order: 80}
+  ar_ups: {name: AR ups, label: "AR Ups:", kind: number, min: 1, max: 50, order: 90, description: Repeats around the cylinder}
+  circumference_mm: {name: Circumference, label: "Circumference:", kind: number, unit: mm, min: 10, max: 3000, order: 100}
+  ac_ups: {name: AC ups, label: "AC Ups:", kind: number, min: 1, max: 50, order: 110, description: Repeats across the web}
+  value_additions: {name: Value additions, label: "Value Additions :", order: 120}
+  stop_note_that_exact_colour_matching: {name: Colour matching note, label: Note that exact colour matching, section: true, stop: true, order: 130}
+  pouch_height_mm: {name: Pouch height, label: "Pouch height:", kind: number, unit: mm, min: 20, max: 1500, optional: false, required: true, order: 140}
+  layer_1: {name: Layer 1, label: Layer 1, kind: film, optional: false, order: 150, description: "Outer (printed) film, e.g. 25 mic matt BOPP"}
+  pouch_closed_width_mm: {name: Pouch closed width, label: "Pouch Closed width:", kind: number, unit: mm, min: 20, max: 1500, optional: false, required: true, order: 160}
+  layer_2: {name: Layer 2, label: Layer 2, kind: film, order: 170}
+  pouch_open_width_mm: {name: Pouch open width, label: "Pouch Open Width:", kind: number, unit: mm, min: 20, max: 3000, optional: false, order: 180}
+  layer_3: {name: Layer 3, label: Layer 3, kind: film, order: 190}
+  layer_4: {name: Layer 4, label: Layer 4, kind: film, order: 200}
+  pouch_or_roll_form:
+    name: Pouch or roll form
+    label: "Pouch/Roll Form:"
+    kind: option
+    options: [Pouch Form, Roll Form]
+    synonyms: {"Pouch Form": [Pouch], "Roll Form": [Roll, Reel Form, Reel]}
+    optional: false
+    required: true
+    order: 210
+  transparent_window: {name: Transparent window, label: "Transparent Window:", kind: yes_no, optional: false, order: 220}
+  sealing_type:
+    name: Sealing type
+    label: "Sealing Type:"
+    kind: option
+    options: [Stand-up, Stand-up+Zipper, 3 Side Seal, Center Seal, Back Seal, Pillow, Side Gusset, Flat Bottom, Box Pouch, 8 Side Seal, Quad Seal, 4 Side Seal, Spout, Shaped, NA]
+    synonyms:
+      Stand-up: [Standy, Stand up, Standup, Doypack]
+      Stand-up+Zipper: [Standy+Zipper, Stand up+Zipper, Standy Zipper]
+      3 Side Seal: [Three Side Seal, 3SS]
+      Center Seal: [Centre Seal, Center Seal Pouch]
+      NA: ["N/A", Nil]
+    optional: false
+    required: true
+    order: 230
+    description: "NA: roll form, sealed on the customer's machine"
+  sealing_width_mm: {name: Sealing width, label: "Sealing Width:", kind: number, unit: mm, min: 2, max: 50, order: 240}
+  gusset_type:
+    name: Gusset type
+    label: Gusset
+    aliases: ["Gusset Type:"]
+    kind: option
+    options: [Bottom, Side, "None", "No", "Yes", NA]
+    synonyms: {Bottom: [Bottom Gusset, Btm], Side: [Side Gusset], "None": [Nil, "-"]}
+    optional: false
+    required: true
+    order: 250
+  gusset_full_width_mm: {name: Gusset full width, label: "Gusset Full Width:", kind: number, unit: mm, min: 5, max: 800, order: 260}
+  zipper: {name: Zipper, label: "Zipper?", kind: yes_no, optional: false, order: 270, description: "Printed as 'Zipper?'"}
+  tear_notch:
+    name: Tear notch
+    label: Tear Notch
+    kind: option
+    options: [V Notch, Straight Notch, Laser Score, "Yes", "No", NA]
+    synonyms: {V Notch: [V-Notch, Vnotch], Straight Notch: [Straight], Laser Score: [Laser]}
+    optional: false
+    order: 280
+  round_corner: {name: Round corner, label: Round Corner, kind: yes_no, optional: false, order: 290}
+  butterfly_notch: {name: Butterfly notch, label: Butterfly Notch, kind: yes_no, optional: false, order: 300}
+  raw_remarks: {name: Remarks, label: Remarks, section: true, multiline: true, order: 310, description: "Panel codes ('Back Code : FGPO1234'), finish, notes"}
+  stop_please_review_this_document: {name: Review note, label: Please review this document, section: true, stop: true, order: 320}
+  stop_tolerances: {name: Tolerances, label: Tolerances, stop: true, order: 330}
+  stop_other_notes: {name: Other notes, label: Other Notes, stop: true, order: 340}
+  # Columns filled without a printed label (ink row, derived): here for their flags only.
+  inks: {name: Inks, source: ink_row, order: 125, description: Ink names under the colour dots}
+  layers: {name: Laminate layers, source: derived, order: 205, description: Layer 1..4 combined}
+  finish: {name: Finish, source: derived, order: 315, description: From Remarks / Value Additions / Layer 1}
+
+# ------------------------------------------------------------------ pouch catalog (hierarchy)
+pouch_catalog:
+  default:
+    forms:
+      - {key: pouch, name: Pouch, description: Pre-made pouches}
+      - {key: roll, name: Roll, description: Printed laminate rolls formed on the customer's machine}
+    styles:
+      - {key: stand_up, name: Stand-up, form: pouch}
+      - {key: flat, name: Flat, form: pouch}
+      - {key: pillow, name: Pillow / centre seal, form: pouch}
+      - {key: box, name: Box / flat bottom, form: pouch}
+      - {key: special, name: Special shapes, form: pouch}
+      - {key: roll_stock, name: Roll stock, form: roll}
+    sealing_types:
+      - {key: stand_up_bottom_gusset, name: Stand-up with bottom gusset, style: stand_up, printed: [Stand-up, Standy, Stand-up+Zipper]}
+      - {key: three_side_seal, name: Three side seal, style: flat, printed: [3 Side Seal, Three Side Seal]}
+      - {key: center_seal, name: Centre seal (pillow), style: pillow, printed: [Center Seal, Centre Seal, Back Seal, Pillow]}
+      - {key: center_seal_side_gusset, name: Centre seal with side gussets, style: pillow, printed: [Side Gusset]}
+      - {key: flat_bottom, name: Flat bottom (8 side seal), style: box, printed: [Flat Bottom, Box Pouch, 8 Side Seal]}
+      - {key: quad_seal, name: Quad seal, style: box, printed: [Quad Seal, 4 Side Seal]}
+      - {key: spout, name: Spout, style: special, printed: [Spout]}
+      - {key: shaped, name: Shaped die-cut, style: special, printed: [Shaped]}
+      - {key: roll, name: Roll (no seal), style: roll_stock, printed: [NA]}
+
+x-keyline-common: &common
+  bleed_left_mm:  {default: 4, min: 0, max: 20, from_measured: "measured.bleed_left_mm", description: "Bleed trimmed off the left of the artwork"}
+  bleed_right_mm: {default: 4, min: 0, max: 20, from_measured: "measured.bleed_right_mm"}
+  bleed_top_mm:   {default: 4, min: 0, max: 20, from_measured: "measured.bleed_top_mm"}
+  bleed_bottom_mm: {default: 4, min: 0, max: 20, from_measured: "measured.bleed_bottom_mm"}
+  top_seal_mm:    {default: 10, min: 2, max: 60, from_measured: "measured.height_segments_mm[0]", from_spec: "spec.sealing_width_mm"}
+  bottom_seal_mm: {default: 10, min: 2, max: 60, from_measured: "measured.height_segments_mm[-1]", from_spec: "spec.sealing_width_mm"}
+  side_seal_mm:   {default: 10, min: 0, max: 60, from_measured: "measured.width_segments_mm[0]", from_spec: "spec.sealing_width_mm"}
+  fin_seal_mm:    {default: 0, min: 0, max: 40, description: "Back (fin) seal of centre-seal pouches"}
+  crimp_height_mm: {default: 0, min: 0, max: 40, description: "Crimped top/bottom seal of pillow pouches"}
+  zipper_offset_from_top_mm:
+    default: 30
+    min: 5
+    max: 150
+    from_measured: "measured.zipper_y_mm[0]"
+    enabled_when: [{all: [{field: spec.zipper, op: is_true}]}]
+    description: "Zipper track centre below the finished top edge"
+  zipper_ridge_height_mm:
+    default: 3
+    min: 1
+    max: 8
+    enabled_when: [{all: [{field: spec.zipper, op: is_true}]}]
+  tear_notch_type:
+    type: enum
+    unit: ""
+    options: [none, v_notch, straight, laser_score]
+    default: none
+    from_spec: "spec.tear_notch"
+    value_map: {"v notch": v_notch, "yes": v_notch, "no": none, "na": none, "n/a": none, "nil": none, "straight notch": straight, "laser score": laser_score}
+  tear_notch_offset_mm:
+    default: 20
+    min: 3
+    max: 150
+    enabled_when: [{all: [{field: spec.tear_notch, op: not_in, value: ["no", "none", "na", "n/a", "nil"]}, {field: spec.tear_notch, op: exists}]}]
+    description: "Notch depth below the finished top edge"
+  butterfly_notch: {type: bool, unit: "", default: false, from_spec: "spec.butterfly_notch"}
+  corner_radius_mm: {default: 0, min: 0, max: 30, formula: "6 if spec.round_corner else 0", description: "6 mm when the spec says Round Corner"}
+  gusset_depth_mm:
+    default: 0
+    min: 0
+    max: 400
+    formula: "spec.gusset_full_width_mm / 2"
+    enabled_when: [{all: [{field: spec.gusset_type, op: eq, value: Bottom}]}]
+    description: "Folded depth of the bottom gusset = full width / 2"
+  gusset_shape: {type: enum, unit: "", options: [k_seal, plow_bottom, round_bottom, flat_box], default: k_seal}
+  side_gusset_depth_mm:
+    default: 0
+    min: 0
+    max: 300
+    formula: "spec.gusset_full_width_mm / 2"
+    enabled_when: [{all: [{field: spec.gusset_type, op: eq, value: Side}]}]
+  body_bulge_percent: {unit: "%", default: 12, min: 0, max: 40, description: "How far the filled body bulges, % of width"}
+  fill_level_percent: {unit: "%", default: 85, min: 0, max: 100}
+  spout_position: {type: enum, unit: "", options: [top_center, top_left_corner, top_right_corner], default: top_center}
+  spout_diameter_mm: {default: 22, min: 8, max: 60}
+  spout_cap_diameter_mm: {default: 32, min: 10, max: 80}
+  spout_cap_height_mm: {default: 20, min: 5, max: 60}
+  hang_hole_type: {type: enum, unit: "", options: [none, round, euro], default: none}
+  hang_hole_size_mm: {default: 8, min: 3, max: 40}
+  hang_hole_offset_mm: {default: 10, min: 3, max: 60}
+  # Off unless an item override switches it on together with the window region: the spec table
+  # only says whether the pouch has a window, and nothing on the sheet says where. A guessed
+  # rectangle punched into every windowed pouch is worse than no window.
+  # One-way degassing valve (coffee): placed where a "valve" label over the dieline points; set per job otherwise.
+  valve_panel: {type: enum, unit: "", options: [none, front, back], default: none, from_measured: "measured.valve_panel", description: "Panel carrying a one-way (coffee) valve"}
+  valve_x_mm: {default: 0, min: 0, max: 1500, from_measured: "measured.valve_x_mm", description: "Valve centre from the panel's left edge; 0 = centred"}
+  valve_y_from_top_mm: {default: 45, min: 10, max: 400, from_measured: "measured.valve_y_mm", description: "Valve centre below the finished top edge"}
+  valve_diameter_mm: {default: 22, min: 12, max: 40}
+  window_enabled: {type: bool, unit: "", default: false, description: "Show a transparent window; set per item with the region below (the drawing does not give it)"}
+  window_x_mm: {default: 20, min: 0, max: 1500, enabled_when: [{all: [{field: spec.transparent_window, op: is_true}]}], description: "Window region, from the finished top-left corner; set per item"}
+  window_y_mm: {default: 60, min: 0, max: 1500, enabled_when: [{all: [{field: spec.transparent_window, op: is_true}]}]}
+  window_width_mm: {default: 80, min: 5, max: 1500, enabled_when: [{all: [{field: spec.transparent_window, op: is_true}]}]}
+  window_height_mm: {default: 100, min: 5, max: 1500, enabled_when: [{all: [{field: spec.transparent_window, op: is_true}]}]}
+  window_corner_radius_mm: {default: 5, min: 0, max: 100, enabled_when: [{all: [{field: spec.transparent_window, op: is_true}]}]}
+  texture_dpi: {unit: dpi, default: 300, min: 150, max: 600, pin: true}
+
+keyline_template:
+  three_side_seal:
+    name: Three side seal (flat pouch)
+    fields:
+      <<: *common
+
+  center_seal_pillow:
+    name: Centre seal pillow
+    description: Tube with a back fin seal; top and bottom are crimp seals, the long edges are folds.
+    fields:
+      <<: *common
+      side_seal_mm: {default: 0, min: 0, max: 0, pin: true, description: "No side seals: the edges are folds"}
+      fin_seal_mm: {default: 10, min: 4, max: 40, from_spec: "spec.sealing_width_mm"}
+      crimp_height_mm: {default: 10, min: 4, max: 40, from_measured: "measured.height_segments_mm[0]", from_spec: "spec.sealing_width_mm"}
+      # a filled pillow pack is about half as thick as it is wide (Pacdora's sculpted 200 x 299 mm pack: 0.49)
+      body_bulge_percent: {unit: "%", default: 24, min: 0, max: 40, description: "How far the filled body bulges, % of width"}
+
+  center_seal_side_gusset:
+    name: Centre seal with side gussets
+    fields:
+      <<: *common
+      side_seal_mm: {default: 0, min: 0, max: 0, pin: true}
+      fin_seal_mm: {default: 10, min: 4, max: 40, from_spec: "spec.sealing_width_mm"}
+      crimp_height_mm: {default: 10, min: 4, max: 40, from_measured: "measured.height_segments_mm[0]", from_spec: "spec.sealing_width_mm"}
+
+  stand_up_bottom_gusset:
+    name: Stand-up pouch with bottom gusset (doypack)
+    fields:
+      <<: *common
+      gusset_depth_mm:
+        default: 0
+        min: 0
+        max: 400
+        formula: "spec.gusset_full_width_mm / 2"
+        enabled_when: [{all: [{field: spec.gusset_type, op: in, value: [Bottom, "Yes"]}]}]
+        description: "Folded depth of the bottom gusset = full width / 2"
+      tear_notch_offset_mm:
+        default: 20
+        min: 3
+        max: 150
+        # ArtPro+ stand-up keylines: top seal, notch band, zipper band -> notch sits after the first two segments.
+        from_measured: "measured.height_segments_mm[0] + measured.height_segments_mm[1]"
+        enabled_when: [{all: [{field: spec.tear_notch, op: not_in, value: ["no", "none", "na", "n/a", "nil"]}, {field: spec.tear_notch, op: exists}]}]
+
+  flat_bottom_box_pouch:
+    name: Flat bottom box pouch (8 side seal)
+    fields:
+      <<: *common
+      side_seal_mm: {default: 5, min: 0, max: 20, from_measured: "measured.width_segments_mm[0]", description: "Corner (edge) seals"}
+      gusset_shape: {type: enum, unit: "", options: [k_seal, plow_bottom, round_bottom, flat_box], default: flat_box, pin: true}
+      gusset_depth_mm: {default: 0, min: 0, max: 400, formula: "spec.gusset_full_width_mm / 2", description: "Bottom panel depth"}
+      side_gusset_depth_mm: {default: 0, min: 0, max: 300, formula: "spec.gusset_full_width_mm / 2"}
+
+  quad_seal:
+    name: Quad seal (4 corner seals)
+    fields:
+      <<: *common
+      side_seal_mm: {default: 5, min: 0, max: 20, from_measured: "measured.width_segments_mm[0]", description: "Corner seals"}
+      side_gusset_depth_mm: {default: 0, min: 0, max: 300, formula: "spec.gusset_full_width_mm / 2"}
+
+  spout_pouch:
+    name: Spout pouch
+    fields:
+      <<: *common
+      spout_position: {type: enum, unit: "", options: [top_center, top_left_corner, top_right_corner], default: top_right_corner, from_measured: "measured.spout_position", description: "Spout corner; read from the dieline's diagonal or Top Spout label when drawn"}
+      # the standard fitment, smaller on a pouch narrower than 160 mm (FGPO3009: a 93 mm grease pouch)
+      spout_diameter_mm: {default: 22, min: 8, max: 60, formula: "min(22, spec.pouch_closed_width_mm * 0.1375)"}
+      spout_cap_diameter_mm: {default: 32, min: 10, max: 80, formula: "min(32, spec.pouch_closed_width_mm * 0.2)"}
+      spout_cap_height_mm: {default: 20, min: 5, max: 60, formula: "min(20, spec.pouch_closed_width_mm * 0.125)"}
+
+  shaped_diecut:
+    name: Shaped die-cut pouch
+    fields:
+      <<: *common
+      corner_radius_mm: {default: 0, min: 0, max: 0, pin: true, description: "The die-cut outline defines the shape"}
+
+  roll_stock:
+    name: Roll stock (laminate roll + formed sachet)
+    fields:
+      <<: *common
+      roll_repeat_mm: {default: 250, min: 20, max: 2000, formula: "spec.circumference_mm / spec.ar_ups", description: "Print repeat along the web = cylinder circumference / around-ups"}
+      roll_web_width_mm: {default: 320, min: 20, max: 2000, from_spec: "spec.inside_b2b_width_mm", description: "Printed web width"}
+      roll_outer_diameter_mm: {default: 300, min: 50, max: 1200}
+      roll_core_diameter_mm: {default: 76, min: 25, max: 300}
+
+pouch_type:
+  roll_stock:
+    name: Roll stock
+    form: roll
+    style: roll_stock
+    sealing_type: roll
+    geometry_template: roll_stock
+    priority: 10
+    match_rules:
+      - all: [{field: spec.pouch_or_roll_form, op: contains, value: roll}]
+    required_panels: [front]
+    keyline_template: roll_stock
+
+  spout_pouch:
+    name: Spout pouch
+    form: pouch
+    style: special
+    sealing_type: spout
+    geometry_template: spout_pouch
+    base_geometry: auto  # stand-up when the spec has a bottom gusset, else flat 3-side seal (FGPO3009: "3 side With Spout", Gusset No)
+    priority: 20
+    match_rules:
+      - all: [{field: spec.sealing_type, op: contains, value: spout}]
+      - all: [{field: spec.raw_remarks, op: contains, value: spout}]
+    required_panels: [front, back, gusset]
+    keyline_template: spout_pouch
+
+  shaped_diecut:
+    name: Shaped die-cut pouch
+    form: pouch
+    style: special
+    sealing_type: shaped
+    geometry_template: shaped_diecut
+    base_geometry: auto
+    priority: 20
+    match_rules:
+      - all: [{field: spec.sealing_type, op: contains, value: shaped}]
+      - all: [{field: spec.raw_remarks, op: contains, value: [shaped, die cut, diecut]}]
+    required_panels: [front, back]
+    optional_panels: [gusset]
+    keyline_template: shaped_diecut
+    description: Upload the die-cut outline SVG (1 unit = 1 mm) before use.
+
+  flat_bottom_box_pouch:
+    name: Flat bottom box pouch (8 side seal)
+    form: pouch
+    style: box
+    sealing_type: flat_bottom
+    geometry_template: flat_bottom_box_pouch
+    priority: 30
+    match_rules:
+      - all: [{field: spec.sealing_type, op: in, value: [flat bottom, box pouch, 8 side seal]}]
+    required_panels: [front, back, side_left, side_right, bottom]
+    panel_aliases: {side: [side_left, side_right], gusset: [bottom]}
+    keyline_template: flat_bottom_box_pouch
+
+  quad_seal:
+    name: Quad seal
+    form: pouch
+    style: box
+    sealing_type: quad_seal
+    geometry_template: quad_seal
+    priority: 30
+    match_rules:
+      - all: [{field: spec.sealing_type, op: in, value: [quad seal, 4 side seal]}]
+    required_panels: [front, back, side_left, side_right]
+    panel_aliases: {side: [side_left, side_right], gusset: [side_left, side_right]}
+    keyline_template: quad_seal
+
+  center_seal_side_gusset:
+    name: Centre seal with side gussets
+    form: pouch
+    style: pillow
+    sealing_type: center_seal_side_gusset
+    geometry_template: center_seal_side_gusset
+    priority: 40
+    match_rules:
+      - all:
+          - {field: spec.sealing_type, op: in, value: [center seal, centre seal, back seal]}
+          - {field: spec.gusset_type, op: eq, value: Side}
+      - all: [{field: spec.sealing_type, op: eq, value: side gusset}]
+    required_panels: [front, back, side_left, side_right]
+    panel_aliases: {side: [side_left, side_right], gusset: [side_left, side_right]}
+    keyline_template: center_seal_side_gusset
+
+  center_seal_pillow:
+    name: Centre seal pillow
+    form: pouch
+    style: pillow
+    sealing_type: center_seal
+    geometry_template: center_seal_pillow
+    priority: 40
+    match_rules:
+      - all:
+          - {field: spec.sealing_type, op: in, value: [center seal, centre seal, back seal, pillow]}
+          - {field: spec.gusset_type, op: not_in, value: [Side, Bottom, "Yes"]}
+    required_panels: [front, back]
+    keyline_template: center_seal_pillow
+
+  stand_up_bottom_gusset:
+    name: Stand-up pouch with bottom gusset
+    form: pouch
+    style: stand_up
+    sealing_type: stand_up_bottom_gusset
+    geometry_template: stand_up_bottom_gusset
+    priority: 50
+    match_rules:
+      # A stand-up pouch always stands on a bottom gusset: "Gusset: Yes" means the same here.
+      - all:
+          - {field: spec.sealing_type, op: contains, value: stand}
+          - {field: spec.gusset_type, op: in, value: [Bottom, "Yes"]}
+    required_panels: [front, back, gusset]
+    panel_aliases: {bottom: [gusset]}
+    keyline_template: stand_up_bottom_gusset
+
+  three_side_seal:
+    name: Three side seal (flat pouch)
+    form: pouch
+    style: flat
+    sealing_type: three_side_seal
+    geometry_template: three_side_seal
+    priority: 50
+    match_rules:
+      - all: [{field: spec.sealing_type, op: in, value: [3 side seal, three side seal]}]
+      - all:
+          - {field: spec.sealing_type, op: in, value: [flat, flat pouch]}
+          - {field: spec.gusset_type, op: in, value: [None, "No"]}
+    required_panels: [front, back]
+    keyline_template: three_side_seal
+
+output_preset:
+  ecommerce:
+    name: E-commerce (white studio)
+    is_default: true
+    views: [front, three_quarter_left, back]
+    width_px: 2000
+    height_px: 2000
+    background: {type: studio_white}
+    lighting: exact  # print colours exactly as in the artwork; studio lighting is selectable per job
+    formats: [png, glb]
+  catalogue_transparent:
+    name: Catalogue cut-out (transparent)
+    views: [front, back, three_quarter_right]
+    width_px: 3000
+    height_px: 3000
+    background: {type: transparent}
+    shadow: false
+    lighting: exact
+    formats: [png]
+  showcase:
+    name: Showcase (all views + turntable video)
+    views: [front, back, three_quarter_left, three_quarter_right, top_down, turntable]
+    width_px: 2400
+    height_px: 2400
+    background: {type: gradient, colors: ["#f4f5f7", "#d9dde3"]}
+    lighting: exact
+    formats: [png, glb, mp4]
+    naming_pattern: "{item_no}_{client}_{pouch_type}_{view}.{format}"
+
+material:
+  film_base:
+    name: Printed film (default)
+    priority: 10
+    settings: {roughness: 0.45, metalness: 0, clearcoat: 0, specular_intensity: 0.5, normal_scale: 0.35}
+  finish_matt:
+    name: Matt finish
+    priority: 20
+    when: [{all: [{field: spec.finish, op: in, value: [matt, matt+spot gloss]}]}]
+    settings: {roughness: 0.85, clearcoat: 0, specular_intensity: 0.25}
+  finish_gloss:
+    name: Gloss finish
+    priority: 20
+    when: [{all: [{field: spec.finish, op: in, value: [gloss, gloss+spot matt]}]}]
+    settings: {roughness: 0.2, clearcoat: 1, clearcoat_roughness: 0.05, specular_intensity: 0.8}
+  spot_gloss:
+    name: Spot gloss varnish
+    priority: 30
+    surface: spot
+    when: [{all: [{field: spec.finish, op: eq, value: matt+spot gloss}]}]
+    settings: {roughness: 0.15, clearcoat: 1, clearcoat_roughness: 0.03}
+  spot_matt:
+    name: Spot matt varnish
+    priority: 30
+    surface: spot
+    when: [{all: [{field: spec.finish, op: eq, value: gloss+spot matt}]}]
+    settings: {roughness: 0.85, clearcoat: 0}
+  met_pet:
+    name: Metallised PET shows through where there is no white
+    priority: 40
+    surface: white_less
+    when: [{all: [{field: spec.layers_text, op: contains, value: [met pet, metpet, metallised, metallized, vmpet, foil, alu]}]}]
+    settings: {metalness: 1, roughness: 0.3, specular_intensity: 1}
+  clear_window:
+    name: Clear film window
+    priority: 40
+    surface: window
+    when: [{all: [{field: spec.transparent_window, op: is_true}, {field: spec.layers_text, op: contains, value: [clear, transparent]}]}]
+    settings: {transmission: 0.92, opacity: 0.35, roughness: 0.08, ior: 1.5, metalness: 0}
+  # Finish over the metal and frosted film: values from the Pacdora clone's editor presets
+  # (aluminium_matte / aluminium_glossy, frosted film).
+  met_pet_matt:
+    name: Matt varnish over metallised film (brushed look)
+    priority: 45
+    surface: white_less
+    when: [{all: [{field: spec.finish, op: in, value: [matt, matt+spot gloss]}, {field: spec.layers_text, op: contains, value: [met pet, metpet, metallised, metallized, vmpet, foil, alu]}]}]
+    settings: {roughness: 0.55, metalness: 0.9}
+  met_pet_gloss:
+    name: Gloss over metallised film (mirror look)
+    priority: 45
+    surface: white_less
+    when: [{all: [{field: spec.finish, op: in, value: [gloss, gloss+spot matt]}, {field: spec.layers_text, op: contains, value: [met pet, metpet, metallised, metallized, vmpet, foil, alu]}]}]
+    settings: {roughness: 0.15, metalness: 0.95, clearcoat: 0.35}
+  frosted_window:
+    name: Frosted film window
+    priority: 45
+    surface: window
+    when: [{all: [{field: spec.transparent_window, op: is_true}, {field: spec.layers_text, op: contains, value: [frost, matt pet, mattpet, matte pet]}]}]
+    settings: {transmission: 0.6, opacity: 0.6, roughness: 0.85, ior: 1.5, metalness: 0}
+
+pdf_profile:
+  default:
+    # Panels & artwork rules: how each panel is named in the Remarks and how its artwork sits.
+    panel_rules:
+      back: {remark_labels: [rear, reverse], rotation: 0, mirror: false}
+      gusset: {remark_labels: [bottom gusset, base]}
+      side_left: {remark_labels: [left gusset]}
+      side_right: {remark_labels: [right gusset]}
+
+validation_rules:
+  default: {}
+
+# ------------------------------------------------------------------ the default workflow (index kind workflow)
+# Edited on the canvas (Workflow page); this is the tree of spec 4.3 in an order whose steps feed each
+# other: validate -> keyline -> panels -> 3D -> artwork -> render. Positions are laid out on load.
+workflow:
+  default:
+    name: Default workflow
+    description: Roll or pouch; pouch type from the sealing type, else by match rules; everything else automatic.
+    nodes:
+      - {id: start, type: start}
+      - {id: prepare, type: prepare, label: Prepare PDF}
+      - {id: d_form, type: decision, question: "Pouch or roll?"}
+      - {id: set_roll, type: set_pouch_type, pouch_type: roll_stock}
+      - id: fetch_core
+        type: fetch
+        label: Core pouch fields
+        fields:
+          - {key: sealing_type, required: true}
+          - {key: gusset_type, required: true}
+          - {key: pouch_closed_width_mm, required: true}
+          - {key: pouch_height_mm, required: true}
+          - {key: gusset_full_width_mm, required: false}
+      - {id: d_seal, type: decision, question: "Which sealing type?"}
+      - {id: set_standup, type: set_pouch_type, pouch_type: stand_up_bottom_gusset}
+      - {id: set_3ss, type: set_pouch_type, pouch_type: three_side_seal}
+      - {id: set_css, type: set_pouch_type, pouch_type: center_seal_side_gusset}
+      - {id: set_pillow, type: set_pouch_type, pouch_type: center_seal_pillow}
+      - {id: set_box, type: set_pouch_type, pouch_type: flat_bottom_box_pouch}
+      - {id: set_quad, type: set_pouch_type, pouch_type: quad_seal}
+      - {id: set_spout, type: set_pouch_type, pouch_type: spout_pouch}
+      - {id: set_shaped, type: set_pouch_type, pouch_type: shaped_diecut}
+      - {id: set_auto, type: set_pouch_type, label: By match rules, pouch_type: null}
+      - {id: validate, type: validate}
+      - {id: keyline, type: resolve_keyline}
+      - {id: panels, type: link_panels}
+      - {id: build, type: build_3d}
+      - {id: artwork, type: artwork}
+      - {id: render, type: render}
+      - {id: end, type: end}
+    edges:
+      - {id: e1, source: start, target: prepare}
+      - {id: e2, source: prepare, target: d_form}
+      - {id: e3, source: d_form, target: set_roll, label: Roll form, order: 1,
+         when: [{all: [{field: spec.pouch_or_roll_form, op: contains, value: roll}]}, {all: [{field: job.roll_form, op: is_true}]}]}
+      - {id: e4, source: d_form, target: fetch_core, otherwise: true}
+      - {id: e5, source: fetch_core, target: d_seal}
+      - {id: e6, source: d_seal, target: set_spout, label: Spout, order: 1,
+         when: [{all: [{field: spec.sealing_type, op: contains, value: spout}]}, {all: [{field: spec.raw_remarks, op: contains, value: spout}]}]}
+      - {id: e7, source: d_seal, target: set_shaped, label: Shaped, order: 2,
+         when: [{all: [{field: spec.sealing_type, op: contains, value: shaped}]}, {all: [{field: spec.raw_remarks, op: contains, value: [shaped, die cut, diecut]}]}]}
+      - {id: e8, source: d_seal, target: set_box, label: Flat bottom / box, order: 3,
+         when: [{all: [{field: spec.sealing_type, op: in, value: [flat bottom, box pouch, 8 side seal]}]}]}
+      - {id: e9, source: d_seal, target: set_quad, label: Quad seal, order: 4,
+         when: [{all: [{field: spec.sealing_type, op: in, value: [quad seal, 4 side seal]}]}]}
+      - {id: e10, source: d_seal, target: set_css, label: Centre seal + side gussets, order: 5,
+         when: [{all: [{field: spec.sealing_type, op: in, value: [center seal, centre seal, back seal]}, {field: spec.gusset_type, op: eq, value: Side}]},
+                {all: [{field: spec.sealing_type, op: eq, value: side gusset}]}]}
+      - {id: e11, source: d_seal, target: set_pillow, label: Pillow, order: 6,
+         when: [{all: [{field: spec.sealing_type, op: in, value: [center seal, centre seal, back seal, pillow]}, {field: spec.gusset_type, op: not_in, value: [Side, Bottom, "Yes"]}]}]}
+      - {id: e12, source: d_seal, target: set_standup, label: Stand-up + bottom gusset, order: 7,
+         when: [{all: [{field: spec.sealing_type, op: contains, value: stand}, {field: spec.gusset_type, op: in, value: [Bottom, "Yes"]}]}]}
+      - {id: e13, source: d_seal, target: set_3ss, label: Three side seal, order: 8,
+         when: [{all: [{field: spec.sealing_type, op: in, value: [3 side seal, three side seal]}]},
+                {all: [{field: spec.sealing_type, op: in, value: [flat, flat pouch]}, {field: spec.gusset_type, op: in, value: ["None", "No"]}]}]}
+      - {id: e14, source: d_seal, target: set_auto, otherwise: true}
+      - {id: e15, source: set_roll, target: validate}
+      - {id: e16, source: set_spout, target: validate}
+      - {id: e17, source: set_shaped, target: validate}
+      - {id: e18, source: set_box, target: validate}
+      - {id: e19, source: set_quad, target: validate}
+      - {id: e20, source: set_css, target: validate}
+      - {id: e21, source: set_pillow, target: validate}
+      - {id: e22, source: set_standup, target: validate}
+      - {id: e23, source: set_3ss, target: validate}
+      - {id: e24, source: set_auto, target: validate}
+      - {id: e25, source: validate, target: keyline}
+      - {id: e26, source: keyline, target: panels}
+      - {id: e27, source: panels, target: build}
+      - {id: e28, source: build, target: artwork}
+      - {id: e29, source: artwork, target: render}
+      - {id: e30, source: render, target: end}
+
+  # Phase 1 (phase1/run_phase1.py): a pouch from any PDF, details from the table or the operator /
+  # runner, pouch type by the match rules. Kept identical to phase1/workflow.yaml.
+  phase1:
+    name: Phase 1 - pouch from any PDF
+    description: Read the pouch details from any PDF (table or operator), pick the type by the match rules, build the pouch. No dieline needed.
+    nodes:
+      - {id: start, type: start}
+      - {id: prepare, type: prepare, label: Read the PDF}
+      - id: details
+        type: fetch
+        label: Pouch details
+        notes: Height and closed width decide the pouch size; sealing type and gusset decide its shape.
+        fields:
+          - {key: pouch_height_mm, required: true}
+          - {key: pouch_closed_width_mm, required: true}
+          - {key: sealing_type, required: true}
+          - {key: gusset_type, required: false}
+          - {key: gusset_full_width_mm, required: false}
+          - {key: pouch_open_width_mm, required: false}
+          - {key: zipper, required: false}
+      - {id: set_type, type: set_pouch_type, label: Type by match rules, pouch_type: null}
+      - {id: validate, type: validate}
+      - {id: keyline, type: resolve_keyline}
+      - {id: panels, type: link_panels}
+      - {id: build, type: build_3d}
+      - {id: artwork, type: artwork}
+      - {id: render, type: render}
+      - {id: end, type: end}
+    edges:
+      - {id: e1, source: start, target: prepare}
+      - {id: e2, source: prepare, target: details}
+      - {id: e3, source: details, target: set_type}
+      - {id: e4, source: set_type, target: validate}
+      - {id: e5, source: validate, target: keyline}
+      - {id: e6, source: keyline, target: panels}
+      - {id: e7, source: panels, target: build}
+      - {id: e8, source: build, target: artwork}
+      - {id: e9, source: artwork, target: render}
+      - {id: e10, source: render, target: end}
+
+  # Phase 2: same graph as phase1, kept as a separately editable workflow.
+  phase2:
+    name: Phase 2 - all pouch styles & auto-detection
+    description: Full pipeline for all 10 pouch styles (3-Side Seal, Center Seal, Stand-Up, Side Gusset, Spouts, Coffee Valve, Special Shape) with fuzzy auto-matching.
+    nodes:
+      - {id: start, type: start}
+      - {id: prepare, type: prepare, label: Read the PDF}
+      - id: details
+        type: fetch
+        label: Pouch details & style matching
+        notes: Height and closed width decide pouch size. Auto-detect pouch style, dimensions, seal widths, gusset and zipper settings.
+        fields:
+          - {key: pouch_height_mm, required: true}
+          - {key: pouch_closed_width_mm, required: true}
+          - {key: sealing_type, required: true}
+          - {key: gusset_type, required: false}
+          - {key: gusset_full_width_mm, required: false}
+          - {key: pouch_open_width_mm, required: false}
+          - {key: zipper, required: false}
+      - {id: set_type, type: set_pouch_type, label: Type by style rules, pouch_type: null}
+      - {id: validate, type: validate}
+      - {id: keyline, type: resolve_keyline}
+      - {id: panels, type: link_panels}
+      - {id: build, type: build_3d}
+      - {id: artwork, type: artwork}
+      - {id: render, type: render}
+      - {id: end, type: end}
+    edges:
+      - {id: e1, source: start, target: prepare}
+      - {id: e2, source: prepare, target: details}
+      - {id: e3, source: details, target: set_type}
+      - {id: e4, source: set_type, target: validate}
+      - {id: e5, source: validate, target: keyline}
+      - {id: e6, source: keyline, target: panels}
+      - {id: e7, source: panels, target: build}
+      - {id: e8, source: build, target: artwork}
+      - {id: e9, source: artwork, target: render}
+      - {id: e10, source: render, target: end}
+

@@ -1,0 +1,49 @@
+# Phase 1 workflow (index kind `workflow`, key `phase1`): a pouch from ANY PDF, dieline or not.
+#
+#   START -> PREPARE -> FETCH pouch details -> SET pouch type (match rules) -> VALIDATE
+#         -> RESOLVE KEYLINE -> LINK PANELS -> BUILD 3D -> ARTWORK -> RENDER -> END
+#
+# PREPARE reads the spec table (live text or OCR) wherever it is on the page; when the PDF has no
+# table the job pauses at FETCH with the details form. The phase-1 runner (run_phase1.py) answers
+# that pause: with the details you pass on the command line, with what the operator types on the job
+# page within the waiting time, else with the PDF's own artwork size (page or TrimBox) and a flat
+# three-side-seal pouch, so a dimensionally exact 3D pouch always comes out. Missing panels are
+# filled with substitutes (back = the front's artwork, others a plain film colour).
+#
+# Published from this file by run_phase1.py (and shipped in the seed as workflow/phase1).
+name: Phase 1 - pouch from any PDF
+description: Read the pouch details from any PDF (table or operator), pick the type by the match rules, build the pouch. No dieline needed.
+nodes:
+  - {id: start, type: start}
+  - {id: prepare, type: prepare, label: Read the PDF}
+  - id: details
+    type: fetch
+    label: Pouch details
+    notes: Height and closed width decide the pouch size; sealing type and gusset decide its shape.
+    fields:
+      - {key: pouch_height_mm, required: true}
+      - {key: pouch_closed_width_mm, required: true}
+      - {key: sealing_type, required: true}
+      - {key: gusset_type, required: false}
+      - {key: gusset_full_width_mm, required: false}
+      - {key: pouch_open_width_mm, required: false}
+      - {key: zipper, required: false}
+  - {id: set_type, type: set_pouch_type, label: Type by match rules, pouch_type: null}
+  - {id: validate, type: validate}
+  - {id: keyline, type: resolve_keyline}
+  - {id: panels, type: link_panels}
+  - {id: build, type: build_3d}
+  - {id: artwork, type: artwork}
+  - {id: render, type: render}
+  - {id: end, type: end}
+edges:
+  - {id: e1, source: start, target: prepare}
+  - {id: e2, source: prepare, target: details}
+  - {id: e3, source: details, target: set_type}
+  - {id: e4, source: set_type, target: validate}
+  - {id: e5, source: validate, target: keyline}
+  - {id: e6, source: keyline, target: panels}
+  - {id: e7, source: panels, target: build}
+  - {id: e8, source: build, target: artwork}
+  - {id: e9, source: artwork, target: render}
+  - {id: e10, source: render, target: end}

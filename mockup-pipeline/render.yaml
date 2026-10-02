@@ -1,0 +1,97 @@
+# Render Blueprint for the pouch mockup pipeline.
+# Render dashboard -> New -> Blueprint -> this repository -> Blueprint file path: mockup-pipeline/render.yaml
+# Services: web (API + UI), worker (jobs: OCR, rendering), Postgres (all data incl. the index),
+# Key Value (job queue). Files live in an S3-compatible bucket (Cloudflare R2 or AWS S3): Render
+# disks attach to one service only, and both services need the files.
+
+services:
+  - type: web
+    name: pouch-mockups-web
+    runtime: docker
+    dockerfilePath: ./mockup-pipeline/Dockerfile
+    dockerContext: ./mockup-pipeline
+    region: singapore
+    plan: standard
+    healthCheckPath: /api/health
+    # Migrations on every deploy; creates the first admin and seeds an empty index.
+    preDeployCommand: alembic upgrade head && python -m app.cli bootstrap
+    autoDeployTrigger: commit
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pouch-mockups-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: pouch-mockups-queue
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: VISION_FALLBACK
+        value: none
+      - fromGroup: pouch-mockups-storage
+
+  - type: worker
+    name: pouch-mockups-worker
+    runtime: docker
+    dockerfilePath: ./mockup-pipeline/Dockerfile
+    dockerContext: ./mockup-pipeline
+    dockerCommand: python -m app.worker
+    region: singapore
+    # OCR at 300 dpi and software-WebGL renders need memory: 2 GB minimum.
+    plan: standard
+    autoDeployTrigger: commit
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pouch-mockups-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: pouch-mockups-queue
+          property: connectionString
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: pouch-mockups-web
+          envVarKey: SECRET_KEY
+      - key: COOKIE_SECURE # the worker serves its own render page on a private port with the same checks
+        value: "true"
+      - key: VISION_FALLBACK
+        value: none
+      - fromGroup: pouch-mockups-storage
+
+  - type: keyvalue
+    name: pouch-mockups-queue
+    region: singapore
+    plan: starter
+    maxmemoryPolicy: noeviction # never drop queued jobs
+    ipAllowList: [] # internal connections only
+
+databases:
+  - name: pouch-mockups-db
+    region: singapore
+    plan: basic-1gb
+    ipAllowList: []
+
+envVarGroups:
+  - name: pouch-mockups-storage
+    envVars:
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ENDPOINT_URL # e.g. https://<account>.r2.cloudflarestorage.com (empty for AWS S3)
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: auto
