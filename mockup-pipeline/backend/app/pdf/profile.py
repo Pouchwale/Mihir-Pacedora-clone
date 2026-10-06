@@ -111,7 +111,8 @@ class PdfProfile(BaseModel):
     technical_inks: list[str] = ["Dimensions and text"]
     # Files name their plates freely ("White-1", "Opaque White", "Spot Gloss UV", "Dieline"): a
     # colorant whose name matches one of these regexes (case-insensitive) is classed the same way.
-    white_ink_patterns: list[str] = [r"\bwhite\b", r"\bopaque\b"]
+    # (plates are named "White_", "White-_", "white.", "Uv White.", "W-": \b would miss "White_")
+    white_ink_patterns: list[str] = [r"white", r"\bopaque\b", r"^w[\W_]*$"]
     varnish_ink_patterns: dict[str, str] = {r"gloss": "gloss", r"\bmatt?e?\b.*\b(uv|varnish)\b|\b(uv|varnish)\b.*\bmatt?e?\b": "matt", r"\buv\b|varnish": "gloss"}
     technical_ink_patterns: list[str] = [r"dimension", r"die\s*line", r"key\s*line", r"\bcutter\b", r"\btechnical\b"]
     # A PDF with no dieline and no spec table (plain artwork): pause for the pouch details instead of

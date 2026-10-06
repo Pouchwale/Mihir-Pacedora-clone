@@ -1,4 +1,5 @@
-// Interactive 3D viewer (results page): orbit, zoom, view presets, filled / flat, dimensions.
+// Interactive 3D viewer (results page): free 360° orbit (and a turntable spin), view presets, filled /
+// flat, dimensions, a realistic or exact-colour look, background and floor.
 // `draft` (the job page's adjustment panel) previews changes instantly: geometry edits rebuild the
 // model client-side, artwork placement is a texture matrix, scene settings apply to the stage.
 import { useEffect, useRef, useState } from "react";
@@ -14,6 +15,9 @@ const VIEW_LABELS: Record<string, string> = {
   front: "Front", back: "Back", three_quarter_left: "¾ left", three_quarter_right: "¾ right", top_down: "Top",
 };
 
+type Look = "realistic" | "exact";
+type Backdrop = "white" | "gradient" | "dark" | "none";
+
 interface Props {
   scene: SceneData;
   draft?: Draft | null;
@@ -27,13 +31,21 @@ export default function Viewer({ scene, draft, name }: Props) {
   const controls = useRef<OrbitControls | null>(null);
   const [filled, setFilled] = useState(true);
   const [dims, setDims] = useState(true);
+  const [look, setLook] = useState<Look>("realistic");
+  const [backdrop, setBackdrop] = useState<Backdrop>("white");
+  const [floor, setFloor] = useState(true);
+  const [spin, setSpin] = useState(false);
   const [size, setSize] = useState<{ x: number; y: number; z: number } | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const firstBuild = useRef(true);
 
   // The scene as adjusted by the draft (or the job's saved adjustments when there is no draft).
-  const effective: { geometry: GeometrySpec; textures: Record<string, SceneTexture> } = applyDraft(scene, draft ?? null);
+  const adjusted: { geometry: GeometrySpec; textures: Record<string, SceneTexture> } = applyDraft(scene, draft ?? null);
+  // "Realistic": studio lighting on the film's own material (the preset's, or soft studio light when the
+  // preset prints exact colours); "Exact colours": unlit, every pixel the print colour.
+  const lighting: GeometrySpec["preset"]["lighting"] = look === "exact" ? "exact" : adjusted.geometry.preset.lighting === "exact" ? "studio_soft" : adjusted.geometry.preset.lighting;
+  const effective = { ...adjusted, geometry: { ...adjusted.geometry, preset: { ...adjusted.geometry.preset, lighting } } };
   const draftKey = JSON.stringify(draft ?? null);
 
   // stage lifetime
@@ -42,6 +54,10 @@ export default function Viewer({ scene, draft, name }: Props) {
     stageRef.current = stage;
     const oc = new OrbitControls(stage.camera, canvas.current!);
     oc.enableDamping = true;
+    oc.minPolarAngle = 0; // the full sphere: from above, all round, and from below
+    oc.maxPolarAngle = Math.PI;
+    oc.autoRotateSpeed = 4; // one turn in 15 s
+    oc.zoomToCursor = true;
     controls.current = oc;
     let raf = 0;
     let dirty = true; // render on demand: after a change, a resize or while the orbit is easing
@@ -76,12 +92,19 @@ export default function Viewer({ scene, draft, name }: Props) {
     };
   }, [scene]);
 
-  // scene settings (lighting, background, shadow): the viewer always shows a white studio background
+  // scene settings: lighting and shadow from the look, background and floor from the viewer's options
   useEffect(() => {
-    stageRef.current?.setPreset({ ...effective.geometry.preset, background: { type: "studio_white", colors: [], image: null } });
-    stageRef.current?.invalidate();
+    const stage = stageRef.current;
+    if (!stage) return;
+    stage.setPreset({ ...effective.geometry.preset, background: { type: "studio_white", colors: [], image: null } });
+    stage.setBackdrop(backdrop, floor);
+    stage.invalidate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scene, effective.geometry.preset.lighting, effective.geometry.preset.shadow]);
+  }, [scene, lighting, effective.geometry.preset.shadow, backdrop, floor]);
+
+  useEffect(() => {
+    if (controls.current) controls.current.autoRotate = spin;
+  }, [spin, scene]);
 
   // (re)build the model; draft edits are debounced so sliders stay smooth
   useEffect(() => {
@@ -108,7 +131,7 @@ export default function Viewer({ scene, draft, name }: Props) {
     }, delay);
     return () => { cancelled = true; window.clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scene, filled, draftKey]);
+  }, [scene, filled, draftKey, lighting]);
 
   useEffect(() => {
     if (stageRef.current) {
@@ -139,30 +162,44 @@ export default function Viewer({ scene, draft, name }: Props) {
   };
 
   const g = effective.geometry;
+  const seg = <T extends string>(value: T, options: [T, string][], set: (v: T) => void) => (
+    <div className="seg">
+      {options.map(([v, label]) => <button key={v} className={v === value ? "on" : ""} onClick={() => set(v)}>{label}</button>)}
+    </div>
+  );
   return (
     <div className="stack">
-      <div className="viewer" ref={wrap}>
+      <div className={`viewer viewer-${backdrop}`} ref={wrap}>
         <canvas ref={canvas} />
+        <div className="viewer-bar top">
+          {seg<Look>(look, [["realistic", "Realistic"], ["exact", "Exact colours"]], setLook)}
+          {seg<Backdrop>(backdrop, [["white", "Studio"], ["gradient", "Gradient"], ["dark", "Dark"], ["none", "None"]], setBackdrop)}
+          <div className="seg">
+            <button className={floor ? "on" : ""} onClick={() => setFloor(!floor)} title="Show the studio floor">Floor</button>
+            <button className={dims ? "on" : ""} onClick={() => setDims(!dims)} title="Dimension lines">Dimensions</button>
+            <button className={filled ? "on" : ""} onClick={() => setFilled(!filled)} title="Filled with product, or flat as made">Filled</button>
+          </div>
+        </div>
+        <div className="viewer-bar bottom">
+          <div className="seg">
+            {Object.keys(VIEW_LABELS).filter((v) => v in VIEWS).map((v) => <button key={v} onClick={() => { setSpin(false); goto(v); }}>{VIEW_LABELS[v]}</button>)}
+          </div>
+          <div className="seg">
+            <button className={spin ? "on" : ""} onClick={() => setSpin(!spin)} title="Turn the pouch all the way round">{spin ? "Stop" : "Spin 360°"}</button>
+            <button onClick={() => snapshot(false)} disabled={busy} title="Save this view as a PNG at twice the screen size">PNG</button>
+            <button onClick={() => snapshot(true)} disabled={busy} title="Save this view with a transparent background">Transparent PNG</button>
+          </div>
+        </div>
         {busy && <div className="viewer-note">Building 3D model…</div>}
         {error && <div className="viewer-note msg bad">{error}</div>}
-      </div>
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <div className="row">
-          {Object.keys(VIEW_LABELS).filter((v) => v in VIEWS).map((v) => <button key={v} onClick={() => goto(v)}>{VIEW_LABELS[v]}</button>)}
-        </div>
-        <div className="row">
-          <label className="check"><input type="checkbox" checked={filled} onChange={(e) => setFilled(e.target.checked)} /> Filled</label>
-          <label className="check"><input type="checkbox" checked={dims} onChange={(e) => setDims(e.target.checked)} /> Dimensions</label>
-          <button onClick={() => snapshot(false)} disabled={busy} title="Save this view as a PNG at twice the screen size">Snapshot PNG</button>
-          <button onClick={() => snapshot(true)} disabled={busy} title="Save this view with a transparent background">Transparent PNG</button>
-        </div>
+        <div className="viewer-hint">Drag to turn · right-drag to move · scroll to zoom</div>
       </div>
       <div className="muted small">
         Keyline: {g.width_mm} × {g.height_mm} mm
         {g.gusset_full_mm ? ` · bottom gusset ${g.gusset_full_mm} mm` : ""}
         {g.side_gusset_full_mm ? ` · side gusset ${g.side_gusset_full_mm} mm` : ""}
         {size && <> · model size {filled ? "(filled)" : "(flat)"}: {size.x.toFixed(1)} × {size.y.toFixed(1)} × {size.z.toFixed(1)} mm (W × H × D)</>}
-        {" · colours: "}{g.preset.lighting === "exact" ? "exact print colours" : `studio lighting (${g.preset.lighting.replace("_", " ")})`}
+        {" · "}{look === "exact" ? "exact print colours" : `studio lighting (${lighting.replace("_", " ")})`}
       </div>
     </div>
   );

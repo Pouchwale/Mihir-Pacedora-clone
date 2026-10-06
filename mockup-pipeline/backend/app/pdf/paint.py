@@ -9,6 +9,8 @@ render mode 3 (invisible), images and shadings are skipped. That is exactly what
 off does. The opposite mode keeps only those operators (a clean dimensions-only drawing).
 """
 
+import hashlib
+import re
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -32,6 +34,61 @@ def _is_annotation_red(operands) -> bool:
     except (TypeError, ValueError):
         return False
 
+_PARSED: dict[str, tuple] = {}  # sha256 of a content stream -> its parsed operations
+# A long run of path construction (numbers and m l c v y h re): outlined text is hundreds of thousands
+# of these (FGPO7163: 740k operators, 33 MB), which the filter never changes. Such a run goes through as
+# one operation whose "operator" is the run's own bytes (pypdf writes an operator verbatim), so only
+# the paint and colour operators around it are tokenised. A run is found as bytes from this class (fast:
+# no backtracking), at least RUN_MIN long (no string literal or inline image holds that), then cut to
+# whole tokens: it starts after whitespace and ends with an operator. The only other operator spelled
+# from these letters is `cm`, which the filter does not track either.
+_RUN_CHARS = re.compile(rb"[-+.0-9\s mlcvyhre]+")
+_SPACE = re.compile(rb"\s")
+_RUN_END = re.compile(rb"(?:^|\s)(?:[mlcvyh]|re|cm)\s")
+_RUN_OP, RUN_MIN = b"PathRun", 4096
+
+
+def _parse(content: ContentStream, data: bytes) -> tuple:
+    runs: list[bytes] = []
+    out, last = [], 0
+    for m in _RUN_CHARS.finditer(data):
+        a, b = m.span()
+        if b - a < RUN_MIN:
+            continue
+        if a and not data[a - 1 : a].isspace() and not data[a : a + 1].isspace():  # (starts inside a token: skip to its end)
+            a = _SPACE.search(data, a, b).start() if _SPACE.search(data, a, b) else b
+        ends = [e.end() for e in _RUN_END.finditer(data, max(a, b - 256), b)]
+        if not ends or ends[-1] - a < RUN_MIN // 2:
+            continue
+        b = ends[-1]
+        out += [data[last:a], b" %d %s " % (len(runs), _RUN_OP)]
+        runs.append(data[a:b].strip())
+        last = b
+    if not runs:
+        return tuple(content.operations)
+    content.set_data(b"".join([*out, data[last:]]))
+    return tuple(([], runs[int(operands[0])]) if op == _RUN_OP else (operands, op) for operands, op in content.operations)
+
+
+def _operations(content: ContentStream) -> list:
+    """`content.operations`, parsed once per distinct stream. One file is filtered three or four times
+    (technical copy, artwork copy, preview copies) and pypdf's parser is pure Python: minutes each on
+    a big sheet (FGPO7163). _filter never edits the list in place (it builds a new one), so a copy of
+    the cached tuple is safe to hand out."""
+    data = content._data  # noqa: SLF001 - raw bytes before pypdf parses them
+    if content._operations or not data:  # noqa: SLF001
+        return content.operations
+    key = hashlib.sha256(data).hexdigest()
+    ops = _PARSED.get(key)
+    if ops is None:
+        ops = _parse(content, data)
+        while len(_PARSED) >= 6:  # ponytail: count cap, not bytes; one huge sheet's operations stay in memory until pushed out
+            _PARSED.pop(next(iter(_PARSED)))
+        _PARSED[key] = ops
+    content.operations = list(ops)
+    return content.operations
+
+
 def _inked(operands, positions) -> bool:
     try:
         return any(float(operands[i]) > 0 for i in positions)
@@ -53,6 +110,50 @@ _PATHS: dict[bytes, tuple[bool, bool, bytes | None, bytes | None]] = {
     b"b*": (True, True, b"s", b"f*"),
 }
 _TEXT_SHOW = {b"Tj", b"TJ", b"'", b'"'}
+_CONSTRUCT = {b"m", b"l", b"c", b"v", b"y", b"h", b"re"}
+_PAINTS = {*_PATHS, *_TEXT_SHOW, b"sh", b"Do", b"INLINE IMAGE"}
+_NEST = {b"BDC": (0, 1), b"BMC": (0, 1), b"EMC": (0, -1), b"BT": (1, 1), b"ET": (1, -1)}
+
+
+def _drop_empty_groups(ops: list) -> list:
+    """`ops` without the q ... Q groups that paint nothing once filtered: the artwork's clipping groups
+    in a technical-only copy (FGPO7163: thousands of `q ... W n ... Q`, each a full-page clip mask for
+    the renderer at 300 dpi). A group whose marked content or text object reaches outside it stays."""
+    out: list = []
+    stack: list[tuple[int, int]] = []
+    painted = 0
+    for item in ops:
+        op = item[1]
+        if op == b"q":
+            stack.append((len(out), painted))
+        elif op == b"Q" and stack:
+            start, before = stack.pop()
+            if painted == before:
+                depth = [0, 0]
+                for _, o in out[start + 1:]:
+                    if o in _NEST:
+                        depth[_NEST[o][0]] += _NEST[o][1]
+                if depth == [0, 0]:
+                    del out[start:]
+                    continue
+        elif op in _PAINTS:
+            painted += 1
+        out.append(item)
+    return out
+
+
+def _drop_path(out: list) -> bool:
+    """Take a path that paints nothing out of `out` altogether: its construction operators (and path
+    runs, _PATH_RUN) go, not just its paint. A copy keeping one ink (the technical drawing, annotation
+    red) was otherwise as heavy as the whole artwork to render (FGPO7163: 33 MB of outlined text ending
+    in `n`). A path that clips (`W n`) stays. Returns whether it was dropped."""
+    i = len(out)
+    while i and (out[i - 1][1] in _CONSTRUCT or (not out[i - 1][0] and out[i - 1][1][:1] in b"-+.0123456789" and b"cm" not in out[i - 1][1])):
+        i -= 1
+    if i == len(out):  # (nothing to take, or the path ends in W: a clip)
+        return False
+    del out[i:]
+    return True
 _FILL_MODES = {0, 2, 4, 6}
 _STROKE_MODES = {1, 2, 5, 6}
 
@@ -150,7 +251,7 @@ class _Filter:
         changed = paints = False
         xobjects = (res.get("/XObject") or DictionaryObject()).get_object()
         shadings = (res.get("/Shading") or DictionaryObject()).get_object()
-        for operands, op in content.operations:
+        for operands, op in _operations(content):
             if op == b"q":
                 stack.append(state)
             elif op == b"Q":
@@ -180,7 +281,8 @@ class _Filter:
                 rf = fills and self._removed(state.fill)
                 rs = strokes and self._removed(state.stroke)
                 if (rf or not fills) and (rs or not strokes):
-                    out.append(([], b"n"))
+                    if not _drop_path(out):
+                        out.append(([], b"n"))
                     changed = True
                     continue
                 if rf:
@@ -232,7 +334,7 @@ class _Filter:
                 paints = True
             out.append((operands, op))
         if changed:
-            content.operations = out
+            content.operations = _drop_empty_groups(out)
             self.changed += 1
         return changed, paints
 

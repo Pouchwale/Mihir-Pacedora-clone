@@ -449,7 +449,11 @@ function baseGeometry(W: number, s: number, A: number, B: number, m: number, n: 
       const xi = -Math.cos((Math.PI * i) / nx); // denser near the corners
       const x = A * xi;
       const z = t * B * prof(xi, m, n);
-      pos.push(x, 0.15 + 1.2 * (1 - t * t) * prof(xi, m, n), z); // slightly concave: the pouch stands on its rim
+      // slightly concave (the pouch stands on its rim), with the gusset's centre fold as a soft ridge
+      // across the base: the film folded in half shows a crease where the two halves meet
+      const p = prof(xi, m, n);
+      const crease = 1.6 * Math.exp(-((t * B) ** 2) / 6) * p;
+      pos.push(x, 0.15 + 1.2 * (1 - t * t) * p + crease, z);
       uv.push((s + ((xi + 1) / 2) * (W - 2 * s)) / W, 0.5 + 0.5 * t);
     }
   }

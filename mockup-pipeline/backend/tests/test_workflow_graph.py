@@ -60,7 +60,7 @@ def test_editor_draft_validate_publish_and_test_run(app_client, monkeypatch):
     assert {t["type"] for t in meta["node_types"]} >= {"start", "decision", "fetch", "review", "sub_workflow", "end"}
     assert "pouch_height_mm" in {f["key"] for f in meta["fields"]} and "stand_up_bottom_gusset" in meta["pouch_types"]
     lst = c.get("/api/workflows").json()
-    assert [(w["key"], w["published"]["version"], w["draft"]) for w in lst] == [("default", 1, None), ("phase1", 1, None)]
+    assert [(w["key"], w["published"]["version"], w["draft"]) for w in lst] == [("default", 1, None), ("phase1", 1, None), ("phase2", 1, None)]
     published = c.get("/api/workflows/default").json()["published"]["graph"]
 
     # operators may look but not save

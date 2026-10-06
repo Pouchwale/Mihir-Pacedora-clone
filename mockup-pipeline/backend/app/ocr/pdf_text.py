@@ -15,15 +15,34 @@ from app.ocr.tesseract import Word
 from app.pdf.layers import Box
 
 
+_PAGE_WORDS: dict[tuple, list[tuple[pymupdf.Rect, str]]] = {}
+
+
+def _page_words(pdf: Path) -> list[tuple[pymupdf.Rect, str]]:
+    """Page 1's words in PDF user space, read once per file (a job asks for them a dozen times, for
+    different regions, and a big sheet takes ~0.6 s each)."""
+    st = pdf.stat()
+    key = (str(pdf), st.st_mtime_ns, st.st_size)
+    if key not in _PAGE_WORDS:
+        doc = pymupdf.open(pdf)
+        try:
+            page = doc[0]
+            inv = ~page.transformation_matrix
+            # (typographic ligatures: "Butterﬂy" -> "Butterfly")
+            found = [(pymupdf.Rect(x0, y0, x1, y1) * inv, unicodedata.normalize("NFKC", text))
+                     for x0, y0, x1, y1, text, *_ in page.get_text("words")]
+        finally:
+            doc.close()
+        while len(_PAGE_WORDS) >= 8:
+            _PAGE_WORDS.pop(next(iter(_PAGE_WORDS)))
+        _PAGE_WORDS[key] = found
+    return _PAGE_WORDS[key]
+
+
 def words(pdf: Path, region: Box, dpi: int) -> list[Word]:
-    doc = pymupdf.open(pdf)
-    page = doc[0]
-    inv = ~page.transformation_matrix
     s = dpi / 72
     out: list[Word] = []
-    for x0, y0, x1, y1, text, *_ in page.get_text("words"):
-        text = unicodedata.normalize("NFKC", text)  # typographic ligatures: "Butterﬂy" -> "Butterfly"
-        r = pymupdf.Rect(x0, y0, x1, y1) * inv  # PDF user space (y up)
+    for r, text in _page_words(pdf):  # r: PDF user space (y up)
         cx, cy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
         if not (region.x0 <= cx <= region.x1 and region.y0 <= cy <= region.y1) or not text.strip():
             continue
@@ -33,5 +52,4 @@ def words(pdf: Path, region: Box, dpi: int) -> list[Word]:
         top, bottom = r.y1 - 0.2 * h, r.y0 + 0.2 * h
         out.append(Word(text.strip(), 1.0, round((r.x0 - region.x0) * s), round((region.y1 - top) * s),
                         max(1, round((r.x1 - r.x0) * s)), max(1, round((top - bottom) * s))))
-    doc.close()
     return out

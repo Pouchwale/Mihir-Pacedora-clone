@@ -78,12 +78,12 @@ def test_fallback_none_sends_nothing():
 
 def test_fallback_answer_still_goes_through_format_rules(monkeypatch):
     answers = iter([fallback.CellAnswer(value="Stand up", confidence=0.99), fallback.CellAnswer(value="banana", confidence=0.99)])
-    monkeypatch.setitem(fallback.PROVIDERS, "claude", lambda image, label, settings: next(answers))
+    monkeypatch.setitem(fallback.PROVIDERS, "groq", lambda image, label, settings: next(answers))
     reads = {
         "sealing_type": FieldRead("sealing_type", None, None, 0.0, False, (0, 0, 10, 10)),
         "zipper": FieldRead("zipper", None, None, 0.0, False, (0, 0, 10, 10)),
     }
-    changed = fallback.apply(Image.new("L", (20, 20)), reads, SpecTemplate(), 0.85, Settings(vision_fallback="claude"))
+    changed = fallback.apply(Image.new("L", (20, 20)), reads, SpecTemplate(), 0.85, Settings(vision_fallback="groq", groq_api_key="gsk_x"))
     assert changed == ["sealing_type"]
     assert reads["sealing_type"].value == "Stand-up" and reads["sealing_type"].confidence == 0.95
     assert reads["zipper"].value is None  # "banana" is not yes/no
@@ -94,13 +94,15 @@ def test_groq_request_and_failures(monkeypatch):
     leaves the cell weak instead of failing the job."""
     import httpx
 
+    from app.ocr import groq
+
     sent = {}
 
     def fake_post(url, headers, json, timeout):
         sent.update(url=url, headers=headers, body=json)
         return httpx.Response(200, request=httpx.Request("POST", url), json={"choices": [{"message": {"content": '{"value": "Stand up", "confidence": 0.97}'}}]})
 
-    monkeypatch.setattr(fallback.httpx, "post", fake_post)
+    monkeypatch.setattr(groq.httpx, "post", fake_post)
     weak = lambda: {"sealing_type": FieldRead("sealing_type", None, None, 0.0, False, (0, 0, 10, 10))}  # noqa: E731
     reads = weak()
     assert fallback.apply(Image.new("L", (20, 20)), reads, SpecTemplate(), 0.85, Settings(vision_fallback="groq", groq_api_key="")) == []
@@ -110,12 +112,13 @@ def test_groq_request_and_failures(monkeypatch):
     assert changed == ["sealing_type"] and reads["sealing_type"].value == "Stand-up" and reads["sealing_type"].source == "groq"
     assert sent["url"] == "https://api.groq.com/openai/v1/chat/completions" and sent["headers"]["Authorization"] == "Bearer gsk_test"
     content = sent["body"]["messages"][0]["content"]
-    assert sent["body"]["model"] == "some-vision-model" and content[0]["image_url"]["url"].startswith("data:image/png;base64,")
+    image = next(part for part in content if part["type"] == "image_url")
+    assert sent["body"]["model"] == "some-vision-model" and image["image_url"]["url"].startswith("data:image/png;base64,")
 
     def failing_post(url, headers, json, timeout):
         return httpx.Response(429, request=httpx.Request("POST", url), json={"error": "rate limited"})
 
-    monkeypatch.setattr(fallback.httpx, "post", failing_post)
+    monkeypatch.setattr(groq.httpx, "post", failing_post)
     reads = weak()
     assert fallback.apply(Image.new("L", (20, 20)), reads, SpecTemplate(), 0.85, Settings(vision_fallback="groq", groq_api_key="gsk_test")) == []
     assert reads["sealing_type"].value is None

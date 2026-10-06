@@ -1,4 +1,4 @@
-"""The spec table read by an AI vision model in one call (Settings.text_reader = groq / claude / grok).
+"""The spec table read by Groq's vision model in one call (Settings.text_reader = groq).
 
 Used instead of Tesseract when the table has no live text (outlined glyphs). The whole table image
 goes to the model with the template's labels; the model returns the printed value per field. Each
@@ -15,17 +15,16 @@ import base64
 import io
 import json
 import re
-import time
 
-import httpx
 from PIL import Image
 
 from app.config import Settings
+from app.ocr import groq
 from app.ocr.table import FieldRead, _make_read
 from app.ocr.template import FieldRule, SpecTemplate
 from app.ocr.tesseract import Word
 
-READERS = ("groq", "claude", "grok", "openrouter")
+READERS = ("groq",)  # Groq is the only AI service used
 MAX_PX = 2048  # long side of the image sent (the table's text stays about 15 px high)
 MAX_BYTES = 3_500_000  # Groq accepts base64 images up to 4 MB
 CONFIDENCE_CAP = 0.95
@@ -34,11 +33,9 @@ CONFIDENCE_CAP = 0.95
 # Wrong sizes are caught by the dieline cross-check, wrong item codes by the file name.
 AI_CONFIDENCE = 0.93
 MAX_OUTPUT_TOKENS = 700  # ~35 short fields; also what a rate limit counts against
-RATE_LIMIT_WAIT_MAX_S = 20.0
 
 
-class Unavailable(RuntimeError):
-    """The AI reader could not produce a reading; fall back to OCR."""
+Unavailable = groq.Unavailable  # the AI reader could not produce a reading; fall back to OCR
 
 
 def _describe(rule: FieldRule) -> str:
@@ -96,73 +93,10 @@ def _json_from(text: str) -> dict:
     return data
 
 
-def _openai_style(url: str, key: str, model: str, media: str, b64: str, text: str) -> dict:
-    """Groq, xAI and OpenRouter speak the OpenAI chat-completions protocol."""
-    body = {
-        "model": model,
-        "messages": [{"role": "user", "content": [
-            {"type": "text", "text": text},
-            {"type": "image_url", "image_url": {"url": f"data:{media};base64,{b64}"}},
-        ]}],
-        "temperature": 0,
-        "max_tokens": MAX_OUTPUT_TOKENS,
-        "response_format": {"type": "json_object"},
-    }
-    headers = {"Authorization": f"Bearer {key}"}
-    response = httpx.post(url, headers=headers, json=body, timeout=120)
-    if response.status_code == 400 and "response_format" in response.text:
-        body.pop("response_format")  # a model without JSON mode: ask plainly, pick the JSON out of the reply
-        response = httpx.post(url, headers=headers, json=body, timeout=120)
-    if response.status_code == 429:
-        # A per-minute limit (free tiers): wait what the provider asks, once, if it is short.
-        wait = _retry_after(response)
-        if wait is not None and wait <= RATE_LIMIT_WAIT_MAX_S:
-            time.sleep(wait + 0.5)
-            response = httpx.post(url, headers=headers, json=body, timeout=120)
-    if response.status_code >= 400:
-        raise Unavailable(f"HTTP {response.status_code}: {response.text[:300]}")
-    return _json_from(response.json()["choices"][0]["message"]["content"])
-
-
-def _retry_after(response: httpx.Response) -> float | None:
-    header = response.headers.get("retry-after")
-    try:
-        if header is not None:
-            return float(header)
-    except ValueError:
-        pass
-    m = re.search(r"try again in ([\d.]+)\s*(ms|s)", response.text)
-    if m:
-        return float(m.group(1)) / (1000 if m.group(2) == "ms" else 1)
-    return None
-
-
 def _ask(reader: str, media: str, b64: str, text: str, settings: Settings) -> dict:
-    if reader == "groq":
-        if not settings.groq_api_key:
-            raise Unavailable("GROQ_API_KEY is not set")
-        return _openai_style("https://api.groq.com/openai/v1/chat/completions", settings.groq_api_key, settings.groq_model, media, b64, text)
-    if reader == "grok":
-        if not settings.xai_api_key:
-            raise Unavailable("XAI_API_KEY is not set")
-        return _openai_style("https://api.x.ai/v1/chat/completions", settings.xai_api_key, settings.grok_model, media, b64, text)
-    if reader == "openrouter":
-        if not settings.openrouter_api_key:
-            raise Unavailable("OPENROUTER_API_KEY is not set")
-        return _openai_style("https://openrouter.ai/api/v1/chat/completions", settings.openrouter_api_key, settings.openrouter_model, media, b64, text)
-    if reader == "claude":
-        import anthropic
-
-        response = anthropic.Anthropic().messages.create(
-            model=settings.anthropic_model,
-            max_tokens=4000,
-            messages=[{"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": media, "data": b64}},
-                {"type": "text", "text": text},
-            ]}],
-        )
-        return _json_from("".join(b.text for b in response.content if b.type == "text"))
-    raise Unavailable(f"unknown text reader {reader!r} (use ocr, {', '.join(READERS)})")
+    if reader != "groq":
+        raise Unavailable(f"unknown text reader {reader!r} (use ocr or groq)")
+    return _json_from(groq.chat(settings, text, b64, media, MAX_OUTPUT_TOKENS))
 
 
 def read(image: Image.Image, tpl: SpecTemplate, reader: str, settings: Settings) -> dict[str, FieldRead]:

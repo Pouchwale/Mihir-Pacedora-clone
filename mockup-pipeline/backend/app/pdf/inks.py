@@ -82,11 +82,13 @@ def suppress_inks(writer: PdfWriter, inks: set[str]) -> list[str]:
     return changed
 
 
-def emphasize_inks(writer: PdfWriter, inks: set[str]) -> list[str]:
-    """Make colour spaces made only of the named colorants print as black (K = tint).
+def emphasize_inks(writer: PdfWriter, inks: set[str], mixed: bool = False) -> list[str]:
+    """Make colour spaces made only of the named colorants print as black (K = their tints added,
+    capped at 1). `mixed`: also a DeviceN that mixes them with other colorants, which then count 0
+    (a white plate is often drawn in DeviceN White + technical ink).
 
     Rendered against a copy where they are suppressed, the difference is exactly where those
-    separations print: used for spot-varnish masks.
+    separations print: used for spot-varnish and white-plate masks.
     """
     changed: list[str] = []
     for page in writer.pages:
@@ -100,12 +102,16 @@ def emphasize_inks(writer: PdfWriter, inks: set[str]) -> list[str]:
                 if not isinstance(cs, ArrayObject) or str(cs[0]) not in ("/Separation", "/DeviceN"):
                     continue
                 names = _colorant_names(cs)
-                if not names or not all(n in inks for n in names):
+                chosen = [n in inks for n in names]
+                if not names or not (all(chosen) if not mixed else any(chosen)):
                     continue
                 n = len(names)
                 fn = DecodedStreamObject()
-                # max of the inputs -> K; C = M = Y = 0
-                body = (" max" * (n - 1)) + " 0 0 0 4 -1 roll"
+                # K = the chosen inputs added, capped at 1; C = M = Y = 0. Only operators of the PDF
+                # calculator language (there is no "max": MuPDF and Poppler reject a function using it).
+                w = [1 if c else 0 for c in chosen]
+                body = f" {w[-1]} mul" + "".join(f" exch {w[i]} mul add" for i in range(n - 2, -1, -1))
+                body += " dup 1 gt {pop 1} if 0 0 0 4 -1 roll"
                 fn.set_data(("{ " + body + " }").encode("latin-1"))
                 fn[NameObject("/FunctionType")] = NumberObject(4)
                 fn[NameObject("/Domain")] = ArrayObject([FloatObject(v) for _ in range(n) for v in (0, 1)])

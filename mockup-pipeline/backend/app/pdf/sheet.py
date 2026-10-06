@@ -193,7 +193,7 @@ def artwork_layers_of(facts: PdfFacts, profile: PdfProfile) -> list[str]:
     """The layers that carry the artwork: everything that is not a spec, dimension or eyemark layer
     (so background layers, images and artwork layers all stay visible)."""
     other = {*profile.spec_layers, *profile.dimension_layers, *profile.ignore_layers,
-             *(profile.eyemark_layers if not profile.include_eyemarks else [])}
+             *(profile.eyemark_layers if not profile.include_eyemarks else [])} - set(profile.artwork_layers)  # (named as artwork: it is)
     art = [n for n in facts.layers if n not in other]
     if art:
         return art
@@ -279,10 +279,6 @@ def non_technical_copy(pdf: Path, dst: Path, technical: set[str], crop: Box | No
     return _filtered_copy(pdf, dst, technical, crop, "strip")
 
 
-_POOL = None
-_PENDING: dict[tuple, object] = {}
-
-
 def _copy_path(key: tuple) -> Path:
     global _COPY_DIR
     if _COPY_DIR is None:
@@ -290,34 +286,8 @@ def _copy_path(key: tuple) -> Path:
     return _COPY_DIR / f"{abs(hash(key)):x}.pdf"
 
 
-def prewarm_non_technical(pdf: Path, profile: PdfProfile) -> None:
-    """Start building the technical-ink-free copy in a second process. The analysis parses the page
-    for the technical-only copy at the same moment (each pass is 10 s and more on a large sheet, and
-    pure Python: a thread would not help). Any failure here just leaves the copy to be built inline."""
-    global _POOL
-    try:
-        technical = profile.classify_inks(separations(pdf)).technical
-        key = (*_file_key(pdf), tuple(sorted(technical)), "strip")
-        if not technical or key in _COPIES or key in _PENDING or mode_for(read_facts(pdf), profile) == "layers":
-            return
-        if _POOL is None:
-            from concurrent.futures import ProcessPoolExecutor
-
-            _POOL = ProcessPoolExecutor(max_workers=1)
-        _PENDING[key] = _POOL.submit(write_layer_copy, pdf, _copy_path(key), None, read_facts(pdf).media_box, strip=technical)
-    except Exception:  # noqa: BLE001 - an optimisation only
-        _POOL = None
-
-
 def _filtered_copy(pdf: Path, dst: Path, technical: set[str], crop: Box | None, mode: str) -> Path:
     key = (*_file_key(pdf), tuple(sorted(technical)), mode)
-    pending = _PENDING.pop(key, None)
-    if pending is not None:
-        try:
-            pending.result(timeout=600)
-            _COPIES[key] = _copy_path(key)
-        except Exception:  # noqa: BLE001 - built inline below
-            pass
     full = _COPIES.get(key)
     if full is None or not full.exists():
         full = _copy_path(key)
@@ -365,6 +335,11 @@ def single_page_copy(src: Path, dst: Path, page: int) -> Path:
     return dst
 
 
+def analysed(pdf: Path, profile: PdfProfile) -> bool:
+    """Whether `analyse` has this file's sheet cached (another thread may read it without redoing it)."""
+    return (*_file_key(pdf), profile.model_dump_json()) in _SHEETS
+
+
 def analyse(pdf: Path, profile: PdfProfile) -> Sheet:
     """The sheet read normally; a file whose technical ink holds no dieline by the normal reading is
     read again with dashed lines joined (a dieline drawn entirely in dashes: FGPO4583), and keeps
@@ -401,9 +376,14 @@ def _analyse(pdf: Path, profile: PdfProfile) -> Sheet:
     facts = read_facts(pdf)
     inks = profile.classify_inks(separations(pdf))
     if mode_for(facts, profile) == "layers":
-        warnings = check_layers_pdf(facts, profile, strict=profile.layout_mode == "layers")
-        return Sheet("layers", facts.trim_box, None, facts, inks, artwork_layers=tuple(artwork_layers_of(facts, profile)),  # type: ignore[arg-type]
-                     warnings=tuple(warnings))
+        try:
+            warnings = check_layers_pdf(facts, profile, strict=profile.layout_mode == "layers")
+            return Sheet("layers", facts.trim_box, None, facts, inks, artwork_layers=tuple(artwork_layers_of(facts, profile)),  # type: ignore[arg-type]
+                         warnings=tuple(warnings))
+        except NeedsReview as exc:
+            # no usable TrimBox: the dieline (or the page) tells where the artwork is, as for a file without layers
+            if profile.layout_mode == "layers" or exc.code not in ("trimbox_is_mediabox", "no_trimbox"):
+                raise
 
     if facts.page_count != 1:
         raise NeedsReview("page_count", f"Expected 1 page, found {facts.page_count}",

@@ -134,8 +134,23 @@ def thin_parts(mask: np.ndarray, k: int) -> np.ndarray:
 def mask_out(image: Image.Image, mask: np.ndarray, radius: int = 6) -> Image.Image:
     """Fill masked pixels from their unmasked neighbourhood (normalised blur). A mark too wide for
     the blur to reach its middle (a zipper track's dashes, FGPO3970) is filled from further out; what
-    even that cannot reach is left as it is."""
-    grow = Image.fromarray(mask.astype(np.uint8) * 255).filter(ImageFilter.MaxFilter(5))
+    even that cannot reach is left as it is. Only the marks' bounding box (plus the blur's reach) is
+    worked on: annotation callouts are a corner of a 10 Mpx sheet."""
+    ys, xs = np.nonzero(mask)
+    if not len(ys):
+        return image
+    reach = 3 * radius * 9 + 3  # (3 sigma of the widest blur)
+    y0, y1 = max(0, ys.min() - reach), min(mask.shape[0], ys.max() + reach + 1)
+    x0, x1 = max(0, xs.min() - reach), min(mask.shape[1], xs.max() + reach + 1)
+    if (y1 - y0) * (x1 - x0) < 0.8 * mask.size:
+        out = image.convert("RGB").copy()
+        out.paste(_mask_out(image.crop((x0, y0, x1, y1)), mask[y0:y1, x0:x1], radius), (x0, y0))
+        return out
+    return _mask_out(image, mask, radius)
+
+
+def _mask_out(image: Image.Image, mask: np.ndarray, radius: int) -> Image.Image:
+    grow = Image.fromarray(dilate(mask, 5).astype(np.uint8) * 255)
     keep = 255 - np.asarray(grow).astype(np.float32)
     rgb = np.asarray(image.convert("RGB")).astype(np.float32)
     out, todo = rgb.copy(), np.asarray(grow) > 0

@@ -12,6 +12,8 @@ os.environ.setdefault("WORK_DIR", str(Path(__file__).parent / ".tmp" / "work"))
 # ... and never call a paid vision API, whatever backend/.env says (environment beats .env).
 os.environ["VISION_FALLBACK"] = "none"
 os.environ["TEXT_READER"] = "ocr"
+# The tests drive the review forms themselves; app.workflow.auto_review has its own tests.
+os.environ["AUTO_REVIEW"] = "false"
 
 from app.config import get_settings  # noqa: E402
 from app.specs.schema import Extraction  # noqa: E402
@@ -86,3 +88,14 @@ def seeded(db):
     store.apply_import(db, plan, store.Author(None, "system"), "seed", action="seed")
     db.commit()
     return db
+
+
+@pytest.fixture(autouse=True)
+def _groq_isolated(tmp_path, monkeypatch):
+    """Every test starts with an empty Groq answer cache of its own, no pacing state and no real waits."""
+    from app.ocr import groq
+
+    monkeypatch.setattr(groq, "_cache_file", lambda settings, key: tmp_path / "groq-cache" / f"{key}.json")
+    for name in ("last_call", "wait_until", "blocked_until"):
+        monkeypatch.setattr(groq._State, name, 0.0)
+    monkeypatch.setattr(groq, "_sleep", lambda s: None)

@@ -9,6 +9,12 @@ Output = impl.TrimArtworkOutput
 def run(ctx: StepContext) -> Output:
     f = ctx.job.file
     inp = impl.TrimArtworkInput(pdf_path=ctx.local_file(f), filename=f.filename, panel="front", key_prefix=ctx.prefix)
+    if ctx.inputs.get("xml_fields"):
+        # the spec table will not be read (the item master XML gives it): what the XML lacks is OCR'd
+        # in the background meanwhile, for extract_specs to pick up
+        from app.steps import extract_specs as extract_impl
+
+        extract_impl.prefetch_table_ocr(inp.pdf_path, ctx.index.pdf_profile())
     out = impl.run(inp, ctx.index.pdf_profile(), ctx.storage)
     for w in out.warnings:  # a layered file that is not an ArtPro+ export: read anyway, differences on record
         ctx.log(w, "warning")

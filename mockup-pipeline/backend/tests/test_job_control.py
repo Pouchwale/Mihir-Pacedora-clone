@@ -42,6 +42,7 @@ def test_queued_job_pauses_and_cancels_at_once(app_client, engine, monkeypatch):
     from app.workflow import engine as wf_engine
 
     assert wf_engine.run_job(job_id, engine=engine) == "CANCELLED"
+    assert wf_engine.run_job(job_id, from_step="validate", engine=engine) == "CANCELLED"  # (an automatic answer's entry names a step)
     # the operator's answer to a review that is no longer waiting is refused, not applied
     assert c.post(f"/api/jobs/{job_id}/review", json={"action": "pouch_type", "pouch_type": "quad_seal"}, headers=H).status_code == 409
     # a rerun starts it again

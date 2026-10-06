@@ -40,6 +40,20 @@ function radialTexture(): THREE.CanvasTexture {
   return new THREE.CanvasTexture(c);
 }
 
+/** Alpha for the studio floor: solid in the middle, fading out to its rim (no visible edge). */
+function fadeTexture(): THREE.CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = c.height = 256;
+  const x = c.getContext("2d")!;
+  const g = x.createRadialGradient(128, 128, 0, 128, 128, 128);
+  g.addColorStop(0, "#fff");
+  g.addColorStop(0.35, "#fff");
+  g.addColorStop(1, "#000");
+  x.fillStyle = g;
+  x.fillRect(0, 0, 256, 256);
+  return new THREE.CanvasTexture(c);
+}
+
 function gradientTexture(colors: string[]): THREE.CanvasTexture {
   const c = document.createElement("canvas");
   c.width = 4;
@@ -70,6 +84,8 @@ export class Stage {
   private shadowLight = new THREE.DirectionalLight("#ffffff", 0.25);
   private catcher: THREE.Mesh;
   private blob: THREE.Mesh;
+  // A visible studio floor (viewer option): matte, seen from above only, so the pouch stays visible from below.
+  private floor: THREE.Mesh;
   private target = new THREE.Object3D();
   /** Ask an on-demand render loop for a new frame (the viewer sets this). */
   invalidate: () => void = () => {};
@@ -99,7 +115,27 @@ export class Stage {
     this.blob = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: radialTexture(), transparent: true, depthWrite: false, opacity: 0.55 }));
     this.blob.rotation.x = -Math.PI / 2;
     this.blob.position.y = 0.05;
-    this.scene.add(this.catcher, this.blob);
+    this.floor = new THREE.Mesh(new THREE.CircleGeometry(0.5, 96), new THREE.MeshStandardMaterial({ color: "#ededf0", roughness: 0.92, metalness: 0, alphaMap: fadeTexture(), transparent: true, depthWrite: false }));
+    this.floor.rotation.x = -Math.PI / 2;
+    this.floor.position.y = -0.05;
+    this.floor.receiveShadow = true;
+    this.floor.visible = false;
+    this.floor.renderOrder = -1; // (drawn first: it fades into the background behind everything)
+    this.scene.add(this.catcher, this.blob, this.floor);
+  }
+
+  /** Viewer options: a background (white studio, gradient, dark, none = transparent) and a visible floor. */
+  setBackdrop(background: "white" | "gradient" | "dark" | "none", floor: boolean) {
+    if (background === "none") {
+      this.scene.background = null;
+      this.renderer.setClearColor(0x000000, 0);
+    } else if (background === "gradient") {
+      this.scene.background = gradientTexture(["#fdfdfe", "#e6e9ef", "#c9ced8"]);
+    } else {
+      this.scene.background = new THREE.Color(background === "dark" ? "#20242c" : "#ffffff");
+    }
+    this.floor.visible = floor;
+    (this.floor.material as THREE.MeshStandardMaterial).color.set(background === "dark" ? "#2b3039" : "#ededf0");
   }
 
   setPreset(p: Preset) {
@@ -140,6 +176,8 @@ export class Stage {
     this.catcher.position.set(c.x, 0, c.z);
     this.blob.scale.set(size.x * 1.15, Math.max(size.z, span * 0.12) * 1.5, 1);
     this.blob.position.set(c.x, 0.05, c.z);
+    this.floor.scale.set(span * 5, span * 5, 1);
+    this.floor.position.set(c.x, -0.05, c.z);
     // lights sized to the object, in rig space (the rig turns with the camera azimuth)
     this.target.position.copy(c);
     this.rig.position.set(c.x, 0, c.z);

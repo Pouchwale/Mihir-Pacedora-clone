@@ -22,7 +22,7 @@ from app.index import store
 from app.models import Batch, Job, JobEvent, JobStep, UploadedFile, User, utcnow
 from app.render import tokens
 from app.storage import get_storage
-from app.workflow import panel_art, queue, runner
+from app.workflow import auto_review, panel_art, queue, runner
 from app.workflow.adjust import Adjustments, adjustments
 from app.workflow.engine import STEPS
 
@@ -100,6 +100,7 @@ class UploadResult(BaseModel):
     files: list[dict]
     jobs: list[int]
     resumed: list[int]
+    xml_specs: dict[str, dict[str, str]] | None = None  # item code -> spec fields read from an uploaded item master XML
 
 
 @router.post("/uploads")
@@ -111,6 +112,8 @@ async def upload(
     session: Session = Depends(get_session),
     user: User = Depends(auth.current_user),
 ) -> UploadResult:
+    from app.services.xml_spec_parser import parse_xml_specs
+
     limit = get_settings().max_upload_mb * 1024 * 1024
     workflow_key = workflow.strip() or None
     if workflow_key and store.get_version(session, "workflow", workflow_key) is None:
@@ -118,33 +121,58 @@ async def upload(
     batch = Batch(name=name or datetime.now().strftime("Upload %Y-%m-%d %H:%M"), created_by_id=user.id)
     session.add(batch)
     session.flush()
+
     registered: list[UploadedFile] = []
+    xml_items: dict[str, dict[str, str]] = {}
+
     for up in files:
         data = await up.read()
+        filename = up.filename or "upload"
         if len(data) > limit:
-            raise HTTPException(413, f"{up.filename} is larger than {get_settings().max_upload_mb} MB")
-        for pdf_name, pdf in _pdfs_from(up.filename or "upload.pdf", data):
+            raise HTTPException(413, f"{filename} is larger than {get_settings().max_upload_mb} MB")
+
+        if filename.lower().endswith(".xml"):
+            # An SAP item-master export: its items' specs fill those jobs' spec tables (app.services.xml_spec_parser)
+            items = parse_xml_specs(data)
+            if not items:
+                raise HTTPException(422, f"{filename}: no items with specs found (expected an SAP Item Master XML export)")
+            xml_items.update(items)
+            sha = hashlib.sha256(data).hexdigest()
+            key = f"uploads/{sha[:2]}/{sha}.xml"
+            storage = get_storage()
+            if not storage.exists(key):
+                storage.put_bytes(key, data, "application/xml")
+            for code in items:  # one row per item, so a later job for that code finds it too
+                session.add(UploadedFile(batch_id=batch.id, filename=filename, item_code=code, sha256=sha, size=len(data),
+                                         storage_key=key, uploaded_by_id=user.id))
+            continue
+        for pdf_name, pdf in _pdfs_from(filename, data):
             registered.append(register_file(session, pdf_name, pdf, batch, user))
-    if not registered:
+
+    if not registered and not xml_items:
         raise HTTPException(422, "No PDF found in the upload")
 
     roots = [] if panels_only else [f for f in registered if FRONT_PATTERN.search(f.filename)] or registered
     jobs = []
     for f in roots:
-        job = Job(batch_id=batch.id, file_id=f.id, item_code=f.item_code, status="QUEUED", current_step=STEPS[0], inputs={},
-                  created_by_id=user.id, workflow_key=workflow_key)
+        fields = xml_items.get((f.item_code or "").upper())
+        job = Job(batch_id=batch.id, file_id=f.id, item_code=f.item_code, status="QUEUED", current_step=STEPS[0],
+                  inputs={"xml_fields": fields} if fields else {}, created_by_id=user.id, workflow_key=workflow_key)
         session.add(job)
         session.flush()
-        _event(session, job, f"Job created from {f.filename}", user, data={"sha256": f.sha256})
+        _event(session, job, f"Job created from {f.filename}" + (" with its item master XML specs" if fields else ""), user, data={"sha256": f.sha256})
         jobs.append(job)
+
     resumed = _resume_waiting(session, {f.item_code for f in registered if f.item_code}, exclude={j.id for j in jobs})
     session.commit()
     for job in jobs:
         queue.enqueue(job.id)
     for job_id in resumed:
         queue.enqueue(job_id, "link_panels")
+
     return UploadResult(batch_id=batch.id, jobs=[j.id for j in jobs], resumed=resumed,
-                        files=[{"id": f.id, "filename": f.filename, "item_code": f.item_code, "sha256": f.sha256} for f in registered])
+                        files=[{"id": f.id, "filename": f.filename, "item_code": f.item_code, "sha256": f.sha256} for f in registered],
+                        xml_specs=xml_items or None)
 
 
 def _resume_waiting(session: Session, codes: set[str], exclude: set[int]) -> list[int]:
@@ -435,10 +463,7 @@ class ReviewIn(BaseModel):
     note: str = ""
 
 
-RESUME_FROM: dict[str, str | None] = {
-    "specs": "validate", "pouch_type": "match_pouch_type", "keyline": "resolve_keyline", "panels": "link_panels", "texture": "texture",
-    "workflow_review": None,  # nothing to redo: the walk continues past the node
-}
+RESUME_FROM = auto_review.RESUME_FROM
 
 
 @router.post("/jobs/{job_id}/review")
@@ -447,20 +472,8 @@ def review(job_id: int, body: ReviewIn, session: Session = Depends(get_session),
     if job.status != "NEEDS_REVIEW":
         # (an answer sent a moment after another operator's, or after a cancel, must not restart the job)
         raise HTTPException(409, f"The job is not waiting for a review (it is {job.status})")
-    job.control = None
-    inputs = dict(job.inputs or {})
-    if body.action == "specs":
-        inputs["spec_corrections"] = {**inputs.get("spec_corrections", {}), **body.corrections}
-    if body.action in ("specs", "texture") and body.acknowledge:
-        inputs["acknowledged"] = sorted({*inputs.get("acknowledged", []), *body.acknowledge})
-    if body.action == "pouch_type":
-        if not body.pouch_type:
-            raise HTTPException(422, "Pick a pouch type")
-        inputs["pouch_type"] = body.pouch_type
-    if body.action == "keyline":
-        inputs["keyline_overrides"] = {**inputs.get("keyline_overrides", {}), **body.keyline_overrides}
-    if body.action == "panels":
-        inputs["panel_choices"] = {**inputs.get("panel_choices", {}), **body.panel_choices}
+    if body.action == "pouch_type" and not body.pouch_type:
+        raise HTTPException(422, "Pick a pouch type")
     if body.action == "workflow_review":
         node = body.node or ((job.review or {}).get("node"))
         if not node:
@@ -468,15 +481,9 @@ def review(job_id: int, body: ReviewIn, session: Session = Depends(get_session),
         choices = {c["edge"] for c in ((job.review or {}).get("details") or {}).get("choices", [])}
         if len(choices) > 1 and body.edge not in choices:
             raise HTTPException(422, "Pick one of the branches")
-        inputs["reviews"] = {**inputs.get("reviews", {}), node: {"edge": body.edge, "note": body.note, "by": user.email, "at": utcnow().isoformat()}}
-    job.inputs = inputs
-    job.status, job.updated_at = "QUEUED", utcnow()
+    step = auto_review.submit(session, job, body.model_dump(), user.email, STEPS)
     _event(session, job, f"Review '{body.action}' submitted" + (f": {body.note}" if body.note else ""), user,
            data=body.model_dump(exclude_defaults=True))
-    step = RESUME_FROM[body.action]
-    resume = ((job.review or {}).get("details") or {}).get("resume_step")
-    if body.action == "specs" and resume in STEPS:
-        step = resume
     session.commit()
     queue.enqueue(job.id, step)
     return _summary(job)

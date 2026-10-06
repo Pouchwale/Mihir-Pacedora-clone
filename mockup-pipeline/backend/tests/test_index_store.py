@@ -82,7 +82,7 @@ def test_add_new_pouch_type_without_code(seeded):
 def test_export_import_round_trip(seeded):
     text = store.export_yaml(seeded)
     plan = store.plan_import(seeded, text)
-    assert plan.created == [] and plan.updated == [] and len(plan.unchanged) == 74
+    assert plan.created == [] and plan.updated == [] and len(plan.unchanged) == 75
 
 
 def test_import_dry_run_then_apply(seeded):

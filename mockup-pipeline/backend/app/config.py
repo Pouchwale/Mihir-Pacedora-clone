@@ -13,23 +13,28 @@ class Settings(BaseSettings):
     poppler_bin: str = ""
     # Full path to tesseract; empty means it is on PATH (the Docker image installs tesseract-ocr).
     tesseract_cmd: str = ""
+    # Groq Cloud is the only AI service the pipeline calls (app.ocr.groq); everything else is local.
     # Who reads a spec table that has no live text (outlined glyphs): "ocr" (Tesseract, offline,
-    # default) or an AI vision model reading the whole table in one call: "groq", "claude", "grok", "openrouter".
-    # A failed AI call falls back to Tesseract. Live PDF text is always read first, whatever this says.
+    # default) or "groq" (its vision model reads the whole table in one call). A failed or
+    # rate-limited Groq call falls back to Tesseract. Live PDF text is always read first.
     text_reader: str = "ocr"
-    # Optional per-cell fallback for low-confidence OCR fields: "none" (default), "claude", "grok"
-    # (xAI), "groq" (Groq Cloud) or "openrouter". With "none" nothing leaves the server; low-confidence fields go
-    # to NEEDS_REVIEW.
+    # Optional per-cell re-read of low-confidence OCR fields: "none" (default: nothing leaves the
+    # server; weak fields go to NEEDS_REVIEW) or "groq".
     vision_fallback: str = "none"
-    anthropic_model: str = "claude-opus-5"  # key from ANTHROPIC_API_KEY
-    xai_api_key: str = ""
-    grok_model: str = "grok-4"
     groq_api_key: str = ""
     # A Groq model that accepts images (Groq's list changes: GET https://api.groq.com/openai/v1/models).
     groq_model: str = "qwen/qwen3.8-27b"
-    openrouter_api_key: str = ""
-    # Any OpenRouter model that accepts images (list: https://openrouter.ai/models?input_modalities=image).
-    openrouter_model: str = "google/gemini-2.5-flash"
+    # Pacing under Groq's free-tier limits: at most this many calls a minute, and a rate-limit wait
+    # longer than groq_max_wait_s is not waited out (local OCR instead; calls resume when it ends).
+    groq_rpm: int = 20
+    groq_max_wait_s: float = 60.0
+    # Artwork renders (trim): "mupdf" (fast, colour-managed through the PDF's OutputIntent) or "poppler"
+    # (pdftoppm, the reference renderer, ~4x slower on heavy sheets)
+    artwork_renderer: str = "mupdf"
+    groq_tpd: int = 0  # tokens per day the account may use; 0 = learn it from Groq's own "tokens per day" 429
+    # No person in the loop: every review stop is answered automatically (app.workflow.auto_review)
+    # and the job runs on to its 3D mockup. False brings back the review forms.
+    auto_review: bool = True
     work_dir: Path = Path("./.work")
 
     # Database: Render Postgres in production ("postgresql://..." is accepted and mapped to psycopg).

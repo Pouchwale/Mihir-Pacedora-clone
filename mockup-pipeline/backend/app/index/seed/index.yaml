@@ -678,3 +678,43 @@ workflow:
       - {id: e9, source: artwork, target: render}
       - {id: e10, source: render, target: end}
 
+  # Phase 3: Fast-track pipeline for XML metadata + PDF artwork.
+  phase3:
+    name: Phase 3 - Instant XML + PDF Pipeline
+    description: Ultra-fast pipeline optimized for XML metadata + PDF artwork. Skips OCR table scanning, pre-filling specs in <0.1s for instant 3D rendering.
+    nodes:
+      - {id: start, type: start}
+      - {id: prepare, type: prepare, label: Read PDF & XML Specs}
+      - id: details
+        type: fetch
+        label: Fast XML Specs
+        notes: Pre-filled from uploaded XML metadata; height, width, gusset and sealing type ready.
+        fields:
+          - {key: pouch_height_mm, required: true}
+          - {key: pouch_closed_width_mm, required: true}
+          - {key: sealing_type, required: true}
+          - {key: gusset_type, required: false}
+          - {key: gusset_full_width_mm, required: false}
+          - {key: pouch_open_width_mm, required: false}
+          - {key: zipper, required: false}
+      - {id: set_type, type: set_pouch_type, label: Type by XML & style rules, pouch_type: null}
+      - {id: validate, type: validate}
+      - {id: keyline, type: resolve_keyline}
+      - {id: panels, type: link_panels}
+      - {id: build, type: build_3d}
+      - {id: artwork, type: artwork}
+      - {id: render, type: render}
+      - {id: end, type: end}
+    edges:
+      - {id: e1, source: start, target: prepare}
+      - {id: e2, source: prepare, target: details}
+      - {id: e3, source: details, target: set_type}
+      - {id: e4, source: set_type, target: validate}
+      - {id: e5, source: validate, target: keyline}
+      - {id: e6, source: keyline, target: panels}
+      - {id: e7, source: panels, target: build}
+      - {id: e8, source: build, target: artwork}
+      - {id: e9, source: artwork, target: render}
+      - {id: e10, source: render, target: end}
+
+

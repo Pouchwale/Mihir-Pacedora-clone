@@ -5,6 +5,7 @@ with renders made by app.pdf.render. PyMuPDF's own page space (y down, origin at
 top-left) is converted with the page's transformation matrix, never by hand.
 """
 
+from collections import namedtuple
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -51,6 +52,19 @@ _SEGMENT_CACHE: dict[tuple, tuple] = {}
 _INK_CACHE: dict[tuple, tuple] = {}
 
 
+def _light_drawings(page) -> list[dict]:
+    """page.get_drawings() at a third of the cost: the raw (C-level) paths, with Point / Rect objects
+    only where this module reads coordinates (line and rectangle items, the path's rect); curve items
+    keep plain tuples (outlined text is mostly curves: FGPO7150 4.0 s -> 1.1 s)."""
+    P, R = pymupdf.Point, pymupdf.Rect
+    out = page.get_cdrawings()
+    for d in out:
+        d["rect"] = R(d["rect"]).normalize()
+        d["items"] = [(it[0], P(it[1]), P(it[2])) if it[0] == "l" else (it[0], R(it[1]).normalize(), *it[2:]) if it[0] == "re" else it
+                      for it in d["items"]]
+    return out
+
+
 def _drawings(pdf: Path):
     """A page's drawings and the matrix to PDF user space; the last few files are kept (one analysis
     reads the same technical-ink copy three or four times, and an 85 MB sheet takes seconds each)."""
@@ -62,7 +76,7 @@ def _drawings(pdf: Path):
     doc = pymupdf.open(pdf)
     try:
         page = doc[0]
-        out = (page.get_drawings(), ~page.transformation_matrix)
+        out = (_light_drawings(page), ~page.transformation_matrix)
     finally:
         doc.close()  # Windows keeps an open file locked (temporary copies must be deletable)
     while len(_DRAWINGS_CACHE) >= 6:
@@ -312,6 +326,9 @@ def _covered(lines: list[tuple[float, float, float]], lo: float, hi: float, pos_
 _TRACE = None  # debugging hook: called with the merged lines before outline clustering
 
 
+_Pt = namedtuple("_Pt", "x y")
+
+
 def _segments(drawings, inv, min_len_pt: float, join_gap_mm: float = 1.5, min_piece_mm: float = 5.0
               ) -> tuple[list[tuple[float, float, float]], list[tuple[float, float, float]]]:
     """Straight horizontal (y, x0, x1) and vertical (x, y0, y1) lines, collinear pieces merged.
@@ -339,7 +356,7 @@ def _segments(drawings, inv, min_len_pt: float, join_gap_mm: float = 1.5, min_pi
             else:
                 vs.append(((x0 + x1) / 2, y0, y1, True, w / 2))
             return
-        p = pymupdf.Point
+        p = _Pt
         add(p(x0, y0), p(x1, y0), filled)
         add(p(x0, y1), p(x1, y1), filled)
         add(p(x0, y0), p(x0, y1), filled)
@@ -356,12 +373,14 @@ def _segments(drawings, inv, min_len_pt: float, join_gap_mm: float = 1.5, min_pi
         for a, b in chain:
             add(a, b, filled)
 
+    ia, ib, ic, id_, ie, if_ = inv.a, inv.b, inv.c, inv.d, inv.e, inv.f  # (Point * Matrix by hand: 100k+ line items on outlined text)
     for d in drawings:
         filled = d["type"] == "f"
         chain: list = []
         for item in d["items"]:
             if item[0] == "l":
-                a, b = pymupdf.Point(item[1]) * inv, pymupdf.Point(item[2]) * inv
+                (x, y), (u, v) = item[1], item[2]
+                a, b = _Pt(ia * x + ic * y + ie, ib * x + id_ * y + if_), _Pt(ia * u + ic * v + ie, ib * u + id_ * v + if_)
                 if chain and (abs(chain[-1][1].x - a.x) > 0.01 or abs(chain[-1][1].y - a.y) > 0.01):
                     flush(chain, filled)
                     chain = []

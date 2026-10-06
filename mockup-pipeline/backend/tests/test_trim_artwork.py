@@ -215,3 +215,18 @@ def test_sp_white_suppressed(tmp_path):
     diff = np.abs(a - b).max(axis=2) > 8
     assert diff.sum() > 100
     assert (b[diff] >= 250).all()
+
+
+def test_eyemark_in_the_seal_is_removed_but_dark_artwork_stays():
+    """A solid black block in a seal corner is the print eyemark; a dark area reaching into the seal is artwork."""
+    from app.workflow.steps.texture import drop_eyemarks
+
+    k = 10  # px per mm: a 100 x 150 mm face with 10 mm seals
+    a = np.full((1500, 1000, 3), (112, 163, 43), np.uint8)
+    a[1400:1500, 0:100] = 0  # 10 x 10 mm black block in the bottom-left seal corner
+    a[1300:1500, 600:800] = 20  # a dark photo touching the bottom edge, 20 mm tall: beyond the seal
+    out, marks = drop_eyemarks(Image.fromarray(a), 100, 10, 10, 10)
+    b = np.asarray(out)
+    assert len(marks) == 1 and 9 <= marks[0][0] <= 11
+    assert b[1450, 50].min() > 40  # filled with the seal colour
+    assert b[1450, 700].max() < 40  # the photo is untouched

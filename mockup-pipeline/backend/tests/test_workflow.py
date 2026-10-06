@@ -89,11 +89,12 @@ def test_sample_job_end_to_end(app_client, monkeypatch):
     up = _upload(c)
     job_id = up["jobs"][0]
     d = c.get(f"/api/jobs/{job_id}").json()
-    # The front links to FGPO7216 (back) and FGPO7233 (gusset), which were not uploaded.
+    # The front links to FGPO7216 (back) and FGPO7233 (gusset), which were not uploaded: the back is
+    # asked for; a gusset with no artwork is plain film (PdfProfile.plain_missing_gussets)
     assert d["job"]["status"] == "NEEDS_REVIEW"
     assert d["review"]["code"] == "missing_panels"
     missing = {m["role"]: m["code"] for m in d["review"]["details"]["missing"]}
-    assert missing == {"back": "FGPO7216", "gusset": "FGPO7233"}
+    assert missing == {"back": "FGPO7216"}
     assert d["job"]["pouch_type"] == "stand_up_bottom_gusset"
     assert d["outputs"]["validate"]["sheet"]["spec_table"]["client_name"]["value"] == "Crystal Enterprises"
     kl = d["outputs"]["resolve_keyline"]["keyline"]["fields"]
@@ -146,17 +147,18 @@ def test_forced_pouch_type_and_linked_panel_upload(app_client, monkeypatch):
     monkeypatch.setattr(headless, "render", fake_render)
     c = app_client
     job_id = _upload(c)["jobs"][0]
-    # the operator picks a different type: side gussets need side_left + side_right
+    # the operator picks a different type: side gussets need side_left + side_right; with no artwork
+    # for them anywhere they are plain film (PdfProfile.plain_missing_gussets), only the back is asked for
     c.post(f"/api/jobs/{job_id}/review", json={"action": "pouch_type", "pouch_type": "quad_seal"}, headers=H)
     d = c.get(f"/api/jobs/{job_id}").json()
     assert d["job"]["pouch_type"] == "quad_seal" and d["review"]["code"] == "missing_panels"
-    assert {m["role"] for m in d["review"]["details"]["missing"]} == {"back", "side_left", "side_right"}
+    assert {m["role"] for m in d["review"]["details"]["missing"]} == {"back"}
     # a panel PDF uploaded under its item code is found in the registry; here the sample stands in for the back
     r = c.post(f"/api/jobs/{job_id}/panel-file", data={"role": "back"}, files={"file": ("FGPO7216_back.pdf", SAMPLE.read_bytes(), "application/pdf")}, headers=H)
     assert r.status_code == 200
     d = c.get(f"/api/jobs/{job_id}").json()
-    assert {m["role"] for m in d["review"]["details"]["missing"]} == {"side_left", "side_right"}
-    assert d["outputs"].get("link_panels") is None
+    panels = d["outputs"]["link_panels"]["panels"]
+    assert panels["back"]["source"] == "file" and panels["side_left"]["source"] == panels["side_right"]["source"] == "plain"
 
 
 @needs_poppler

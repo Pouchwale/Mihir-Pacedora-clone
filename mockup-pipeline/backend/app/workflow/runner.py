@@ -184,6 +184,18 @@ class Walker:
                 self.job.review = {"step": self.ctx.step or cur.type, "node": cur.id, **exc.to_dict()}
                 self.job.updated_at = utcnow()
                 self.ctx.log(f"Needs review: {exc.message}", "warning", {"code": exc.code, "node": cur.id})
+                request = control_request(self.session, self.job.id)
+                if request in ("pause", "cancel"):  # the operator's stop wins over an automatic answer
+                    raise _Stop(apply_control(self.session, self.job, self.ctx, request)) from exc
+                if self.ctx.settings.auto_review and self.job.kind != "test":
+                    from app.workflow import auto_review, queue
+                    from app.workflow.engine import STEPS
+
+                    step = auto_review.try_answer(self.session, self.job, self.ctx, STEPS)
+                    if step is not False:
+                        self.session.commit()
+                        queue.enqueue(self.job.id, step or None)
+                        raise _Stop("QUEUED") from exc
                 self.session.commit()
                 log.info("job needs review", extra={"fields": {"job": self.job.id, "node": cur.id, "code": exc.code}})
                 raise _Stop(self.job.status) from exc

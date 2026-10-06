@@ -65,7 +65,7 @@ class Output(BaseModel):
 
 def _png(img: Image.Image) -> bytes:
     buf = io.BytesIO()
-    img.save(buf, format="PNG", compress_level=6)
+    img.save(buf, format="PNG", compress_level=1)
     return buf.getvalue()
 
 
@@ -76,7 +76,7 @@ def _jpeg(img: Image.Image, max_px: int) -> bytes:
     if max(im.size) > max_px:
         im.thumbnail((max_px, max_px), Image.LANCZOS)
     buf = io.BytesIO()
-    im.save(buf, format="WEBP", lossless=True, quality=100, method=4)
+    im.save(buf, format="WEBP", lossless=True, quality=100, method=1)
     return buf.getvalue()
 
 
@@ -225,7 +225,14 @@ def run(ctx: StepContext) -> Output:
         cw, ch = (open_w, h) if p.source == "blank" else (w, h)  # a blank is the whole flat pouch, open width wide
         ew, eh = (ch, cw) if turn in (90, 270) else (cw, ch)
         fitted = _fit_to_operator_size(trim, bleed, (ew, eh), turn, p.source, operator_sized, tol, ctx.index.validation_rules().dimension_tolerance_mm)
-        fin = trim_impl.finish(trim, pdf, bleed, *(fitted or (ew, eh)), ctx.prefix, profile, ctx.storage)
+        try:
+            fin = trim_impl.finish(trim, pdf, bleed, *(fitted or (ew, eh)), ctx.prefix, profile, ctx.storage)
+        except NeedsReview as exc:
+            if exc.code != "finished_size" or not ctx.settings.auto_review:
+                raise
+            # no person to ask: the artwork between its dieline lines is fitted to the panel size
+            fitted = tuple(exc.details["finished_mm"])
+            fin = trim_impl.finish(trim, pdf, bleed, *fitted, ctx.prefix, profile, ctx.storage)
         img = _load(ctx, fin.finished_key)
         if fitted:
             img = img.resize((max(1, round(img.width * ew / fitted[0])), max(1, round(img.height * eh / fitted[1]))), Image.LANCZOS)
@@ -240,6 +247,10 @@ def run(ctx: StepContext) -> Output:
             img = front_img if role == "front" else back_img
         if rule.mirror:
             img = ImageOps.mirror(img)
+        if role in ("front", "back") and not profile.include_eyemarks:
+            img, marks = drop_eyemarks(img, w, geo.seals.side, geo.seals.top, geo.seals.bottom)
+            if marks:
+                ctx.log(f"{role}: {len(marks)} eyemark(s) in the seals removed: " + ", ".join(f"{a:g} x {b:g} mm" for a, b in marks), "audit")
         raw = img
         img, changed = baked(role, img, w) if role != "roll" else (img, False)
         if turn or rule.mirror or p.source == "blank" or fitted or changed:
@@ -384,6 +395,58 @@ def split_blank(blank: Image.Image, open_w: float, w: float) -> tuple[Image.Imag
     back.paste(right, (0, 0))
     back.paste(left, (right.width, 0))
     return front, back
+
+
+def drop_eyemarks(img: Image.Image, width_mm: float, side: float, top: float, bottom: float) -> tuple[Image.Image, list[tuple[float, float]]]:
+    """The print eyemark (the sensor mark the bag machine reads) out of a face: a solid near-black block
+    lying in a seal and touching the panel edge (FGPO7150: 10 x 10 mm in the back's bottom corners).
+    It is printed on the web, but not part of the pouch's look (PdfProfile.include_eyemarks; layered
+    files keep it on its own layer). Filled from the seal colour around it. Returns the marks' sizes."""
+    from collections import deque
+
+    from app.pdf.safety import mask_out
+
+    k = img.width / width_mm  # px per mm
+    cell = max(1, round(k / 2))  # 0.5 mm grid
+    small = np.asarray(img.convert("RGB").reduce(cell)).astype(int)
+    gh, gw = small.shape[:2]
+    mm = cell / k
+    ys, xs = np.mgrid[0:gh, 0:gw] * mm
+    hmm, wmm = gh * mm, gw * mm
+    band = (xs < side + 1.5) | (xs > wmm - side - 1.5) | (ys < top + 1.5) | (ys > hmm - bottom - 1.5)
+    dark = small.max(axis=2) < 70  # (all dark: a photo's dark area reaching into a seal is one blob with it, and stays)
+    seen, marks = np.zeros_like(dark), []
+    mask = np.zeros((img.height, img.width), bool)
+    for y, x in zip(*np.nonzero(dark & band)):
+        if seen[y, x]:
+            continue
+        q, cells = deque([(y, x)]), []
+        seen[y, x] = True
+        while q and len(cells) <= 2500:  # (25 x 25 mm at most: anything larger is artwork)
+            cy, cx = q.popleft()
+            cells.append((cy, cx))
+            for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+                if 0 <= ny < gh and 0 <= nx < gw and dark[ny, nx] and not seen[ny, nx]:
+                    seen[ny, nx] = True
+                    q.append((ny, nx))
+        if q:
+            continue  # larger than any eyemark: artwork (a dark background)
+        cy, cx = zip(*cells)
+        y0, y1, x0, x1 = min(cy), max(cy) + 1, min(cx), max(cx) + 1
+        bw, bh = (x1 - x0) * mm, (y1 - y0) * mm
+        edge = min(x0, y0, gw - x1, gh - y1) * mm <= 1.0
+        inside = band[y0:y1, x0:x1].all()
+        r = 4  # the 2 mm around it: a mark stands out from the seal colour (a dark design's own corner does not)
+        ring = small.max(axis=2)[max(0, y0 - r):y1 + r, max(0, x0 - r):x1 + r].astype(float)
+        ring[y0 - max(0, y0 - r):y0 - max(0, y0 - r) + (y1 - y0), x0 - max(0, x0 - r):x0 - max(0, x0 - r) + (x1 - x0)] = np.nan
+        contrast = np.nanmedian(ring) > 110 if np.isfinite(ring).any() else False
+        if 3 <= bw <= 25 and 3 <= bh <= 25 and edge and inside and contrast and len(cells) >= 0.6 * (x1 - x0) * (y1 - y0):
+            g = cell  # (a little wider: the block's anti-aliased rim and the dieline drawn over it)
+            mask[max(0, y0 * g - g):(y1 + 1) * g, max(0, x0 * g - g):(x1 + 1) * g] = True
+            marks.append((round(bw, 1), round(bh, 1)))
+    if not marks:
+        return img, []
+    return mask_out(img, mask, radius=max(4, round(2 * k))), marks
 
 
 def _unprinted_mask(img: Image.Image) -> Image.Image:

@@ -39,8 +39,9 @@ def run_job(job_id: int, from_step: str | None = None, engine=None, from_node: s
             raise ValueError(f"job {job_id} does not exist")
         if job.control in ("pause", "cancel"):  # asked for while the job was still queued
             return runner.apply_control(session, job, None, job.control)
-        if job.status in ("CANCELLED", "PAUSED") and from_step is None and from_node is None:
-            return job.status  # a stale queue entry; resume / rerun set the status back to QUEUED first
+        if job.status in ("CANCELLED", "PAUSED"):
+            # a stale queue entry (whatever step it names): resume / rerun set the status back to QUEUED first
+            return job.status
         graph, key, version = runner.load_graph(session, job)
         if job.kind != "test" and key and (job.workflow_key != key or job.workflow_version != version):
             job.workflow_key, job.workflow_version = key, version

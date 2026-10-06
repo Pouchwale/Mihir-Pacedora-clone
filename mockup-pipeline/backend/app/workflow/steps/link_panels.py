@@ -74,8 +74,11 @@ class Output(BaseModel):
     confirmed_codes: dict[str, str]  # role -> item code found in the registry
 
 
+_NOT_XML = ~UploadedFile.filename.ilike("%.xml")  # (an item master XML is registered under its items' codes too: not a panel)
+
+
 def _latest_file(ctx: StepContext, code: str) -> UploadedFile | None:
-    return ctx.session.scalar(select(UploadedFile).where(UploadedFile.item_code == code.upper()).order_by(UploadedFile.id.desc()))
+    return ctx.session.scalar(select(UploadedFile).where(UploadedFile.item_code == code.upper(), _NOT_XML).order_by(UploadedFile.id.desc()))
 
 
 # Words in a file name that say which panel a PDF uploaded with the job carries.
@@ -88,7 +91,7 @@ def _batch_file(ctx: StepContext, role: str) -> UploadedFile | None:
     words = _ROLE_WORDS.get(role)
     if not words or ctx.job.file.batch_id is None:
         return None
-    for f in ctx.session.scalars(select(UploadedFile).where(UploadedFile.batch_id == ctx.job.file.batch_id,
+    for f in ctx.session.scalars(select(UploadedFile).where(UploadedFile.batch_id == ctx.job.file.batch_id, _NOT_XML,
                                                              UploadedFile.id != ctx.job.file_id).order_by(UploadedFile.id)):
         name = f.filename.lower()
         if any(w in name for w in words) and "front" not in name:

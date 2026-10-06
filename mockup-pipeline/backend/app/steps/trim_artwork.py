@@ -28,7 +28,7 @@ from app.pdf.paint import ANNOTATION_RED, flattened_images, paints_annotation_re
 from app.pdf.profile import PdfProfile
 from app.pdf.render import pdftoppm_png
 from app.pdf.vector import render_gray
-from app.pdf.sheet import analyse, check_layers_pdf, non_technical_copy, prewarm_non_technical, technical_copy
+from app.pdf.sheet import analyse, check_layers_pdf, non_technical_copy, technical_copy
 from app.specs.validate import Issue
 from app.storage import Storage
 
@@ -102,7 +102,6 @@ def _name(item: str | None, panel: str, kind: str) -> str:
 
 def run(inp: TrimArtworkInput, profile: PdfProfile, storage: Storage) -> TrimArtworkOutput:
     data = inp.pdf_path.read_bytes()
-    prewarm_non_technical(inp.pdf_path, profile)
     sheet = analyse(inp.pdf_path, profile)
     facts, trim = sheet.facts, sheet.trim
     item = profile.item_code_from_filename(inp.filename)
@@ -157,15 +156,22 @@ def run(inp: TrimArtworkInput, profile: PdfProfile, storage: Storage) -> TrimArt
                 drawn = np.asarray(marks.resize(image.size)) < 200
                 # hairlines only: technical paint wider than ~1.2 mm is not a dieline over the art
                 thin = safety.thin_parts(drawn, 15)
-                if thin.any():
-                    filled = safety.mask_out(image, thin, radius=4)
-                    if not flattened_images(inp.pdf_path, sheet.inks.technical):
-                        # knockouts only: paper white under a mark with coloured artwork around it
-                        rgb = np.asarray(image.convert("RGB"))
-                        knock = thin & (rgb.min(axis=2) >= 250) & (np.asarray(filled).min(axis=2) < 235)
-                        near = np.asarray(Image.fromarray(knock.astype(np.uint8) * 255).filter(ImageFilter.MaxFilter(5))) > 0
-                        filled = Image.fromarray(np.where(near[..., None], np.asarray(filled), rgb))
-                    image = filled
+                if thin.any() and flattened_images(inp.pdf_path, sheet.inks.technical):
+                    image = safety.mask_out(image, thin, radius=4)
+                elif thin.any():
+                    # knockouts only: paper white under a mark with coloured artwork around it
+                    rgb = np.asarray(image.convert("RGB"))
+                    # (colour on both sides: paper white beside the line too is the artwork's own white,
+                    # e.g. a QR code's margin under a seal line, which a fill would smear)
+                    white = rgb.min(axis=2) >= 250
+                    free = ~drawn
+                    white_near = safety._box_sum(white & free, 15) / np.maximum(safety._box_sum(free, 15), 1)
+                    candidate = thin & white & (white_near < 0.15)
+                    if candidate.any():  # (none on most sheets: the fill, seconds on a whole sheet, is skipped)
+                        filled = np.asarray(safety.mask_out(image, thin & safety.dilate(candidate, 61), radius=4))
+                        knock = candidate & (filled.min(axis=2) < 235)
+                        near = safety.dilate(knock, 5)
+                        image = Image.fromarray(np.where(near[..., None], filled, rgb))
 
     key = f"{inp.key_prefix}/{_name(item, 'sheet' if sheet.mode == 'separation' else inp.panel, 'bleed')}"
     storage.put_bytes(key, _png_bytes(image), "image/png")
@@ -336,5 +342,5 @@ def finish(
 
 def _png_bytes(image: Image.Image) -> bytes:
     buf = io.BytesIO()
-    image.save(buf, format="PNG", compress_level=6)
+    image.save(buf, format="PNG", compress_level=1)
     return buf.getvalue()

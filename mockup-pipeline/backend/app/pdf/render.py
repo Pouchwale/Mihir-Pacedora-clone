@@ -24,25 +24,49 @@ def _srgb_profile_file(directory: Path) -> Path:
     return path
 
 
+def _mupdf_render(pdf: Path, dpi: int) -> Image.Image:
+    """An artwork render by MuPDF with colour management on (CMYK through the PDF's OutputIntent):
+    exactly round(size * dpi) pixels like pdftoppm's exact_size, ~4x faster on heavy sheets (FGPO3970
+    11.6 s -> 2.9 s), within dE 1.4-2.1 of poppler (median; edges and overprints differ a little more)."""
+    import pymupdf
+
+    pymupdf.TOOLS.set_icc(True)
+    doc = pymupdf.open(pdf)
+    try:
+        page = doc[0]
+        box = page.rect  # (the CropBox, in page space: MuPDF renders exactly that)
+        w, h = max(1, round(box.width / 72 * dpi)), max(1, round(box.height / 72 * dpi))
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(w / box.width, h / box.height), colorspace=pymupdf.csRGB, alpha=False)
+        image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples_mv, "raw", "RGB", pix.stride)
+    finally:
+        doc.close()
+    return image if image.size == (w, h) else image.resize((w, h), Image.LANCZOS)
+
+
 def pdftoppm_png(pdf: Path, out_png: Path, dpi: int, cmyk_icc: bytes | None, exact_size: bool = False) -> Image.Image:
     """Render page 1 of `pdf` (its CropBox) to an sRGB PNG at `dpi` and return it.
 
     `cmyk_icc` is the source CMYK profile (the PDF's OutputIntent). Without one poppler falls back
     to its uncalibrated CMYK conversion, which is visibly wrong, so callers should pass it.
 
-    `exact_size`: the image is exactly round(size * dpi) pixels. At -r alone pdftoppm rounds the
+    `exact_size`: the image is exactly round(size * dpi) pixels (an artwork render: MuPDF unless
+    Settings.artwork_renderer is "poppler", see _mupdf_render). At -r alone pdftoppm rounds the
     page size up and leaves the partial last row and column as paper white, a white hairline on a
     panel whose finished edge is the page edge (panels cut from a sheet have no bleed there).
     Artwork renders use it; OCR renders keep the plain -r raster their thresholds were tuned on.
+
+    pdftoppm writes raw PPM (pixel-identical to its PNG, without the PNG encode: FGPO7150's 300 dpi
+    sheet 7.3 s -> 3.1 s); `out_png` is not written, callers use the returned image.
     """
-    out_png.parent.mkdir(parents=True, exist_ok=True)
+    if exact_size and get_settings().artwork_renderer == "mupdf":
+        return _mupdf_render(pdf, dpi)
     size: list[str] = []
     if exact_size:
         box = PdfReader(pdf).pages[0].cropbox
         size = ["-scale-to-x", str(max(1, round(float(box.width) / 72 * dpi))), "-scale-to-y", str(max(1, round(float(box.height) / 72 * dpi)))]
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
-        cmd = [get_settings().pdftoppm(), "-png", "-singlefile", "-cropbox", "-r", str(dpi), *size, "-aa", "yes", "-aaVector", "yes"]
+        cmd = [get_settings().pdftoppm(), "-singlefile", "-cropbox", "-r", str(dpi), *size, "-aa", "yes", "-aaVector", "yes"]
         cmd += ["-displayprofile", str(_srgb_profile_file(tmp_dir))]
         if cmyk_icc:
             cmyk_path = tmp_dir / "source_cmyk.icc"
@@ -53,9 +77,6 @@ def pdftoppm_png(pdf: Path, out_png: Path, dpi: int, cmyk_icc: bytes | None, exa
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if proc.returncode != 0:
             raise RuntimeError(f"pdftoppm failed ({proc.returncode}): {proc.stderr.strip()}")
-        image = Image.open(stem.with_suffix(".png"))
+        image = Image.open(stem.with_suffix(".ppm"))
         image.load()
-    if image.mode != "RGB":
-        image = image.convert("RGB")
-    image.save(out_png, optimize=False, compress_level=1)
-    return image
+    return image if image.mode == "RGB" else image.convert("RGB")

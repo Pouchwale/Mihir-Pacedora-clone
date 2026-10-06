@@ -17,6 +17,8 @@ import io
 import logging
 import re
 import tempfile
+import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,10 +31,11 @@ from app.errors import NeedsReview
 from app.geometry.sheet_layout import SheetLayout, SheetPanel, detect, grid_layout, side_roles
 from app.ocr import ai_table, assemble, fallback, keyline, pdf_table, pdf_text, tesseract
 from app.ocr.inks import read_inks, split_value_additions
-from app.ocr.table import FieldRead, erase_rules, read_fields, refine_words, second_pass
+from app.ocr.table import FieldRead, erase_rules, has_ink, parse_value, read_fields, refine_words, second_pass
 from app.pdf.layers import PT_TO_MM, Box, output_intent_profile, write_layer_copy
 from app.pdf.profile import PdfProfile
 from app.pdf.render import pdftoppm_png
+from app.pdf import sheet as sheet_impl
 from app.pdf.sheet import Sheet, analyse, non_technical_copy, technical_copy
 from app.pdf.vector import corner_cut, dashed_lines, dieline, dieline_grids, horizontal_rules
 from app.specs.schema import CellRead, MeasuredKeyline, Num, NumList, SpecSheet
@@ -56,6 +59,9 @@ class ExtractSpecsInput(BaseModel):
     sheet_image_key: str | None = None
     # Operator-verified values ("spec_table.pouch_height_mm": 210): used to split a multi-panel sheet.
     corrections: dict[str, Any] = {}
+    # The item's specs from the ERP (an SAP item-master XML, app.services.xml_spec_parser): {field: text}.
+    # They win over what the table read gives; the PDF still gives everything else and the drawing.
+    xml_fields: dict[str, str] = {}
 
 
 class ExtractSpecsOutput(BaseModel):
@@ -88,7 +94,7 @@ class ExtractSpecsOutput(BaseModel):
 
 @dataclass
 class Renders:
-    spec: Image.Image  # colour, spec region
+    spec: Image.Image | None  # colour, spec region (None until the background OCR of an XML job renders it)
     spec_box: Box
     dims: Image.Image  # colour, dimension drawing only
     dims_box: Box
@@ -151,13 +157,20 @@ def _spec_box(sheet: Sheet, profile: PdfProfile, dims: Box, pdf_path: Path | Non
     return max(sides, key=score)
 
 
+_RULES: dict[tuple, list] = {}
+
+
 def _table_rules(non_technical: Path, box: Box, page_width_pt: float) -> int:
     """Horizontal rules inside `box` that could be a table's: at least 40 mm long, wholly inside the
     box, and not sheet-wide (a bleed or cut line across the page is no table row)."""
     from app.pdf.vector import _drawings, _segments
 
     drawings, inv = _drawings(non_technical)
-    hs, _ = _segments(drawings, inv, 40 / PT_TO_MM)
+    key = (id(drawings), len(drawings))  # (each side of the sheet is scored on the same lines: found once)
+    if key not in _RULES:
+        _RULES.clear()
+        _RULES[key] = _segments(drawings, inv, 40 / PT_TO_MM)[0]
+    hs = _RULES[key]
     return sum(1 for y, x0, x1 in hs
                if box.y0 <= y <= box.y1 and x0 >= box.x0 - 1 and x1 <= box.x1 + 1 and (x1 - x0) < 0.95 * page_width_pt)
 
@@ -177,7 +190,11 @@ def render_inputs(pdf_path: Path, profile: PdfProfile, sheet: Sheet | None = Non
         non_technical = None
         if sheet.mode == "separation":
             non_technical = non_technical_copy(pdf_path, tmp_dir / "non_technical.pdf", sheet.inks.technical) if sheet.inks.technical else pdf_path
-        spec_box = _spec_box(sheet, profile, dims_box, pdf_path, non_technical)
+        # (table rules are counted without the white plate too: a white-ink preview of the print beside the
+        # drawing repeats its long lines and outscored the table, FGPO7138)
+        rules = (non_technical_copy(pdf_path, tmp_dir / "rules.pdf", {*sheet.inks.technical, *sheet.inks.white})
+                 if sheet.mode == "separation" and sheet.inks.white else non_technical)
+        spec_box = _spec_box(sheet, profile, dims_box, pdf_path, rules)
         if sheet.mode == "layers":
             facts = sheet.facts
             missing = [n for n in profile.dimension_layers if n not in facts.layers]
@@ -219,19 +236,37 @@ def measure_panel(pdf_path: Path, profile: PdfProfile, expected_width_mm: float,
 
 def ocr_table(pdf_path: Path, renders: Renders, profile: PdfProfile, layers: list[str] | None = None) -> tuple[list[tesseract.Word], Image.Image]:
     """OCR the spec region band by band; returns words in spec-image pixels and the OCR image."""
+    from concurrent.futures import ThreadPoolExecutor
+
     tpl = profile.spec_template
     gray = binarized(renders.spec, profile)
     box, scale = renders.spec_box, profile.spec_dpi / 72
     rules = horizontal_rules(pdf_path, layers, box, tpl.band_rule_min_span)
     cuts = sorted({0, gray.height, *(round((box.y1 - y) * scale) for y in rules)})
     min_band = round(2 / PT_TO_MM * scale)  # ignore slivers under 2 mm between double rules
-    words: list[tesseract.Word] = []
+
+    bands_to_ocr = []
     for top, bottom in zip(cuts, cuts[1:]):
         if bottom - top < min_band:
             continue
         band = erase_rules(gray.crop((0, top, gray.width, bottom)))
-        for w in tesseract.words(band, psm=tpl.tesseract_psm, lang=tpl.tesseract_lang):
-            words.append(tesseract.Word(w.text, w.conf, w.left, w.top + top, w.width, w.height))
+        bands_to_ocr.append((top, bottom, band))
+
+    def _ocr_band(item):
+        top, bottom, band = item
+        found = tesseract.words(band, psm=tpl.tesseract_psm, lang=tpl.tesseract_lang)
+        if not found and tpl.tesseract_psm != 6 and has_ink(band):
+            found = tesseract.words(band, psm=6, lang=tpl.tesseract_lang)
+        return [(w.text, w.conf, w.left, w.top + top, w.width, w.height) for w in found]
+
+    words: list[tesseract.Word] = []
+    if bands_to_ocr:
+        with ThreadPoolExecutor(max_workers=min(8, len(bands_to_ocr))) as executor:
+            results = list(executor.map(_ocr_band, bands_to_ocr))
+            for res in results:
+                for text, conf, left, top_pos, width, height in res:
+                    words.append(tesseract.Word(text, conf, left, top_pos, width, height))
+
     return words, gray
 
 
@@ -374,13 +409,16 @@ def panel_box(sheet_box: Box, p: SheetPanel) -> Box:
 
 
 _WORD_COUNTS: dict[tuple, int] = {}
+# Width an upright face is OCR'd at to count its words. 800 px keeps front and back far apart (backs
+# 5x and more on FGPO3974/7150/7319/7393/7460) at 70 % of the time 1200 px took; 600 px loses small print.
+WORD_COUNT_PX = 800
 
 
 def _word_count(image: Image.Image, tpl) -> int:
     """Readable words (3+ letters or digits, confident) on an upright panel image."""
     img = image.convert("L")
-    if img.width > 1200:
-        img = img.resize((1200, round(img.height * 1200 / img.width)), Image.LANCZOS)
+    if img.width > WORD_COUNT_PX:
+        img = img.resize((WORD_COUNT_PX, round(img.height * WORD_COUNT_PX / img.width)), Image.LANCZOS)
     key = (img.size, hash(img.tobytes()), tpl.tesseract_lang)  # the back is counted for the front choice and again for its way up
     if key not in _WORD_COUNTS:
         while len(_WORD_COUNTS) >= 32:
@@ -518,16 +556,29 @@ def run(
 ) -> ExtractSpecsOutput:
     settings = settings or get_settings()
     tpl = profile.spec_template
-    sheet = analyse(inp.pdf_path, profile)
-    renders = render_inputs(inp.pdf_path, profile, sheet)
-    spec_key = storage.put_bytes(f"{inp.key_prefix}/spec_table.png", _png(renders.spec), "image/png")
-    dims_key = storage.put_bytes(f"{inp.key_prefix}/dimensions.png", _png(renders.dims), "image/png")
 
-    reads, table_image, live, source = read_table(inp.pdf_path, renders, profile, sheet, rules.min_confidence, settings)
-    confirm_with_filename(reads, profile, inp.filename)
-    used_fallback = fallback.apply(renders.spec, reads, tpl, rules.min_confidence, settings)
-    inks = read_inks(inp.pdf_path, renders.spec, renders.spec_box, profile.spec_dpi, tpl,
-                     no_layers=sheet.mode == "separation", live_words=live)
+    sheet = analyse(inp.pdf_path, profile)
+    if inp.xml_fields.get("pouch_height_mm") and inp.xml_fields.get("pouch_closed_width_mm"):
+        # The ERP gives the pouch (an SAP item master XML): the table is not read at all - no 300 dpi
+        # renders, OCR, AI call or ink row. Only what the XML cannot know comes from the PDF's text layer
+        # (client name, the Remarks with the linked panel codes); the drawing is measured as always.
+        renders, reads, live, source, pending, inks = _xml_table(inp.pdf_path, profile, sheet, inp.xml_fields)
+        used_fallback = []
+        profile = profile.model_copy(update={"ocr": "off"})  # (dimension labels: the text layer's, if it has them)
+    else:
+        pending = None
+        renders = render_inputs(inp.pdf_path, profile, sheet)
+        reads, table_image, live, source = read_table(inp.pdf_path, renders, profile, sheet, rules.min_confidence, settings)
+        confirm_with_filename(reads, profile, inp.filename)
+        if inp.xml_fields:
+            apply_xml(reads, inp.xml_fields, tpl)  # (before the vision fallback: no AI call for what the ERP gives)
+        used_fallback = fallback.apply(renders.spec, reads, tpl, rules.min_confidence, settings)
+        inks = read_inks(inp.pdf_path, renders.spec, renders.spec_box, profile.spec_dpi, tpl,
+                         no_layers=sheet.mode == "separation", live_words=live)
+    spec_key = f"{inp.key_prefix}/spec_table.png"  # (stored once its image exists: after the background OCR in XML mode)
+    if renders.spec is not None:
+        storage.put_bytes(spec_key, _png(renders.spec), "image/png")
+    dims_key = storage.put_bytes(f"{inp.key_prefix}/dimensions.png", _png(renders.dims), "image/png")
     va = reads.get("value_additions")
     inks, additions = split_value_additions(inks, va.bbox[0] if va is not None and va.bbox and va.value is None else None)
     names = [a.name for a in additions if a.name]
@@ -693,6 +744,17 @@ def run(
             measured = measured.model_copy(update={"valve_panel": "front",
                                                    "valve_x_mm": round(valve_x - (measured.bleed_left_mm.value or 0), 1)})
 
+    if pending is not None:
+        # the quick OCR of an outlined table (started with the XML read, done while the drawing was measured)
+        try:
+            words, spec_image = pending.result()
+        except Exception:  # noqa: BLE001 - the background read failed: read it here
+            words, spec_image = _table_ocr(inp.pdf_path, renders.spec_box, tpl)
+        storage.put_bytes(spec_key, _png(spec_image), "image/png")
+        for name, r in read_fields(words, tpl, spec_image.width).items():
+            if reads[name].source != "xml" and r.value is not None:
+                reads[name] = r
+        table = assemble.spec_table(reads, inks, tpl)
     remarks = table.raw_remarks.value or ""
     linked = profile.parse_linked_codes(remarks)
     code_conf = reads["raw_remarks"].code_confidence
@@ -736,6 +798,105 @@ def _tesseract_version(profile: PdfProfile, source: str) -> str:
         return tesseract.version()
     except Exception:  # noqa: BLE001 - not installed: the text layer did the work
         return "unavailable"
+
+
+XML_PREVIEW_DPI = 100
+XML_OCR_DPI = 150  # (FGPO7215: 150 dpi reads the Remarks' two codes; 200 dpi lost one and took longer)
+_BACKGROUND = ThreadPoolExecutor(max_workers=1, thread_name_prefix="xml-ocr")
+
+
+def _xml_table(pdf_path: Path, profile: PdfProfile, sheet: Sheet, fields: dict[str, str]):
+    """(renders, reads, live words, source) for a job whose specs come from an item master XML: the
+    spec table's text layer (if any) for what the XML lacks, the XML for the rest; small previews
+    stand in for the 300 dpi renders the OCR would need."""
+    from app.pdf.vector import render_gray
+
+    tpl = profile.spec_template
+    dims_box = _dims_box(sheet, profile)
+    spec_box = _spec_box(sheet, profile, dims_box, pdf_path)  # (by its words: no rule count, no copy of the page)
+    live = pdf_text.words(pdf_path, spec_box, profile.spec_dpi)
+    reads = read_fields(live, tpl, round(spec_box.width_mm / PT_TO_MM * profile.spec_dpi / 72))
+    for r in reads.values():
+        r.source = "pdf_text"
+    apply_xml(reads, fields, tpl)
+    # The inks are the file's own colour plates (exact; the printed ink row is not read), and what neither
+    # the XML nor the text layer gives is a known blank, not a weak read
+    from app.ocr.inks import InkRead
+    from app.pdf.paint import separations
+
+    order = {"cyan": 0, "magenta": 1, "yellow": 2, "black": 3}
+    plates = sorted((n for n in separations(pdf_path) if n not in sheet.inks.technical), key=lambda n: (order.get(n.lower(), 4), n))
+    inks = [InkRead(n, 1.0, (0.0, 0.0, 0.0), (0, 0, 0, 0)) for n in plates]
+    if plates and reads["colour_count"].value is None:
+        reads["colour_count"] = FieldRead("colour_count", str(len(plates)), len(plates), 1.0, True, None, "", "pdf_inks")
+    for r in reads.values():
+        if r.value is None and r.source != "xml":
+            r.confidence = 1.0
+    # previews for the job page; the dimension drawing from the technical-ink copy (the artwork is the slow part)
+    drawing = (technical_copy(pdf_path, Path(tempfile.gettempdir()) / "unused.pdf", sheet.inks.technical)
+               if sheet.mode == "separation" and sheet.inks.technical else pdf_path)
+    dims = Image.fromarray(render_gray(drawing, dims_box, XML_PREVIEW_DPI))
+    pending = None
+    if len(live) < LIVE_TEXT_MIN_WORDS and profile.ocr != "off":
+        # Outlined table text: what the XML lacks (client name, the Remarks' linked codes) is read by one
+        # quick OCR pass at 150 dpi (~3 s, no AI call) - started by the trim step (prefetch_table_ocr), or
+        # now, in the background while the drawing is measured; its render is the spec table preview too
+        pending = _PREFETCH.pop(_prefetch_key(pdf_path, profile), None) or _BACKGROUND.submit(_table_ocr, pdf_path, spec_box, tpl)
+        spec = None
+    else:
+        spec = Image.fromarray(render_gray(pdf_path, spec_box, XML_PREVIEW_DPI))
+    return Renders(spec=spec, spec_box=spec_box, dims=dims, dims_box=dims_box), reads, live, "xml", pending, inks
+
+
+def _table_ocr(pdf_path: Path, spec_box: Box, tpl) -> tuple[list, Image.Image]:
+    from app.pdf.vector import render_gray
+
+    image = Image.fromarray(render_gray(pdf_path, spec_box, XML_OCR_DPI))
+    return tesseract.words(image, psm=4, lang=tpl.tesseract_lang), image
+
+
+_PREFETCH: dict[tuple, Future] = {}
+
+
+def _prefetch_key(pdf_path: Path, profile: PdfProfile) -> tuple:
+    st = pdf_path.stat()
+    return (str(pdf_path), st.st_mtime_ns, st.st_size, profile.model_dump_json())
+
+
+def prefetch_table_ocr(pdf_path: Path, profile: PdfProfile) -> None:
+    """For a job whose specs come from an item master XML: start the quick OCR of an outlined spec table
+    now (the trim step calls this), so extract_specs finds it done. It waits for the trim step's own
+    sheet analysis (two threads must not build the same cached page copies)."""
+    key = _prefetch_key(pdf_path, profile)
+
+    def job():
+        deadline = time.time() + 300
+        while not sheet_impl.analysed(pdf_path, profile):
+            if time.time() > deadline:
+                raise TimeoutError("sheet not analysed")
+            time.sleep(0.2)
+        sheet = analyse(pdf_path, profile)
+        spec_box = _spec_box(sheet, profile, _dims_box(sheet, profile), pdf_path)
+        return _table_ocr(pdf_path, spec_box, profile.spec_template)
+
+    if key not in _PREFETCH and profile.ocr != "off":
+        while len(_PREFETCH) >= 4:
+            _PREFETCH.pop(next(iter(_PREFETCH)))
+        _PREFETCH[key] = _BACKGROUND.submit(job)
+
+
+def apply_xml(reads: dict[str, FieldRead], fields: dict[str, str], tpl) -> None:
+    """The ERP's values over the table read: each parsed like printed text; one that does not fit
+    its field (an unknown option, out of range) leaves the table's read in place."""
+    rules = {r.field: r for r in tpl.fields if r.field}
+    for name, text in fields.items():
+        rule = rules.get(name)
+        if rule is None:
+            continue
+        value, ok = parse_value(rule, text, tpl)
+        if ok and value is not None:
+            old = reads.get(name)
+            reads[name] = FieldRead(name, text, value, 1.0, True, old.bbox if old else None, "", "xml")
 
 
 def confirm_with_filename(reads: dict[str, FieldRead], profile: PdfProfile, filename: str) -> None:

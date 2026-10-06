@@ -241,3 +241,22 @@ pre.diff .del { color: var(--bad); }
 .review { border-color: var(--warn); }
 .cellcrop { overflow: hidden; border: 1px solid var(--border); border-radius: 4px; background: #fff; }
 .cellcrop > div { background-repeat: no-repeat; }
+
+/* 3D viewer: floating toolbars over the canvas */
+.viewer.viewer-dark { background: #20242c; }
+.viewer.viewer-gradient { background: linear-gradient(#fdfdfe, #c9ced8); }
+.viewer.viewer-none { background: repeating-conic-gradient(#f1f2f5 0% 25%, #ffffff 0% 50%) 50% / 20px 20px; }
+.viewer-bar { position: absolute; left: 12px; right: 12px; display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; pointer-events: none; }
+.viewer-bar.top { top: 12px; }
+.viewer-bar.bottom { bottom: 12px; }
+.viewer-bar .seg { pointer-events: auto; display: inline-flex; background: rgba(255, 255, 255, .82); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(20, 30, 50, .08); border-radius: 999px; padding: 3px; box-shadow: 0 4px 16px rgba(20, 30, 50, .10); }
+.viewer-bar .seg button { border: 0; background: transparent; color: #2a3140; padding: 6px 12px; border-radius: 999px; font-size: 12.5px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+.viewer-bar .seg button:hover { background: rgba(47, 91, 211, .08); }
+.viewer-bar .seg button.on { background: #2f5bd3; color: #fff; box-shadow: 0 1px 4px rgba(47, 91, 211, .35); }
+.viewer-bar .seg button:disabled { opacity: .45; cursor: default; }
+.viewer-dark .viewer-bar .seg { background: rgba(32, 36, 44, .78); border-color: rgba(255, 255, 255, .08); }
+.viewer-dark .viewer-bar .seg button { color: #e5e9f0; }
+.viewer-hint { position: absolute; left: 50%; bottom: 58px; transform: translateX(-50%); font-size: 11.5px; color: rgba(40, 48, 64, .55); pointer-events: none; }
+.viewer-dark .viewer-hint { color: rgba(229, 233, 240, .5); }
+.viewer-note { top: 58px; }

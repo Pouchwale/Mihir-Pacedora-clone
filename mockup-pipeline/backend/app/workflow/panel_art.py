@@ -194,5 +194,5 @@ def preview_png(data: bytes, side: int = PREVIEW_SIDE) -> bytes:
     if max(img.size) > side:
         img.thumbnail((side, side), Image.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="PNG", compress_level=6)
+    img.save(buf, format="PNG", compress_level=1)
     return buf.getvalue()
