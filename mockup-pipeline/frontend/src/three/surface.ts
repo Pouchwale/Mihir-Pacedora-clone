@@ -3,7 +3,7 @@
 //   normal map : knurled heat seals, film wrinkles running out of the seals, zipper track
 // Coordinates: x from the panel's left edge, y from its top edge, as printed (front view).
 import * as THREE from "three";
-import type { GeometrySpec } from "./types";
+import type { GeometrySpec, WindowShape } from "./types";
 
 export const PX_PER_MM = 4;
 const MAX_PX = 2048;
@@ -32,12 +32,18 @@ export interface CutOptions {
   spoutCorner?: "left" | "right" | null; // diagonal corner cut for a corner spout (front-view side)
   mirror?: boolean; // back face: draw mirrored so it matches the back's texture orientation
   outline?: HTMLCanvasElement | null; // shaped die-cut: white inside the outline
+  face?: "front" | "back"; // which face: the operator's windows on it make it see-through there
+}
+
+/** Whether the pouch has any clear window (the keyline's rectangle or ones the operator marked). */
+export function hasWindow(g: GeometrySpec, face?: "front" | "back"): boolean {
+  return g.window.enabled || (g.window.shapes ?? []).some((w) => !face || w.face === face);
 }
 
 /** Alpha mask of a front/back face. Returns null when nothing is cut and there is no window. */
 export function cutMask(g: GeometrySpec, wMm: number, hMm: number, o: CutOptions): THREE.CanvasTexture | null {
   const notch = g.tear_notch.type !== "none" || g.butterfly_notch;
-  const any = (o.corners && g.corner_radius_mm > 0) || notch || g.hang_hole.type !== "none" || g.window.enabled || o.spoutCorner || o.outline;
+  const any = (o.corners && g.corner_radius_mm > 0) || notch || g.hang_hole.type !== "none" || g.window.enabled || o.spoutCorner || o.outline || (o.face && hasWindow(g, o.face));
   if (!any) return null;
   const { c, k } = canvasFor(wMm, hMm);
   const ctx = c.getContext("2d")!;
@@ -109,6 +115,84 @@ export function cutMask(g: GeometrySpec, wMm: number, hMm: number, o: CutOptions
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.NoColorSpace;
   return t;
+}
+
+const WINDOW_ALPHA = 0x22; // clear film: the print is gone, a faint sheen of the film stays
+
+/** Draw the operator's windows for one face into its cut mask (texture coordinates, see WindowShape).
+ *  A "pick area" window grows from its point over the face's artwork (`art`) while the colour stays
+ *  within its tolerance, like a magic wand. */
+export function paintWindows(alpha: THREE.Texture | null, shapes: WindowShape[], art: CanvasImageSource | null) {
+  const c = alpha?.image as HTMLCanvasElement | undefined;
+  if (!c || !shapes.length || !c.getContext) return;
+  const ctx = c.getContext("2d")!;
+  const W = c.width, H = c.height;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = `rgb(${WINDOW_ALPHA},${WINDOW_ALPHA},${WINDOW_ALPHA})`;
+  let pixels: Uint8ClampedArray | null = null;
+  for (const w of shapes) {
+    const pts = w.points.map(([u, v]) => [u * W, v * H]);
+    if (w.kind === "rect" && pts.length >= 2) {
+      const [a, b] = pts;
+      ctx.fillRect(Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
+    } else if (w.kind === "free" && pts.length >= 3) {
+      ctx.beginPath();
+      pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+      ctx.closePath();
+      ctx.fill();
+    } else if (w.kind === "wand" && art) {
+      if (!pixels) {
+        const a = document.createElement("canvas");
+        a.width = W;
+        a.height = H;
+        const ax = a.getContext("2d", { willReadFrequently: true })!;
+        ax.drawImage(art, 0, 0, W, H);
+        pixels = ax.getImageData(0, 0, W, H).data;
+      }
+      const region = floodFill(pixels, W, H, Math.round(pts[0][0]), Math.round(pts[0][1]), w.tolerance ?? 40);
+      const mask = ctx.getImageData(0, 0, W, H);
+      for (let i = 0; i < region.length; i++) {
+        if (!region[i] || mask.data[i * 4] === 0) continue; // never un-cut a hole or the outline
+        mask.data[i * 4] = mask.data[i * 4 + 1] = mask.data[i * 4 + 2] = WINDOW_ALPHA;
+      }
+      ctx.putImageData(mask, 0, 0);
+    }
+  }
+  ctx.restore();
+  alpha!.needsUpdate = true;
+}
+
+/** Pixels connected to (x, y) whose colour is within `tol` (RGB distance) of it, grown by one pixel
+ *  so the window has no fringe of the old print. */
+function floodFill(px: Uint8ClampedArray, W: number, H: number, x: number, y: number, tol: number): Uint8Array {
+  const out = new Uint8Array(W * H);
+  if (x < 0 || y < 0 || x >= W || y >= H) return out;
+  const s = (y * W + x) * 4, r0 = px[s], g0 = px[s + 1], b0 = px[s + 2], t2 = tol * tol;
+  const stack = [y * W + x];
+  out[y * W + x] = 1;
+  while (stack.length) {
+    const i = stack.pop()!;
+    const cx = i % W, cy = (i - cx) / W;
+    for (const j of [cx > 0 ? i - 1 : -1, cx < W - 1 ? i + 1 : -1, cy > 0 ? i - W : -1, cy < H - 1 ? i + W : -1]) {
+      if (j < 0 || out[j]) continue;
+      const dr = px[j * 4] - r0, dg = px[j * 4 + 1] - g0, db = px[j * 4 + 2] - b0;
+      if (dr * dr + dg * dg + db * db <= t2) {
+        out[j] = 1;
+        stack.push(j);
+      }
+    }
+  }
+  const grown = out.slice();
+  for (let i = 0; i < out.length; i++) {
+    if (!out[i]) continue;
+    const cx = i % W;
+    if (cx > 0) grown[i - 1] = 1;
+    if (cx < W - 1) grown[i + 1] = 1;
+    if (i >= W) grown[i - W] = 1;
+    if (i + W < out.length) grown[i + W] = 1;
+  }
+  return grown;
 }
 
 // ---------------------------------------------------------------- normal maps

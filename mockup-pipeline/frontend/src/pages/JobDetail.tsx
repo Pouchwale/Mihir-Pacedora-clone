@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Component, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, ApiError, type JobWorkflow, type PathRecord } from "../api";
 import { useSession } from "../App";
@@ -178,15 +178,10 @@ export default function JobDetail() {
         ))}
       </div>
 
+      <TabGuard key={tab}>
       {tab === "keyline_workspace" && (
-        <KeylineWorkspace
-          jobId={jobId}
-          job={job}
-          outputs={out}
-          liveScene={liveScene}
-          onRefresh={load}
-          onSwitchTo3D={() => setTab("results")}
-        />
+        <KeylineWorkspace job={data} liveScene={liveScene} draft={draft} dirty={dirty} busy={adjusting} running={running} isAdmin={isAdmin}
+          onChange={setDraft} onApply={applyDraft} onReset={resetDraft} onUpload={uploadArtwork} onSwitchTo3D={() => setTab("results")} />
       )}
 
       {tab === "workflow" && wf && (
@@ -204,7 +199,7 @@ export default function JobDetail() {
         <div className="stack">
           {liveScene ? (
             <div className="viewer-layout">
-              <div className="card"><Viewer scene={liveScene} draft={draft} name={job.item_code} /></div>
+              <div className="card"><Viewer scene={liveScene} draft={draft} name={job.item_code} onWindows={draft ? (windows) => setDraft({ ...draft, windows }) : undefined} /></div>
               {draft && !running && (
                 <AdjustPanel scene={liveScene} job={data} draft={draft} dirty={dirty} busy={adjusting} isAdmin={isAdmin}
                   onChange={setDraft} onApply={applyDraft} onReset={resetDraft} onUpload={uploadArtwork} />
@@ -300,8 +295,25 @@ export default function JobDetail() {
           <div className="row" style={{ padding: 12 }}><a href={`/api/jobs/${jobId}/audit`} target="_blank" rel="noreferrer">Audit record (JSON)</a></div>
         </div>
       )}
+      </TabGuard>
     </>
   );
+}
+
+/** One tab's error stays in that tab (with the message), instead of blanking the whole job page. */
+class TabGuard extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="msg bad stack">
+        <b>This tab could not be shown.</b>
+        <code className="small">{this.state.error.message}</code>
+        <div><button onClick={() => this.setState({ error: null })}>Try again</button></div>
+      </div>
+    );
+  }
 }
 
 /** Right-hand panel of the Workflow tab: the path, or the selected node's run (steps, timings, outputs, images) with a rerun button. */
@@ -365,40 +377,47 @@ function SpecsTab({ out }: { out: Dict }) {
   if (!sheet) return <div className="card muted">Specs not extracted yet.</div>;
   const cells: Dict = out.extract_specs?.cells ?? {};
   const corrected: string[] = out.validate?.corrected_fields ?? [];
-  const show = (v: unknown) => Array.isArray(v) ? v.map((x) => (typeof x === "object" ? `${x.micron ?? ""} mic ${x.material}` : x)).join(" · ") : v === null || v === undefined ? "—" : typeof v === "boolean" ? (v ? "Yes" : "No") : String(v);
-  const row = (part: string, name: string, f: Dict) => {
+  const show = (v: unknown): string => Array.isArray(v) ? v.map((x) => (x && typeof x === "object" ? `${x.micron ?? ""} mic ${x.material ?? ""}`.trim() : show(x))).join(" · ")
+    : v === null || v === undefined ? "—" : typeof v === "boolean" ? (v ? "Yes" : "No") : typeof v === "object" ? JSON.stringify(v) : String(v);
+  // A read field ({value, confidence}) or a plain measured value (valve / spout position, flags, often empty).
+  const row = (part: string, name: string, f: unknown) => {
     const verified = corrected.includes(`${part}.${name}`);
+    const field = f !== null && typeof f === "object" && !Array.isArray(f) && "value" in (f as Dict) ? (f as Dict) : null;
+    const conf = typeof field?.confidence === "number" ? field.confidence : null;
     return (
       <tr key={part + name}>
         <td><code>{name}</code></td>
-        <td>{show(f.value)}</td>
-        <td><span className={`badge ${verified ? "accent" : f.confidence >= 0.85 ? "ok" : "warn"}`}>{verified ? "operator" : `${Math.round(f.confidence * 100)}%`}</span></td>
+        <td>{show(field ? field.value : f)}</td>
+        <td>{verified ? <span className="badge accent">operator</span> : conf !== null ? <span className={`badge ${conf >= 0.85 ? "ok" : "warn"}`}>{Math.round(conf * 100)}%</span> : <span className="muted small">—</span>}</td>
         <td className="muted small">{cells[name]?.source ?? ""}</td>
       </tr>
     );
   };
+  const entries = (v: unknown): [string, unknown][] => (v && typeof v === "object" ? Object.entries(v as Dict) : []);
+  const linked = entries(sheet.linked_codes);
+  const issues: Dict[] = Array.isArray(out.validate?.report?.issues) ? out.validate.report.issues : [];
   return (
     <div className="grid2" style={{ alignItems: "start" }}>
       <div className="card table-wrap" style={{ padding: 0 }}>
         <table><thead><tr><th>Spec table</th><th>Value</th><th>Confidence</th><th>Read by</th></tr></thead>
-          <tbody>{Object.entries(sheet.spec_table as Dict).map(([n, f]) => row("spec_table", n, f))}</tbody></table>
+          <tbody>{entries(sheet.spec_table).map(([n, f]) => row("spec_table", n, f))}</tbody></table>
       </div>
       <div className="stack">
         <div className="card table-wrap" style={{ padding: 0 }}>
           <table><thead><tr><th>Dieline (measured)</th><th>Value</th><th>Confidence</th><th /></tr></thead>
-            <tbody>{Object.entries(sheet.measured_keyline as Dict).filter(([n]) => n !== "labels" && n !== "zipper_y_mm").map(([n, f]) => row("measured_keyline", n, f))}</tbody></table>
+            <tbody>{entries(sheet.measured_keyline).filter(([n, f]) => n !== "labels" && n !== "zipper_y_mm" && f !== null && f !== undefined).map(([n, f]) => row("measured_keyline", n, f))}</tbody></table>
         </div>
         <div className="card">
           <h2>Linked panels</h2>
-          {Object.entries(sheet.linked_codes as Dict).map(([role, code]) => <div key={role}>{role}: <b>{String(code)}</b>
+          {linked.map(([role, code]) => <div key={role}>{role}: <b>{String(code)}</b>
             {out.link_panels?.confirmed_codes?.[role] ? <span className="badge ok" style={{ marginLeft: 6 }}>found in registry</span> : null}</div>)}
-          {Object.keys(sheet.linked_codes).length === 0 && <span className="muted">none</span>}
+          {linked.length === 0 && <span className="muted">none</span>}
         </div>
         {out.validate?.report && (
           <div className="card">
             <h2>Validation</h2>
-            {out.validate.report.issues.length === 0 ? <span className="badge ok">all checks passed</span>
-              : out.validate.report.issues.map((i: Dict, k: number) => <div key={k} className="small"><span className={`badge ${i.severity === "review" ? "bad" : "warn"}`}>{i.severity}</span> {i.field}: {i.message}</div>)}
+            {issues.length === 0 ? <span className="badge ok">all checks passed</span>
+              : issues.map((i: Dict, k: number) => <div key={k} className="small"><span className={`badge ${i.severity === "review" ? "bad" : "warn"}`}>{i.severity}</span> {i.field}: {i.message}</div>)}
           </div>
         )}
       </div>

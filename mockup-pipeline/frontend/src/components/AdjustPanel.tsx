@@ -416,7 +416,7 @@ function PanelArtEditor({ role, panel, texture, files, plainColour, selected, on
   );
 }
 
-function OverlayControls({ o, panel, files, onChange, onRemove, onOrder }: {
+export function OverlayControls({ o, panel, files, onChange, onRemove, onOrder }: {
   o: Overlay; panel: SceneData["textures"][string]; files: Record<string, SceneFile>;
   onChange: (patch: Partial<Overlay>) => void; onRemove: () => void; onOrder: (dir: -1 | 1) => void;
 }) {

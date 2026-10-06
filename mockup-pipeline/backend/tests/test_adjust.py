@@ -86,3 +86,14 @@ def test_overlays_validate_and_merge():
     m = job.merged_over(item)
     assert [o.text for o in m.panels["front"].overlays] == ["job"] and m.panels["front"].scale == 1.2
     assert PanelAdjust.model_validate(m.panels["front"].model_dump()).overlays[0].text == "job"  # round-trips through the job's inputs
+
+
+def test_windows_rerun_geometry_only_when_changed():
+    win = {"windows": [{"face": "front", "kind": "rect", "points": [[0.2, 0.3], [0.8, 0.6]]}]}
+    adj = Adjustments.model_validate(win)
+    assert adj.earliest_step() == "render"  # the same windows again: geometry already has them
+    assert adj.earliest_step(windows_changed=True) == "build_geometry"
+    assert adj.merged_over(Adjustments()).windows == adj.windows
+    assert Adjustments().merged_over(adj).windows == adj.windows  # unset falls through to the item default
+    with pytest.raises(ValueError):
+        Adjustments.model_validate({"windows": [{"face": "front", "kind": "free", "points": [[3, 0.5]]}]})

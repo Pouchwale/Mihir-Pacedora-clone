@@ -96,9 +96,7 @@ export default function SharePage() {
         )}
         {!loading && !error && scene && (
           <div style={{ width: "100%", maxWidth: 1100, display: "flex", flexDirection: "column", gap: 24 }}>
-            <div style={{ borderRadius: 20, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)", height: 520 }}>
-              <Viewer scene={scene} draft={draft} name={job?.item_code} />
-            </div>
+            <Viewer scene={scene} draft={draft} name={job?.item_code} />
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14 }}>
               {job?.pouch_type && <InfoCard label="Pouch type" value={job.pouch_type.replace(/_/g, " ")} />}
               {job?.item_code && <InfoCard label="Item code" value={job.item_code} />}

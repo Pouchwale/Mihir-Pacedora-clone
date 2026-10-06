@@ -9,7 +9,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { bakedTexture } from "./bake";
 import spoutCapUrl from "./spout_cap.glb?url";
-import { cutMask, insideField, materialMaps, normalMap, outlineCanvas, PX_PER_MM } from "./surface";
+import { cutMask, hasWindow, insideField, materialMaps, normalMap, outlineCanvas, paintWindows, PX_PER_MM } from "./surface";
 import type { GeometrySpec, SceneTexture } from "./types";
 
 export interface BuildOptions {
@@ -193,8 +193,8 @@ async function filmMaterial(g: GeometrySpec, tex: SceneTexture, maps: FaceMaps):
     const flat = new THREE.MeshBasicMaterial({ map: await panelMap(tex), side: THREE.DoubleSide, toneMapped: false });
     if (maps.alpha) {
       flat.alphaMap = maps.alpha;
-      flat.alphaTest = g.window.enabled ? 0.05 : 0.5;
-      if (g.window.enabled) flat.transparent = true;
+      flat.alphaTest = hasWindow(g) ? 0.05 : 0.5;
+      if (hasWindow(g)) flat.transparent = true;
     }
     flat.name = "film";
     return flat;
@@ -216,7 +216,7 @@ async function filmMaterial(g: GeometrySpec, tex: SceneTexture, maps: FaceMaps):
   }
   if (maps.alpha) {
     mat.alphaMap = maps.alpha;
-    if (g.window.enabled) {
+    if (hasWindow(g)) {
       mat.transparent = true;
       mat.alphaTest = 0.05;
       mat.depthWrite = true;
@@ -674,6 +674,13 @@ async function rollGroup(g: GeometrySpec, textures: Record<string, SceneTexture>
 }
 
 // ---------------------------------------------------------------- assembly
+/** The operator's windows on one face, drawn into its cut mask (the artwork for "pick area" ones). */
+function windowsOn(g: GeometrySpec, mesh: THREE.Mesh, face: "front" | "back") {
+  const shapes = (g.window.shapes ?? []).filter((w) => w.face === face);
+  const mat = mesh.material as THREE.MeshPhysicalMaterial;
+  if (shapes.length) paintWindows(mat.alphaMap, shapes, (mat.map?.image as CanvasImageSource) ?? null);
+}
+
 async function flatLikeGroup(g: GeometrySpec, textures: Record<string, SceneTexture>, filled: boolean, shape: string): Promise<THREE.Group> {
   const grp = new THREE.Group();
   const W = g.width_mm, H = g.height_mm;
@@ -691,17 +698,19 @@ async function flatLikeGroup(g: GeometrySpec, textures: Record<string, SceneText
   const frontTex = textures.front;
   const backTex = textures.back ?? textures.front;
   const frontMat = await filmMaterial(g, frontTex, {
-    alpha: cutMask(g, W, H, { corners: true, spoutCorner, outline }),
+    alpha: cutMask(g, W, H, { corners: true, spoutCorner, outline, face: "front" }),
     normal: normalMap(W, H, zones, 1),
   });
   const backMat = await filmMaterial(g, backTex, {
-    alpha: cutMask(g, W, H, { corners: true, spoutCorner: spoutCorner === "left" ? "right" : spoutCorner === "right" ? "left" : null, outline, mirror: !!outline }),
+    alpha: cutMask(g, W, H, { corners: true, spoutCorner: spoutCorner === "left" ? "right" : spoutCorner === "right" ? "left" : null, outline, mirror: !!outline, face: "back" }),
     normal: normalMap(W, H, { ...zones, finX: shape === "center_seal_pillow" ? W / 2 : null, finW: g.seals.fin }, 2),
   });
   const front = new THREE.Mesh(faces.front, frontMat);
   const back = new THREE.Mesh(faces.back, backMat);
   front.name = "front";
   back.name = "back";
+  windowsOn(g, front, "front");
+  windowsOn(g, back, "back");
   grp.add(front, back);
   if (faces.baseHalf && textures.gusset) {
     const [A, B] = faces.baseHalf;
@@ -724,12 +733,16 @@ async function flatLikeGroup(g: GeometrySpec, textures: Record<string, SceneText
     }
     grp.add(sp);
   }
-  if (g.window.enabled && filled) {
+  if (hasWindow(g) && filled) {
     // product seen through the window: an inner body in a neutral product colour
-    const inner = new THREE.Mesh(faces.front.clone(), solidMaterial(g, { color: "#b98b52", roughness: 0.9 }));
-    inner.scale.set(0.97, 0.97, 0.9);
-    inner.position.y = H * 0.015;
-    grp.add(inner);
+    // (both halves, seen from either side: a window on the back shows product too, not the front's print)
+    const product = solidMaterial(g, { color: "#b98b52", roughness: 0.9, side: THREE.DoubleSide });
+    for (const half of [faces.front, faces.back]) {
+      const inner = new THREE.Mesh(half.clone(), product);
+      inner.scale.set(0.97, 0.97, 0.9);
+      inner.position.y = H * 0.015;
+      grp.add(inner);
+    }
   }
   return grp;
 }
@@ -743,9 +756,11 @@ async function boxGroup(g: GeometrySpec, textures: Record<string, SceneTexture>,
     bottom: shape === "center_seal_side_gusset" || shape === "quad_seal" ? Math.max(g.seals.bottom, g.seals.crimp) : 0, zipperY: g.zipper.enabled ? g.zipper.y_from_top_mm : null };
   const mk = async (geo: THREE.BufferGeometry, tex: SceneTexture | undefined, name: string, wMm: number, alpha: boolean) => {
     const t = tex ?? textures.front;
-    const mat = await filmMaterial(g, t, { alpha: alpha ? cutMask(g, wMm, H, { corners: false }) : null, normal: normalMap(wMm, H, zones, name.length) });
+    const face = name === "front" || name === "back" ? name : undefined;
+    const mat = await filmMaterial(g, t, { alpha: alpha ? cutMask(g, wMm, H, { corners: false, face }) : null, normal: normalMap(wMm, H, zones, name.length) });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.name = name;
+    if (face) windowsOn(g, mesh, face);
     return mesh;
   };
   grp.add(await mk(f.front, textures.front, "front", W, true));

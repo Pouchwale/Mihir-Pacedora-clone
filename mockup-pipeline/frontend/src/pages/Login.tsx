@@ -23,7 +23,7 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
   return (
     <div className="login">
       <form className="card stack" onSubmit={submit}>
-        <div className="brand" style={{ padding: 0 }}><span className="brand-mark" /> Pouch Mockups</div>
+        <div className="brand" style={{ padding: 0 }}><span className="brand-mark"><svg width="16" height="16" viewBox="0 0 32 32" aria-hidden="true"><path d="M8 4h16l2 22c-6 3-14 3-20 0z" fill="#fff" /></svg></span> Pouch Mockups</div>
         <label className="field">Email<input type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required /></label>
         <label className="field">Password<input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required /></label>
         {error && <div className="msg bad">{error}</div>}

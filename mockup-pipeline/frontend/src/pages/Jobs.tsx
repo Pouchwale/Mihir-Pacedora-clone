@@ -10,8 +10,32 @@ export interface JobSummary {
 }
 
 export const STATUS_BADGE: Record<string, string> = { DONE: "ok", NEEDS_REVIEW: "warn", FAILED: "bad", RUNNING: "accent", QUEUED: "", PAUSED: "warn", CANCELLED: "" };
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 24;
 const STATUSES = ["QUEUED", "RUNNING", "NEEDS_REVIEW", "PAUSED", "FAILED", "DONE", "CANCELLED"];
+const LABEL: Record<string, string> = { QUEUED: "Queued", RUNNING: "Running", NEEDS_REVIEW: "Needs review", PAUSED: "Paused", FAILED: "Failed", DONE: "Done", CANCELLED: "Cancelled" };
+// the workflow's steps, for the progress bar of a running job
+const STEPS = ["ingest", "trim_artwork", "extract_specs", "validate", "match_pouch_type", "resolve_keyline", "link_panels", "build_geometry", "texture", "render", "export"];
+
+/** "5 min ago" for recent times, the date after a week. */
+function ago(iso: string): string {
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  if (s < 7 * 86400) return `${Math.floor(s / 86400)} d ago`;
+  return formatTime(iso);
+}
+
+const Icon = ({ d, size = 16 }: { d: string; size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
+);
+const I = {
+  grid: "M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z",
+  list: "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
+  search: "M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.35-4.35",
+  upload: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12",
+  box: "M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z",
+};
 
 /** Pause / resume / cancel controls for one job (used on the list and on the job page). */
 export function JobControls({ job, onDone, compact = false }: { job: { id: number; status: string }; onDone: (msg: string) => void; compact?: boolean }) {
@@ -34,6 +58,36 @@ export function JobControls({ job, onDone, compact = false }: { job: { id: numbe
   );
 }
 
+/** The job's finished render (front view), or a placeholder while it is not rendered yet. */
+function Thumb({ job }: { job: JobSummary }) {
+  const [view, setView] = useState(0);
+  const views = ["front", "three_quarter_left", "three_quarter_right"];
+  if (job.status !== "DONE" || view >= views.length) {
+    return <div className="job-thumb empty"><Icon d={I.box} size={28} /></div>;
+  }
+  const key = `jobs/${job.id}/renders/${views[view]}.png`;
+  return <div className="job-thumb"><img src={`/api/jobs/${job.id}/file?key=${encodeURIComponent(key)}`} alt="" loading="lazy" onError={() => setView(view + 1)} /></div>;
+}
+
+function Status({ job }: { job: JobSummary }) {
+  const running = job.status === "RUNNING";
+  const step = Math.max(0, STEPS.indexOf(job.current_step));
+  return (
+    <div className="job-status">
+      <span className={`badge dot ${STATUS_BADGE[job.status] ?? ""}`}>{LABEL[job.status] ?? job.status}</span>
+      {job.approved_by && <span className="badge ok">approved</span>}
+      {running && (
+        <div className="progress" title={`Step ${step + 1} of ${STEPS.length}: ${job.current_step}`}>
+          <i style={{ width: `${((step + 0.5) / STEPS.length) * 100}%` }} />
+        </div>
+      )}
+      {running && <div className="small muted">{job.current_step.replace(/_/g, " ")}…</div>}
+      {job.review_message && <div className="small muted clamp">{job.review_message}</div>}
+      {job.error && <div className="small clamp" style={{ color: "var(--bad)" }}>{job.error}</div>}
+    </div>
+  );
+}
+
 export default function Jobs() {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
@@ -44,6 +98,11 @@ export default function Jobs() {
   const [tick, setTick] = useState(0);
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
+  const [loaded, setLoaded] = useState(false);
+  const [layout, setLayoutState] = useState<"grid" | "list">(() => {
+    try { return localStorage.getItem("jobs-layout") === "list" ? "list" : "grid"; } catch { return "grid"; }
+  });
+  const setLayout = (l: "grid" | "list") => { setLayoutState(l); try { localStorage.setItem("jobs-layout", l); } catch { /* private window */ } };
   const navigate = useNavigate();
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -56,7 +115,7 @@ export default function Jobs() {
       `/api/jobs?status=${status}&q=${encodeURIComponent(q)}&kind=${tests ? "test" : "job"}&limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}`)
       .then((r) => {
         if (!alive) return;
-        setJobs(r.jobs); setCounts(r.counts); setTotal(r.total);
+        setJobs(r.jobs); setCounts(r.counts); setTotal(r.total); setLoaded(true);
         if (r.jobs.length === 0 && page > 0) setPage(Math.max(0, Math.ceil(r.total / PAGE_SIZE) - 1)); // the last page emptied (jobs removed)
       });
     load();
@@ -64,54 +123,106 @@ export default function Jobs() {
     return () => { alive = false; clearInterval(t); };
   }, [status, q, tests, tick, page]);
 
+  const n = (...s: string[]) => s.reduce((a, k) => a + (counts[k] ?? 0), 0);
+  const all = n(...STATUSES);
+  const stats: { label: string; value: number; filter: string; tone: string; hint: string }[] = [
+    { label: "All jobs", value: all, filter: "", tone: "", hint: "Every job" },
+    { label: "Done", value: n("DONE"), filter: "DONE", tone: "ok", hint: "3D mockup ready" },
+    { label: "In progress", value: n("QUEUED", "RUNNING"), filter: "RUNNING", tone: "accent", hint: "Queued or running" },
+    { label: "Need attention", value: n("FAILED", "NEEDS_REVIEW", "PAUSED"), filter: "FAILED", tone: "bad", hint: "Failed, paused or waiting" },
+  ];
+  const controls = (j: JobSummary) => <JobControls job={j} compact onDone={(m) => { setMsg(m); setTick((t) => t + 1); }} />;
+
   return (
     <>
       <div className="page-head">
-        <div><h1>Jobs</h1><div className="muted">Grouped by upload batch; updates live.</div></div>
-        <Link className="btn" to="/upload">Upload PDFs</Link>
+        <div><h1>Jobs</h1><div className="muted">Every approval PDF you upload becomes a job; the list updates live.</div></div>
+        <Link className="btn primary" to="/upload"><Icon d={I.upload} /> Upload PDFs</Link>
       </div>
-      <div className="row" style={{ marginBottom: 12 }}>
-        <span className={`chip ${status === "" ? "on" : ""}`} onClick={() => setStatus("")}>All</span>
-        {STATUSES.map((s) => (
-          <span key={s} className={`chip ${status === s ? "on" : ""}`} onClick={() => setStatus(s)}>{s.replace("_", " ").toLowerCase()} {counts[s] ?? 0}</span>
+
+      <div className="stat-row">
+        {stats.map((s) => (
+          <button key={s.label} className={`stat ${s.tone} ${status === s.filter ? "on" : ""}`} onClick={() => setStatus(s.filter)} title={s.hint}>
+            <span className="stat-label">{s.label}</span>
+            <span className="stat-value">{s.value}</span>
+          </button>
         ))}
-        <input placeholder="Search item code or client" value={q} onChange={(e) => setQ(e.target.value)} style={{ marginLeft: "auto" }} />
-        <label className="check small muted"><input type="checkbox" checked={tests} onChange={(e) => setTests(e.target.checked)} /> workflow test runs</label>
+      </div>
+
+      <div className="toolbar">
+        <div className="pills">
+          <button className={`pill ${status === "" ? "on" : ""}`} onClick={() => setStatus("")}>All</button>
+          {STATUSES.map((s) => (
+            <button key={s} className={`pill ${status === s ? "on" : ""}`} onClick={() => setStatus(s)}>{LABEL[s]} <span className="pill-count">{counts[s] ?? 0}</span></button>
+          ))}
+        </div>
+        <div className="row" style={{ marginLeft: "auto" }}>
+          <label className="search"><Icon d={I.search} /><input placeholder="Search item code or client" value={q} onChange={(e) => setQ(e.target.value)} /></label>
+          <div className="seg-toggle" role="group" aria-label="Layout">
+            <button className={layout === "grid" ? "on" : ""} onClick={() => setLayout("grid")} title="Cards" aria-label="Cards"><Icon d={I.grid} /></button>
+            <button className={layout === "list" ? "on" : ""} onClick={() => setLayout("list")} title="List" aria-label="List"><Icon d={I.list} /></button>
+          </div>
+          <label className="check small muted"><input type="checkbox" checked={tests} onChange={(e) => setTests(e.target.checked)} /> test runs</label>
+        </div>
       </div>
       {msg && <div className="msg warn" style={{ marginBottom: 12 }}>{msg}</div>}
-      <div className="card table-wrap" style={{ padding: 0 }}>
-        <table>
-          <thead><tr><th>#</th><th>Item</th><th>Client</th><th>Pouch type</th><th>Status</th><th>Step</th><th>Batch</th><th>Updated</th><th /></tr></thead>
-          <tbody>
-            {jobs.map((j) => (
-              <tr key={j.id} className="clickable" onClick={() => navigate(`/jobs/${j.id}`)}>
-                <td>{j.id}</td>
-                <td><b>{j.item_code ?? "—"}</b><div className="muted small">{j.filename}</div></td>
-                <td>{j.client_name ?? <span className="muted">—</span>}</td>
-                <td>{j.pouch_type ?? <span className="muted">—</span>}</td>
-                <td>
-                  <span className={`badge ${STATUS_BADGE[j.status] ?? ""}`}>{j.status.replace("_", " ")}</span>
-                  {j.approved_by && <span className="badge ok" style={{ marginLeft: 4 }}>approved</span>}
-                  {j.review_message && <div className="small muted" style={{ maxWidth: 320 }}>{j.review_message}</div>}
-                  {j.error && <div className="small" style={{ color: "var(--bad)", maxWidth: 320 }}>{j.error}</div>}
-                </td>
-                <td className="muted">{j.current_step}</td>
-                <td className="muted">{j.batch_id ?? "—"}</td>
-                <td className="muted small">{formatTime(j.updated_at)}</td>
-                <td><JobControls job={j} compact onDone={(m) => { setMsg(m); setTick((t) => t + 1); }} /></td>
-              </tr>
-            ))}
-            {jobs.length === 0 && <tr><td colSpan={9} className="muted">No jobs yet. <Link to="/upload">Upload PDFs</Link>.</td></tr>}
-          </tbody>
-        </table>
-      </div>
+
+      {loaded && jobs.length === 0 && (
+        <div className="card empty-state">
+          <div className="dropzone-icon"><Icon d={I.box} size={26} /></div>
+          <b>{q || status ? "No jobs match" : "No jobs yet"}</b>
+          <span className="muted">{q || status ? "Try another filter or search." : "Upload approval PDFs and each one becomes a 3D mockup automatically."}</span>
+          {!q && !status && <Link className="btn primary" to="/upload"><Icon d={I.upload} /> Upload PDFs</Link>}
+        </div>
+      )}
+
+      {layout === "grid" ? (
+        <div className="job-grid">
+          {jobs.map((j) => (
+            <div key={j.id} className="job-card" onClick={() => navigate(`/jobs/${j.id}`)} role="link" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && navigate(`/jobs/${j.id}`)}>
+              <Thumb job={j} />
+              <div className="job-card-body">
+                <div className="job-card-title">
+                  <b>{j.item_code ?? j.filename}</b>
+                  <span className="muted small">#{j.id}</span>
+                </div>
+                <div className="muted small ellipsis">{j.client_name ?? "Client unknown"} · {j.pouch_type ?? "type pending"}</div>
+                <Status job={j} />
+                <div className="job-card-foot">
+                  <span className="muted small" title={formatTime(j.updated_at)}>{ago(j.updated_at)}</span>
+                  {controls(j)}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : jobs.length > 0 && (
+        <div className="card table-wrap" style={{ padding: 0 }}>
+          <table className="job-table">
+            <thead><tr><th /><th>Item</th><th>Client</th><th>Pouch type</th><th>Status</th><th>Batch</th><th>Updated</th><th /></tr></thead>
+            <tbody>
+              {jobs.map((j) => (
+                <tr key={j.id} className="clickable" onClick={() => navigate(`/jobs/${j.id}`)}>
+                  <td style={{ width: 64 }}><Thumb job={j} /></td>
+                  <td><b>{j.item_code ?? "—"}</b> <span className="muted small">#{j.id}</span><div className="muted small">{j.filename}</div></td>
+                  <td>{j.client_name ?? <span className="muted">—</span>}</td>
+                  <td>{j.pouch_type ?? <span className="muted">—</span>}</td>
+                  <td style={{ minWidth: 160 }}><Status job={j} /></td>
+                  <td className="muted">{j.batch_id ?? "—"}</td>
+                  <td className="muted small" title={formatTime(j.updated_at)}>{ago(j.updated_at)}</td>
+                  <td>{controls(j)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {total > PAGE_SIZE && (
-        <div className="row" style={{ marginTop: 12, justifyContent: "center" }}>
-          <button disabled={page === 0} onClick={() => setPage(0)}>« First</button>
+        <div className="pager">
           <button disabled={page === 0} onClick={() => setPage((p) => p - 1)}>‹ Previous</button>
-          <span className="muted small">Page {page + 1} of {pages} · jobs {page * PAGE_SIZE + 1}–{Math.min(total, (page + 1) * PAGE_SIZE)} of {total}</span>
+          <span className="muted small">Page {page + 1} of {pages} · {page * PAGE_SIZE + 1}–{Math.min(total, (page + 1) * PAGE_SIZE)} of {total}</span>
           <button disabled={page + 1 >= pages} onClick={() => setPage((p) => p + 1)}>Next ›</button>
-          <button disabled={page + 1 >= pages} onClick={() => setPage(pages - 1)}>Last »</button>
         </div>
       )}
     </>

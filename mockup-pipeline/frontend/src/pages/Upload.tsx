@@ -64,6 +64,7 @@ export default function Upload() {
       <div className={`dropzone ${over ? "over" : ""}`} onDragOver={(e) => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)} onDrop={drop}
         onClick={() => input.current?.click()} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && input.current?.click()}>
         <input ref={input} type="file" multiple accept=".pdf,.zip,.xml" hidden onChange={(e) => add(e.target.files)} />
+        <div className="dropzone-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" /></svg></div>
         <div style={{ fontSize: 16, fontWeight: 600 }}>Drop PDFs, a ZIP or an item master XML here</div>
         <div className="muted">or click to choose files (.pdf, .zip, .xml)</div>
       </div>
@@ -86,7 +87,7 @@ export default function Upload() {
             </tbody>
           </table>
           <div className="row">
-            <button className="primary" onClick={upload} disabled={busy}>{busy ? "Uploading…" : `Upload ${files.length} file(s)`}</button>
+            <button className="primary" onClick={upload} disabled={busy}>{busy ? "Uploading…" : `Upload ${files.length} file(s) and build mockups`}</button>
             {workflows.length > 1 && (
               <label className="row small muted">Workflow
                 <select value={workflow} onChange={(e) => setWorkflow(e.target.value)}>

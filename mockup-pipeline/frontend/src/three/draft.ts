@@ -2,7 +2,7 @@
 // the operator's draft into the geometry / textures the viewer builds. The same numbers go to
 // POST /api/jobs/{id}/adjust, where the workflow applies them for real (renders, GLB, video).
 // Mirrors app/workflow/adjust.py.
-import type { GeometrySpec, Overlay, PanelBake, PanelTransform, SceneData, SceneFile, SceneTexture } from "./types";
+import type { GeometrySpec, Overlay, PanelBake, PanelTransform, SceneData, SceneFile, SceneTexture, WindowShape } from "./types";
 
 export interface PanelDraft extends PanelTransform {
   source: "auto" | "sheet" | "file" | "front" | "plain" | `sheet:${number}`;
@@ -24,6 +24,7 @@ export interface Draft {
   keyline: Record<string, number | string | boolean | null>;
   material: { finish: "auto" | "matt" | "gloss"; metallic: "auto" | "on" | "off"; plain_color: string | null };
   scene: { lighting: GeometrySpec["preset"]["lighting"] | null; background: GeometrySpec["preset"]["background"] | null; shadow: boolean | null; views: string[] | null };
+  windows: WindowShape[]; // clear windows marked on the pouch in the 3D viewer
 }
 
 export const IDENTITY_PANEL: PanelDraft = {
@@ -38,7 +39,7 @@ export const DEFAULT_OVERLAY: Overlay = {
 };
 
 export function emptyDraft(): Draft {
-  return { panels: {}, swap_front_back: false, specs: {}, keyline: {}, material: { finish: "auto", metallic: "auto", plain_color: null }, scene: { lighting: null, background: null, shadow: null, views: null } };
+  return { panels: {}, swap_front_back: false, specs: {}, keyline: {}, material: { finish: "auto", metallic: "auto", plain_color: null }, scene: { lighting: null, background: null, shadow: null, views: null }, windows: [] };
 }
 
 /** The saved adjustments of a job (from /scene) as a draft to edit. */
@@ -53,6 +54,7 @@ export function draftFrom(saved: Partial<Draft> | null | undefined): Draft {
   d.keyline = { ...(saved.keyline ?? {}) };
   d.material = { ...d.material, ...(saved.material ?? {}) };
   d.scene = { ...d.scene, ...(saved.scene ?? {}) };
+  d.windows = saved.windows ?? [];
   return d;
 }
 
@@ -165,9 +167,12 @@ export function applyDraft(scene: SceneData, draft: Draft | null): { geometry: G
   if (draft.scene.shadow !== null) g.preset.shadow = draft.scene.shadow;
   if (draft.scene.background) g.preset.background = draft.scene.background;
   if (draft.scene.views) g.preset.views = draft.scene.views;
+  g.window.shapes = draft.windows ?? [];
 
   // --- artwork
-  if (draft.swap_front_back && textures.front && textures.back) [textures.front, textures.back] = [textures.back, textures.front];
+  // the scene's textures already have the saved swap applied (link_panels): swap only what changed since
+  const savedSwap = !!(scene.adjust as { swap_front_back?: boolean } | undefined)?.swap_front_back;
+  if (draft.swap_front_back !== savedSwap && textures.front && textures.back) [textures.front, textures.back] = [textures.back, textures.front];
   const frontBake = bakeOf(draft.panels.front, scene.files);
   for (const [role, t] of Object.entries(textures)) {
     const p = draft.panels[role];

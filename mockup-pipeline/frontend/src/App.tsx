@@ -1,4 +1,4 @@
-﻿import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { api, KindInfo, User } from "./api";
 import EntryPage from "./pages/EntryPage";
@@ -60,7 +60,7 @@ function SignedIn() {
     if (user) refreshKinds();
   }, [user, refreshKinds]);
 
-  if (user === undefined) return <div className="login muted">Loadingâ€¦</div>;
+  if (user === undefined) return <div className="login muted">Loading…</div>;
   if (user === null) return <Login onLogin={setUser} />;
 
   return (
@@ -85,8 +85,36 @@ function SignedIn() {
   );
 }
 
+// Small line icons for the sidebar (24px grid, stroked).
+const NAV_ICONS: Record<string, string> = {
+  upload: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12",
+  jobs: "M3 7h18M3 12h18M3 17h12",
+  workflows: "M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9",
+  index: "M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5v14zM20 17v4H6.5",
+  test: "M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11",
+  yaml: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5",
+  users: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75",
+};
+export const NavIcon = ({ name, size = 17 }: { name: string; size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={NAV_ICONS[name] ?? NAV_ICONS.index} /></svg>
+);
+
+type Theme = "light" | "dark" | "system";
+/** Light / dark / follow the system; remembered in this browser. */
+function useTheme(): [Theme, (t: Theme) => void] {
+  const read = (): Theme => { try { return (localStorage.getItem("theme") as Theme) || "system"; } catch { return "system"; } };
+  const [theme, setTheme] = useState<Theme>(read);
+  useEffect(() => {
+    if (theme === "system") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", theme);
+    try { localStorage.setItem("theme", theme); } catch { /* private window */ }
+  }, [theme]);
+  return [theme, setTheme];
+}
+
 function Shell({ children }: { children: React.ReactNode }) {
   const { user, kinds, isAdmin } = useSession();
+  const [theme, setTheme] = useTheme();
   const logout = async () => {
     await api.post("/api/auth/logout");
     // Full reload: no state from the previous user survives (open forms, cached lists).
@@ -96,19 +124,23 @@ function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="shell">
       <aside className="sidebar">
-        <div className="brand"><span className="brand-mark" /> Pouch Mockups</div>
+        <div className="brand">
+          <span className="brand-mark"><svg width="16" height="16" viewBox="0 0 32 32" aria-hidden="true"><path d="M8 4h16l2 22c-6 3-14 3-20 0z" fill="#fff" /></svg></span>
+          Pouch Mockups
+        </div>
+        <NavLink to="/upload" className="nav-cta"><NavIcon name="upload" /> Upload PDFs</NavLink>
         <nav className="nav">
-          <NavLink to="/upload">Upload</NavLink>
-          <NavLink to="/jobs" end>Jobs</NavLink>
+          <NavLink to="/jobs" end><NavIcon name="jobs" /><span>Jobs</span></NavLink>
         </nav>
         <div className="nav-section">Workflow</div>
         <nav className="nav">
-          <NavLink to="/workflows">Workflows</NavLink>
+          <NavLink to="/workflows"><NavIcon name="workflows" /><span>Workflows</span></NavLink>
         </nav>
         <div className="nav-section">Indexing</div>
         <nav className="nav">
           {indexKinds.map((k) => (
             <NavLink key={k.kind} to={k.singleton ? `/index/${k.kind}/default` : `/index/${k.kind}`}>
+              <NavIcon name="index" />
               <span>{k.label}</span>
               {!k.singleton && <span className="count">{k.count}</span>}
             </NavLink>
@@ -116,13 +148,21 @@ function Shell({ children }: { children: React.ReactNode }) {
         </nav>
         <div className="nav-section">Tools</div>
         <nav className="nav">
-          <NavLink to="/index/tools/test">Rule tester</NavLink>
-          <NavLink to="/index/tools/import-export">YAML import / export</NavLink>
-          {isAdmin && <NavLink to="/users">Users</NavLink>}
+          <NavLink to="/index/tools/test"><NavIcon name="test" /><span>Rule tester</span></NavLink>
+          <NavLink to="/index/tools/import-export"><NavIcon name="yaml" /><span>YAML import / export</span></NavLink>
+          {isAdmin && <NavLink to="/users"><NavIcon name="users" /><span>Users</span></NavLink>}
         </nav>
         <div className="sidebar-foot">
-          <span>{user.email}</span>
-          <span><span className={`badge ${isAdmin ? "accent" : ""}`}>{user.role}</span></span>
+          <div className="theme-switch" role="group" aria-label="Theme">
+            {(["light", "dark", "system"] as Theme[]).map((t) => (
+              <button key={t} className={theme === t ? "on" : ""} onClick={() => setTheme(t)}>{{ light: "Light", dark: "Dark", system: "Auto" }[t]}</button>
+            ))}
+          </div>
+          <div className="user-chip">
+            <span className="avatar">{user.email.slice(0, 1)}</span>
+            <span className="who" title={user.email}>{user.email}</span>
+            <span className={`badge ${isAdmin ? "accent" : ""}`}>{user.role}</span>
+          </div>
           <button className="link" style={{ textAlign: "left", padding: 0 }} onClick={logout}>Sign out</button>
         </div>
       </aside>

@@ -300,6 +300,11 @@ def run(ctx: StepContext) -> Output:
         )
     for role, code in confirmed.items():
         ctx.log(f"Linked {role} code {code} confirmed by the file registry", "audit")
+    overridden = [r for r in ("front", "back") if r in adj.panels and adj.panels[r].source != "auto"]
+    if adj.swap_front_back and not swapped and "front" in panels and "back" in panels and not overridden:
+        # front and back from separate PDFs (a sheet swaps its panels above): trade them here
+        panels["front"], panels["back"] = panels["back"].model_copy(update={"role": "front"}), panels["front"].model_copy(update={"role": "back"})
+        ctx.log("front and back swapped by the operator", "audit")
     return Output(panels=panels, required=required, confirmed_codes=confirmed)
 
 

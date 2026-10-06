@@ -159,6 +159,12 @@ def test_forced_pouch_type_and_linked_panel_upload(app_client, monkeypatch):
     d = c.get(f"/api/jobs/{job_id}").json()
     panels = d["outputs"]["link_panels"]["panels"]
     assert panels["back"]["source"] == "file" and panels["side_left"]["source"] == panels["side_right"]["source"] == "plain"
+    # the operator swaps front and back: with the back in its own PDF, link_panels trades the two files
+    r = c.post(f"/api/jobs/{job_id}/adjust", json={"adjust": {"swap_front_back": True}}, headers=H)
+    assert r.status_code == 200
+    swapped = c.get(f"/api/jobs/{job_id}").json()["outputs"]["link_panels"]["panels"]
+    assert swapped["front"]["filename"] == panels["back"]["filename"] and swapped["back"]["filename"] == panels["front"]["filename"]
+    assert swapped["front"]["role"] == "front" and swapped["back"]["role"] == "back"
 
 
 @needs_poppler

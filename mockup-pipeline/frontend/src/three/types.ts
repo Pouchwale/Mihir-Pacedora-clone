@@ -31,7 +31,7 @@ export interface GeometrySpec {
   butterfly_notch: boolean;
   corner_radius_mm: number;
   hang_hole: { type: string; size_mm: number; offset_mm: number };
-  window: { enabled: boolean; x_mm: number; y_mm: number; width_mm: number; height_mm: number; radius_mm: number };
+  window: { enabled: boolean; x_mm: number; y_mm: number; width_mm: number; height_mm: number; radius_mm: number; shapes?: WindowShape[] };
   spout: { position: string; diameter_mm: number; cap_diameter_mm: number; cap_height_mm: number } | null;
   valve?: { panel: "front" | "back"; x_mm: number; y_from_top_mm: number; diameter_mm: number } | null;
   roll: { repeat_mm: number; web_width_mm: number; outer_diameter_mm: number; core_diameter_mm: number } | null;
@@ -111,4 +111,14 @@ export interface SceneData {
   textures: Record<string, SceneTexture>;
   adjust?: Record<string, unknown>; // the job's saved adjustments (app/workflow/adjust.py)
   files?: Record<string, SceneFile>; // the uploads those adjustments use (panel pictures, logos)
+}
+
+/** A see-through window the operator marks on the front or back face (app/workflow/adjust.py
+ *  WindowShape). Points are texture coordinates, 0..1 from the face texture's top-left: a free
+ *  shape's outline, a rectangle's two corners, or the one point a "pick area" window grows from. */
+export interface WindowShape {
+  face: "front" | "back";
+  kind: "free" | "rect" | "wand";
+  points: [number, number][];
+  tolerance?: number;
 }

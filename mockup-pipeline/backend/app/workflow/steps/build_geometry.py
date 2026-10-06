@@ -66,6 +66,9 @@ def run(ctx: StepContext) -> Output:
         preset = preset.model_copy(update=changes)
         ctx.log("Scene adjusted by the operator: " + ", ".join(f"{k}={v if not hasattr(v, 'type') else v.type}" for k, v in changes.items()), "audit")
     geometry = geo.build(pouch, spec, keyline, {r: p.expected_mm for r, p in panels.items()}, materials, preset, preset_key)
+    if adj.windows:
+        geometry.window.shapes = [w.model_dump(mode="json") for w in adj.windows]
+        ctx.log(f"{len(adj.windows)} clear window(s) marked by the operator", "audit")
     key = f"{ctx.prefix}/geometry.json"
     ctx.storage.put_bytes(key, json.dumps(geometry.model_dump(mode="json"), indent=1).encode(), "application/json")
     ctx.log(f"Geometry {geometry.template} ({geometry.shape}) {geometry.width_mm} x {geometry.height_mm} mm; preset {preset_key}")

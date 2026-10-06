@@ -11,6 +11,8 @@ the automatic pipeline decided".
   keyline   keyline values (seals, zipper, notch, corner radius, fill level, bulge): keyline_overrides
   material  finish / metallic film / plain-panel colour
   scene     lighting (exact print colours or a studio look), background, shadow, views
+  windows   clear-film windows the operator marks on the pouch (a free shape, a rectangle, or the
+            printed area around a clicked point), in the face's texture coordinates
 """
 
 import re
@@ -125,6 +127,23 @@ class SceneAdjust(BaseModel):
     views: list[Literal["front", "back", "three_quarter_left", "three_quarter_right", "top_down", "turntable"]] | None = None
 
 
+class WindowShape(BaseModel):
+    """A see-through window on the front or back face. Points are texture coordinates, 0..1 from the
+    face texture's top-left: a free shape's outline, a rectangle's two corners, or the one point a
+    "pick area" window grows from (over the printed colour, within `tolerance`)."""
+    face: Literal["front", "back"]
+    kind: Literal["free", "rect", "wand"]
+    points: list[tuple[float, float]] = Field(min_length=1, max_length=400)
+    tolerance: float = Field(40, ge=1, le=200)
+
+    @field_validator("points")
+    @classmethod
+    def _inside(cls, v: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        if any(not (-0.01 <= c <= 1.01) for p in v for c in p):
+            raise ValueError("window points are texture coordinates (0..1)")
+        return v
+
+
 class Adjustments(BaseModel):
     panels: dict[str, PanelAdjust] = {}
     swap_front_back: bool = False
@@ -132,6 +151,7 @@ class Adjustments(BaseModel):
     keyline: dict[str, Any] = Field({}, description="keyline values, e.g. {'zipper_offset_from_top_mm': 25}")
     material: MaterialAdjust = MaterialAdjust()
     scene: SceneAdjust = SceneAdjust()
+    windows: list[WindowShape] | None = Field(None, max_length=50)  # None: as the item default / none
 
     def merged_over(self, base: "Adjustments") -> "Adjustments":
         """This job's values over the item default: set fields win, unset ones fall through."""
@@ -146,10 +166,12 @@ class Adjustments(BaseModel):
             keyline={**base.keyline, **self.keyline},
             material=MaterialAdjust(**{**base.material.model_dump(), **self.material.model_dump(exclude_unset=True)}),
             scene=SceneAdjust(**{**base.scene.model_dump(), **self.scene.model_dump(exclude_unset=True)}),
+            windows=self.windows if self.windows is not None else base.windows,
         )
 
-    def earliest_step(self) -> str:
-        """The first workflow step whose result these adjustments change."""
+    def earliest_step(self, windows_changed: bool = False) -> str:
+        """The first workflow step whose result these adjustments change (`windows_changed`: the
+        windows differ from the job's previous ones, clearing them included)."""
         if any(k in self.specs for k in ("pouch_height_mm", "pouch_closed_width_mm", "gusset_full_width_mm", "pouch_open_width_mm", "pouch_or_roll_form")):
             return "extract_specs"  # sizes decide how a sheet is split into panels
         if self.specs:
@@ -160,7 +182,7 @@ class Adjustments(BaseModel):
         if self.swap_front_back or any(p.source != "auto" for p in self.panels.values()):
             return "link_panels"  # another artwork source for a panel
         m, s = self.material, self.scene
-        if m.finish != "auto" or m.metallic != "auto" or m.plain_color or any(v is not None for v in (s.lighting, s.background, s.shadow, s.views)):
+        if windows_changed or m.finish != "auto" or m.metallic != "auto" or m.plain_color or any(v is not None for v in (s.lighting, s.background, s.shadow, s.views)):
             return "build_geometry"  # materials and the preset live in the geometry spec
         if any(p.bakes() for p in self.panels.values()):
             return "texture"  # overlays and colour correction are drawn into the finished images

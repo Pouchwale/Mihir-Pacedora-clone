@@ -399,12 +399,13 @@ def adjust(job_id: int, body: AdjustIn, session: Session = Depends(get_session),
         _event(session, job, "Adjustments reset to the automatic result", user)
     else:
         adj = body.adjust
-        inputs["adjust"] = adj.model_dump(exclude_unset=False)
+        windows_before = (inputs.get("adjust") or {}).get("windows") or None
+        inputs["adjust"] = adj.model_dump(mode="json", exclude_unset=False)
         if adj.specs:
             inputs["spec_corrections"] = {**inputs.get("spec_corrections", {}), **{f"spec_table.{k}": v for k, v in adj.specs.items()}}
         if adj.keyline:
             inputs["keyline_overrides"] = {**inputs.get("keyline_overrides", {}), **adj.keyline}
-        from_step = adj.earliest_step()
+        from_step = adj.earliest_step(windows_changed=windows_before != (inputs["adjust"].get("windows") or None))
         _event(session, job, "Adjustments applied" + (f": {body.note}" if body.note else ""), user, data=adj.model_dump(exclude_defaults=True))
         if body.save_item_default:
             if user.role != "admin":

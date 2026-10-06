@@ -45,6 +45,7 @@ class Window(BaseModel):
     width_mm: float = 0
     height_mm: float = 0
     radius_mm: float = 0
+    shapes: list[dict] = []  # operator-marked windows (adjust.WindowShape), drawn by the viewer
 
 
 class Spout(BaseModel):
