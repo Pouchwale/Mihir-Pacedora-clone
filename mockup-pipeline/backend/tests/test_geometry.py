@@ -66,6 +66,22 @@ def test_geometry_spec_spout_and_roll(seeded, sample_sheet):
     assert roll.roll.web_width_mm == 320
 
 
+def test_centre_seal_has_no_v_notch(seeded, sample_sheet):
+    """A centre-seal (pillow) pack is never V-notched, whatever the keyline says; others keep theirs."""
+    index = store.load_all(seeded)
+    ctx = spec_context(sample_sheet)
+
+    def notch(type_key: str) -> str:
+        pouch = index["pouch_type"][type_key]
+        kl = {**resolve_keyline(pouch.keyline_template, index["keyline_template"][pouch.keyline_template], type_key, ctx).values(), "tear_notch_type": "v_notch"}
+        sizes = panel_sizes(pouch.geometry_template, pouch.base_geometry, ctx["spec"], kl)
+        return geo.build(pouch, ctx["spec"], kl, sizes, resolve_materials(index["material"], ctx), index["output_preset"]["ecommerce"], "ecommerce").tear_notch.type
+
+    for key in ("center_seal_pillow", "center_seal_side_gusset", "roll_stock"):
+        assert notch(key) == "none", key
+    assert notch("stand_up_bottom_gusset") == notch("three_side_seal") == "v_notch"
+
+
 def test_keyline_svg(seeded, sample_sheet):
     g = _geometry(seeded, sample_sheet)
     svg = dieline.panel_svg("front", g, Image.new("RGB", (240, 312), "#29224b"))

@@ -96,7 +96,7 @@ export default function SharePage() {
         )}
         {!loading && !error && scene && (
           <div style={{ width: "100%", maxWidth: 1100, display: "flex", flexDirection: "column", gap: 24 }}>
-            <Viewer scene={scene} draft={draft} name={job?.item_code} />
+            <Viewer scene={scene} draft={draft} name={job?.item_code} customer />
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14 }}>
               {job?.pouch_type && <InfoCard label="Pouch type" value={job.pouch_type.replace(/_/g, " ")} />}
               {job?.item_code && <InfoCard label="Item code" value={job.item_code} />}

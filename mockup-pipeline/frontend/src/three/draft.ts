@@ -68,6 +68,11 @@ export function panelChanged(p: PanelDraft): boolean {
     || !!p.brightness || !!p.contrast || !!p.saturation || p.overlays.length > 0;
 }
 
+/** A centre-seal (pillow) pack: never V-notched (app/geometry/spec.py CENTRE_SEAL). */
+export function centreSeal(g: Pick<GeometrySpec, "shape" | "template">): boolean {
+  return g.shape === "center_seal_pillow" || g.shape === "center_seal_side_gusset" || g.template === "roll_stock";
+}
+
 function num(v: unknown): number | null {
   return typeof v === "number" && isFinite(v) ? v : typeof v === "string" && v.trim() !== "" && !isNaN(Number(v)) ? Number(v) : null;
 }
@@ -146,6 +151,7 @@ export function applyDraft(scene: SceneData, draft: Draft | null): { geometry: G
   set("window_height_mm", (v) => { g.window.height_mm = v; });
   set("window_corner_radius_mm", (v) => { g.window.radius_mm = v; });
   if (typeof k.tear_notch_type === "string") g.tear_notch.type = k.tear_notch_type;
+  if (g.tear_notch.type === "v_notch" && centreSeal(g)) g.tear_notch.type = "none"; // mirrors geometry/spec.py
   if (typeof k.hang_hole_type === "string") g.hang_hole.type = k.hang_hole_type;
   if (typeof k.butterfly_notch === "boolean") g.butterfly_notch = k.butterfly_notch;
   if (typeof k.window_enabled === "boolean") g.window.enabled = k.window_enabled && g.window.width_mm > 0 && g.window.height_mm > 0;

@@ -447,3 +447,5 @@ pre.diff .del { color: var(--bad); }
 .kl-svg .dl-sketch { fill: rgba(79, 70, 229, .15); stroke: #4f46e5; stroke-width: calc(var(--px) * 1.5); stroke-dasharray: calc(var(--px) * 5) calc(var(--px) * 3); pointer-events: none; }
 .kl-svg .dl-measure line { stroke: #e5484d; stroke-width: calc(var(--px) * 1.5); }
 .kl-svg .dl-measure circle { fill: #e5484d; }
+
+.viewer-panel.compact { bottom: auto; }

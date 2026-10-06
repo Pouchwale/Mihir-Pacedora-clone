@@ -3,7 +3,7 @@
 // hole, window), material, scene. Edits preview instantly; "Apply" reruns the job so the renders,
 // GLB and video match; an admin can save them as the item's default.
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_OVERLAY, IDENTITY_PANEL, panelChanged, panelOf, previewUrl, type Draft, type PanelDraft } from "../three/draft";
+import { centreSeal, DEFAULT_OVERLAY, IDENTITY_PANEL, panelChanged, panelOf, previewUrl, type Draft, type PanelDraft } from "../three/draft";
 import type { Overlay, SceneData, SceneFile } from "../three/types";
 
 type Dict = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -250,7 +250,9 @@ export default function AdjustPanel({ scene, job, draft, dirty, busy, isAdmin, o
           )}
           {"tear_notch_type" in kl && (
             <label className="small">Tear notch
-              <select value={keyText("tear_notch_type")} onChange={(e) => setKey("tear_notch_type", e.target.value)}>{NOTCHES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+              <select value={centreSeal(g) && keyText("tear_notch_type") === "v_notch" ? "none" : keyText("tear_notch_type")} onChange={(e) => setKey("tear_notch_type", e.target.value)}>
+                {NOTCHES.filter(([k]) => !(k === "v_notch" && centreSeal(g))).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
             </label>
           )}
           {"butterfly_notch" in kl && (

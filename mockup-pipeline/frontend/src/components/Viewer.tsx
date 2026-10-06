@@ -30,6 +30,8 @@ interface Props {
   name?: string | null; // file name stem for snapshots (the item code)
   /** Given (the job page): the Window tool marks clear windows on the pouch and reports them here. */
   onWindows?: (windows: WindowShape[]) => void;
+  /** A customer's share link: the Scene panel offers only dimension lines and filled / flat. */
+  customer?: boolean;
 }
 
 type Tool = "wand" | "free" | "rect";
@@ -69,14 +71,14 @@ const ICONS = {
   trash: "M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6",
 };
 
-export default function Viewer({ scene, draft, name, onWindows }: Props) {
+export default function Viewer({ scene, draft, name, onWindows, customer = false }: Props) {
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<Stage | null>(null);
   const controls = useRef<OrbitControls | null>(null);
   const spinRef = useRef(false);
   const [filled, setFilled] = useState(true);
-  const [dims, setDims] = useState(true);
+  const [dims, setDims] = useState(false); // dimension lines: off until asked for
   const [look, setLook] = useState<Look>("realistic");
   const [shadow, setShadow] = useState(true);
   const [backdrop, setBackdropState] = useState<Backdrop>({ kind: "white", color: "#e8edf5", image: null, moves: false });
@@ -96,6 +98,8 @@ export default function Viewer({ scene, draft, name, onWindows }: Props) {
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const firstBuild = useRef(true);
+  const pendingView = useRef<string | null>(null);
+  const gotoRef = useRef<(view: string) => void>(() => undefined);
   const setBackdrop = (b: Partial<Backdrop>) => setBackdropState((cur) => ({ ...cur, ...b }));
   const setFloor = (f: Partial<Floor>) => setFloorState((cur) => ({ ...cur, ...f }));
 
@@ -211,12 +215,14 @@ export default function Viewer({ scene, draft, name, onWindows }: Props) {
     const resize = () => {
       const box = wrap.current!;
       const w = box.clientWidth, h = box.clientHeight;
+      if (!w || !h) return; // hidden (a closed tab, a page still opening): keep the last good size
       stage.renderer.setPixelRatio(Math.min(1.5, window.devicePixelRatio));
       stage.renderer.setSize(w, h, false);
       stage.camera.aspect = w / h;
       stage.camera.updateProjectionMatrix();
       stage.fitBackground();
       dirty = true;
+      if (pendingView.current) gotoRef.current(pendingView.current); // the first view waited for a size
     };
     const ro = new ResizeObserver(resize);
     ro.observe(wrap.current!);
@@ -318,6 +324,8 @@ export default function Viewer({ scene, draft, name, onWindows }: Props) {
   const goto = (view: string) => {
     const stage = stageRef.current;
     if (!stage || !controls.current || !wrap.current) return;
+    if (!wrap.current.clientWidth || !wrap.current.clientHeight) { pendingView.current = view; return; } // framed once it has a size
+    pendingView.current = null;
     const t = VIEW_TURN[view] ?? VIEW_TURN.front;
     stage.resetTurn();
     stage.spin(THREE.MathUtils.degToRad(t.az));
@@ -328,6 +336,8 @@ export default function Viewer({ scene, draft, name, onWindows }: Props) {
     controls.current.update();
     stage.invalidate();
   };
+
+  gotoRef.current = goto;
 
   // A PNG of the view as it is on screen (turn, filled / flat, draft edits), at 2x, optionally transparent.
   const snapshot = (transparent: boolean) => {
@@ -437,11 +447,12 @@ export default function Viewer({ scene, draft, name, onWindows }: Props) {
           </aside>
         )}
         {panel && (
-          <aside className="viewer-panel">
+          <aside className={`viewer-panel ${customer ? "compact" : ""}`}>
             <div className="viewer-panel-head">
               <b>Scene</b>
               <button className="icon-btn" onClick={() => setPanel(false)} aria-label="Close"><Icon d={ICONS.close} /></button>
             </div>
+            {!customer && <>
             <div className="viewer-panel-section">
               <div className="viewer-panel-label">Background</div>
               <div className="tiles">
@@ -483,12 +494,13 @@ export default function Viewer({ scene, draft, name, onWindows }: Props) {
               </label>
               {toggle(shadow, "Shadow", setShadow, "Soft contact shadow under the pouch")}
             </div>
+            </>}
             <div className="viewer-panel-section">
               <div className="viewer-panel-label">Display</div>
               {toggle(filled, "Filled with product", setFilled, "Filled, or flat as made")}
               {toggle(dims, "Dimension lines", setDims)}
             </div>
-            <div className="viewer-panel-foot">Pictures stay in this browser; they are not uploaded.</div>
+            {!customer && <div className="viewer-panel-foot">Pictures stay in this browser; they are not uploaded.</div>}
           </aside>
         )}
 

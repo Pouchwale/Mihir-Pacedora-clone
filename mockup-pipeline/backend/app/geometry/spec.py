@@ -38,6 +38,9 @@ class HangHole(BaseModel):
     offset_mm: float
 
 
+CENTRE_SEAL = ("center_seal_pillow", "center_seal_side_gusset")
+
+
 class Window(BaseModel):
     enabled: bool
     x_mm: float = 0
@@ -133,6 +136,8 @@ def build(pouch: PouchType, spec: dict[str, Any], keyline: dict[str, Any], panel
 
     zipper_on = keyline.get("zipper_offset_from_top_mm") is not None
     notch_type = str(keyline.get("tear_notch_type") or "none")
+    if notch_type == "v_notch" and (shape in CENTRE_SEAL or pouch.geometry_template == "roll_stock"):
+        notch_type = "none"  # a centre-seal (pillow) pack is never V-notched
     roll = None
     fin = _num(keyline, "fin_seal_mm")
     if pouch.geometry_template == "roll_stock":
