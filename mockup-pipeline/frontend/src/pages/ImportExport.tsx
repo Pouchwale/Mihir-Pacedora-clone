@@ -6,7 +6,8 @@ import { Diff } from "../components/History";
 interface Plan { applied: boolean; created: string[]; updated: string[]; unchanged: string[]; archived: string[]; diffs: Record<string, string> }
 
 export default function ImportExport() {
-  const { isAdmin, refreshKinds } = useSession();
+  const { can, refreshKinds } = useSession();
+  const editable = can("edit_keyline");
   const [text, setText] = useState("");
   const [archiveMissing, setArchiveMissing] = useState(false);
   const [plan, setPlan] = useState<Plan | null>(null);
@@ -40,7 +41,7 @@ export default function ImportExport() {
         </div>
         <a className="btn" href="/api/index/export" download>Download index.yaml</a>
       </div>
-      {isAdmin ? (
+      {editable ? (
         <div className="card stack">
           <div className="row">
             <input type="file" accept=".yaml,.yml" onChange={async (e) => { const f = e.target.files?.[0]; if (f) { setText(await f.text()); setPlan(null); } }} />

@@ -149,7 +149,7 @@ class GraphIn(BaseModel):
 
 
 @router.put("/{key}/draft")
-def save_draft(key: str, body: GraphIn, session: Session = Depends(get_session), user: User = Depends(auth.require_admin)) -> WorkflowOut:
+def save_draft(key: str, body: GraphIn, session: Session = Depends(get_session), user: User = Depends(auth.require("edit_keyline"))) -> WorkflowOut:
     graph = _graph(body.graph)  # shape must be right; graph rules may still be broken in a draft
     draft = session.get(WorkflowDraft, _key(key))
     if draft is None:
@@ -161,7 +161,7 @@ def save_draft(key: str, body: GraphIn, session: Session = Depends(get_session),
 
 
 @router.delete("/{key}/draft")
-def discard_draft(key: str, session: Session = Depends(get_session), user: User = Depends(auth.require_admin)) -> WorkflowOut:
+def discard_draft(key: str, session: Session = Depends(get_session), user: User = Depends(auth.require("edit_keyline"))) -> WorkflowOut:
     draft = session.get(WorkflowDraft, _key(key))
     if draft is not None:
         session.delete(draft)
@@ -186,7 +186,7 @@ class PublishIn(BaseModel):
 
 
 @router.post("/{key}/publish")
-def publish(key: str, body: PublishIn, session: Session = Depends(get_session), user: User = Depends(auth.require_admin)) -> WorkflowOut:
+def publish(key: str, body: PublishIn, session: Session = Depends(get_session), user: User = Depends(auth.require("edit_keyline"))) -> WorkflowOut:
     _key(key)
     draft = session.get(WorkflowDraft, key)
     data = body.graph if body.graph is not None else (draft.graph if draft else None)

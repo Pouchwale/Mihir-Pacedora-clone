@@ -5,8 +5,24 @@ from datetime import datetime, timezone
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 
 from app.db import Base
+
+
+class UTCDateTime(TypeDecorator):
+    """A timestamp that always comes back in UTC with its zone. SQLite keeps no zone and returned naive
+    datetimes, which went out as "04:02" and every browser read as its own local time (5.5 h early
+    in India); stored values are UTC, so they only gain their zone here."""
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        return value.astimezone(timezone.utc) if value is not None and value.tzinfo else value
+
+    def process_result_value(self, value, dialect):
+        return value.replace(tzinfo=timezone.utc) if value is not None and value.tzinfo is None else value
 
 
 def utcnow() -> datetime:
@@ -20,12 +36,12 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(254), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(120), default="")
     password_hash: Mapped[str] = mapped_column(String(100))
-    role: Mapped[str] = mapped_column(String(20))  # "admin" or "operator"
+    role: Mapped[str] = mapped_column(String(20))  # app.auth.Role: admin, head_designer, designer, manager
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     failed_logins: Mapped[int] = mapped_column(Integer, default=0)
-    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    locked_until: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class UserSession(Base):
@@ -33,8 +49,8 @@ class UserSession(Base):
 
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256 of the cookie token
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime())
     user: Mapped[User] = relationship()
 
 
@@ -47,7 +63,7 @@ class IndexEntry(Base):
     key: Mapped[str] = mapped_column(String(120))
     current_version: Mapped[int] = mapped_column(Integer)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     versions: Mapped[list["IndexVersion"]] = relationship(back_populates="entry", order_by="IndexVersion.version")
 
 
@@ -59,7 +75,7 @@ class Batch(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(200), default="")
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class UploadedFile(Base):
@@ -75,7 +91,7 @@ class UploadedFile(Base):
     size: Mapped[int] = mapped_column(Integer)
     storage_key: Mapped[str] = mapped_column(String(400))
     uploaded_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class Job(Base):
@@ -101,9 +117,9 @@ class Job(Base):
     keyline_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     approved_by: Mapped[str | None] = mapped_column(String(254), nullable=True)
-    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    approved_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     # The workflow graph that ran this job (spec 4): "test" jobs run a draft graph from the editor's
     # test mode and never appear in the jobs list; the path is what the live canvas highlights.
     kind: Mapped[str] = mapped_column(String(10), default="job")
@@ -122,7 +138,7 @@ class WorkflowDraft(Base):
     key: Mapped[str] = mapped_column(String(120), primary_key=True)
     graph: Mapped[dict] = mapped_column(JSON)
     updated_by: Mapped[str] = mapped_column(String(254))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class JobStep(Base):
@@ -136,8 +152,8 @@ class JobStep(Base):
     step: Mapped[str] = mapped_column(String(40))
     status: Mapped[str] = mapped_column(String(20))  # running done failed needs_review
     attempt: Mapped[int] = mapped_column(Integer, default=0)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     output: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -149,7 +165,7 @@ class JobEvent(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     level: Mapped[str] = mapped_column(String(10))  # info warning error audit
     step: Mapped[str | None] = mapped_column(String(40), nullable=True)
     message: Mapped[str] = mapped_column(Text)
@@ -168,5 +184,5 @@ class IndexVersion(Base):
     reason: Mapped[str] = mapped_column(Text)
     author_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     author_email: Mapped[str] = mapped_column(String(254))  # kept even if the user is deleted
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     entry: Mapped[IndexEntry] = relationship(back_populates="versions")

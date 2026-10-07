@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
-import { api, KindInfo, User } from "./api";
+import { api, KEYLINE_KINDS, KindInfo, Permission, ROLE_LABELS, User } from "./api";
+import Activity from "./pages/Activity";
 import EntryPage from "./pages/EntryPage";
 import ImportExport from "./pages/ImportExport";
 import JobDetail from "./pages/JobDetail";
@@ -17,7 +18,10 @@ import Workflows from "./pages/Workflows";
 
 interface Session {
   user: User;
-  isAdmin: boolean;
+  /** The signed-in user's role allows this (app.auth.PERMISSIONS). */
+  can: (permission: Permission) => boolean;
+  /** May change entries of this index kind (keyline / dieline kinds and workflows need edit_keyline). */
+  canEdit: (kind: string) => boolean;
   kinds: KindInfo[];
   refreshKinds: () => void;
 }
@@ -59,12 +63,19 @@ function SignedIn() {
   useEffect(() => {
     if (user) refreshKinds();
   }, [user, refreshKinds]);
+  // Every page the user opens goes to the activity log (with the API calls, their whole trail).
+  const location = useLocation();
+  useEffect(() => {
+    if (user) api.post("/api/activity", { page: location.pathname + location.search }).catch(() => undefined);
+  }, [user, location.pathname, location.search]);
 
   if (user === undefined) return <div className="login muted">Loading…</div>;
   if (user === null) return <Login onLogin={setUser} />;
 
+  const can = (p: Permission) => user.permissions.includes(p);
+  const canEdit = (kind: string) => can(KEYLINE_KINDS.has(kind) ? "edit_keyline" : "edit_index");
   return (
-    <SessionContext.Provider value={{ user, isAdmin: user.role === "admin", kinds, refreshKinds }}>
+    <SessionContext.Provider value={{ user, can, canEdit, kinds, refreshKinds }}>
       <Shell>
         <Routes>
           <Route path="/" element={<Navigate to="/jobs" replace />} />
@@ -77,7 +88,8 @@ function SignedIn() {
           <Route path="/index/tools/test" element={<RuleTester />} />
           <Route path="/index/:kind" element={<KindList />} />
           <Route path="/index/:kind/:key" element={<EntryPage />} />
-          <Route path="/users" element={user.role === "admin" ? <Users /> : <Navigate to="/" />} />
+          <Route path="/users" element={can("manage_users") ? <Users /> : <Navigate to="/" />} />
+          <Route path="/activity" element={can("view_activity") ? <Activity /> : <Navigate to="/" />} />
           <Route path="*" element={<p className="muted">Page not found.</p>} />
         </Routes>
       </Shell>
@@ -93,6 +105,7 @@ const NAV_ICONS: Record<string, string> = {
   index: "M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5v14zM20 17v4H6.5",
   test: "M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11",
   yaml: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5",
+  activity: "M22 12h-4l-3 9L9 3l-3 9H2",
   users: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75",
 };
 export const NavIcon = ({ name, size = 17 }: { name: string; size?: number }) => (
@@ -113,7 +126,7 @@ function useTheme(): [Theme, (t: Theme) => void] {
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
-  const { user, kinds, isAdmin } = useSession();
+  const { user, kinds, can } = useSession();
   const [theme, setTheme] = useTheme();
   const logout = async () => {
     await api.post("/api/auth/logout");
@@ -150,7 +163,8 @@ function Shell({ children }: { children: React.ReactNode }) {
         <nav className="nav">
           <NavLink to="/index/tools/test"><NavIcon name="test" /><span>Rule tester</span></NavLink>
           <NavLink to="/index/tools/import-export"><NavIcon name="yaml" /><span>YAML import / export</span></NavLink>
-          {isAdmin && <NavLink to="/users"><NavIcon name="users" /><span>Users</span></NavLink>}
+          {can("manage_users") && <NavLink to="/users"><NavIcon name="users" /><span>Users</span></NavLink>}
+          {can("view_activity") && <NavLink to="/activity"><NavIcon name="activity" /><span>Activity log</span></NavLink>}
         </nav>
         <div className="sidebar-foot">
           <div className="theme-switch" role="group" aria-label="Theme">
@@ -161,7 +175,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           <div className="user-chip">
             <span className="avatar">{user.email.slice(0, 1)}</span>
             <span className="who" title={user.email}>{user.email}</span>
-            <span className={`badge ${isAdmin ? "accent" : ""}`}>{user.role}</span>
+            <span className={`badge ${user.role === "admin" ? "accent" : ""}`}>{ROLE_LABELS[user.role] ?? user.role}</span>
           </div>
           <button className="link" style={{ textAlign: "left", padding: 0 }} onClick={logout}>Sign out</button>
         </div>

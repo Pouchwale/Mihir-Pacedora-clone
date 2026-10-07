@@ -1,7 +1,7 @@
 import { useEffect, useState, type MouseEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api";
-import { formatTime } from "../util";
+import { formatTime, parseTime } from "../util";
 
 export interface JobSummary {
   id: number; batch_id: number | null; filename: string; item_code: string | null; client_name: string | null; status: string;
@@ -25,7 +25,7 @@ const STEPS = ["ingest", "trim_artwork", "extract_specs", "validate", "match_pou
 
 /** "5 min ago" for recent times, the date after a week. */
 function ago(iso: string): string {
-  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  const s = (Date.now() - parseTime(iso).getTime()) / 1000;
   if (s < 60) return "just now";
   if (s < 3600) return `${Math.floor(s / 60)} min ago`;
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`;

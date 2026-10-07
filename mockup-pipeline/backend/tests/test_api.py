@@ -24,7 +24,7 @@ def client(engine, seeded, monkeypatch):
     monkeypatch.setattr(main, "get_engine", lambda: engine)
     seeded.add_all([
         User(email="admin@example.com", role="admin", password_hash=auth.hash_password("admin-password-1")),
-        User(email="op@example.com", role="operator", password_hash=auth.hash_password("operator-password-1")),
+        User(email="op@example.com", role="manager", password_hash=auth.hash_password("operator-password-1")),
     ])
     seeded.commit()
     yield TestClient(main.app)
@@ -60,9 +60,9 @@ def test_wrong_password_and_lockout(client):
 
 def test_write_needs_csrf_header_and_admin(client):
     login(client, "op@example.com", "operator-password-1")
-    assert client.get("/api/index/pouch_type").status_code == 200  # operators can read
+    assert client.get("/api/index/pouch_type").status_code == 200  # managers can read
     body = {"data": {"client_name": "X"}, "reason": "r"}
-    assert client.put("/api/index/client/x", json=body, headers=H).status_code == 403  # not admin
+    assert client.put("/api/index/client/x", json=body, headers=H).status_code == 403  # managers do not edit the index
     client.post("/api/auth/logout")
     login(client)
     assert client.put("/api/index/client/x", json=body).status_code == 403  # no CSRF header
@@ -114,8 +114,8 @@ def test_import_export(client):
 
 def test_user_admin_and_last_admin_guard(client):
     login(client)
-    r = client.post("/api/users", json={"email": "new@example.com", "role": "operator", "password": "long-enough-1"}, headers=H)
+    r = client.post("/api/users", json={"email": "new@example.com", "role": "designer", "password": "long-enough-1"}, headers=H)
     assert r.status_code == 200
-    assert client.post("/api/users", json={"email": "x@example.com", "role": "operator", "password": "short"}, headers=H).status_code == 422
+    assert client.post("/api/users", json={"email": "x@example.com", "role": "designer", "password": "short"}, headers=H).status_code == 422
     admin_id = next(u["id"] for u in client.get("/api/users").json() if u["email"] == "admin@example.com")
-    assert client.patch(f"/api/users/{admin_id}", json={"role": "operator"}, headers=H).status_code == 409
+    assert client.patch(f"/api/users/{admin_id}", json={"role": "designer"}, headers=H).status_code == 409

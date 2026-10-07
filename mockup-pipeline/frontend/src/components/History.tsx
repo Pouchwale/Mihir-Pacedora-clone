@@ -4,7 +4,8 @@ import { useSession } from "../App";
 import { formatTime } from "../util";
 
 export default function History({ kind, entryKey, current, onRestored }: { kind: string; entryKey: string; current: number; onRestored: () => void }) {
-  const { isAdmin } = useSession();
+  const { canEdit } = useSession();
+  const editable = canEdit(kind);
   const [versions, setVersions] = useState<VersionMeta[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [diff, setDiff] = useState("");
@@ -57,7 +58,7 @@ export default function History({ kind, entryKey, current, onRestored }: { kind:
           <>
             <h2>{selected === current ? `Changes in v${current}` : `v${selected} → current (v${current})`}</h2>
             <Diff text={diff} />
-            {isAdmin && selected !== current && (
+            {editable && selected !== current && (
               <div className="row">
                 <input style={{ flex: 1 }} placeholder={`Reason (default: restore version ${selected})`} value={reason} onChange={(e) => setReason(e.target.value)} />
                 <button className="primary" onClick={restore}>Restore v{selected}</button>

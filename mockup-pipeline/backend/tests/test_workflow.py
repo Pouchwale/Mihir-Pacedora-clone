@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import auth
 from app.api import job_routes, main
+from app.config import get_settings
 from app.db import get_session
 from app.models import Job, User
 from app.render import headless, tokens
@@ -64,7 +65,7 @@ def app_client(engine, seeded, tmp_path, monkeypatch):
             yield s
 
     main.app.dependency_overrides[get_session] = override
-    seeded.add(User(email="op@example.com", role="operator", password_hash=auth.hash_password("operator-password-1")))
+    seeded.add(User(email="op@example.com", role="designer", password_hash=auth.hash_password("operator-password-1")))
     seeded.add(User(email="admin@example.com", role="admin", password_hash=auth.hash_password("admin-password-1")))
     seeded.commit()
     c = TestClient(main.app)
@@ -122,6 +123,10 @@ def test_sample_job_end_to_end(app_client, monkeypatch):
     z = zipfile.ZipFile(io.BytesIO(c.get(f"/api/jobs/{job_id}/download.zip").content))
     names = z.namelist()
     assert "data/audit.json" in names and any(n.startswith("renders/FGPO7215_crystal-enterprises_") for n in names)
+    # the same files, plainly, in the data folder's Output Mockups; the uploaded PDF in the user's upload folder
+    out = get_settings().data_dir / "Output Mockups" / f"FGPO7215_job{job_id}"
+    assert any(p.name.startswith("FGPO7215_crystal-enterprises_") for p in (out / "renders").iterdir()) and (out / "data" / "specs.json").exists()
+    assert list((get_settings().data_dir / "uploads").rglob("*FGPO7215_Dog_Food_Front_App.pdf"))
     audit = json.loads(z.read("data/audit.json"))
     assert audit["pouch_type"]["key"] == "stand_up_bottom_gusset" and audit["keyline"]["version"] == 1
     assert audit["input_files"][0]["sha256"] == up["files"][0]["sha256"]
@@ -133,9 +138,8 @@ def test_sample_job_end_to_end(app_client, monkeypatch):
     after = c.get(f"/api/jobs/{job_id}").json()
     assert after["job"]["status"] == "DONE" and after["outputs"]["build_geometry"]["geometry"] == before
 
-    # operators cannot approve or move to the latest index; admins can
+    # designers cannot approve; admins can
     assert c.post(f"/api/jobs/{job_id}/approve", headers=H).status_code == 403
-    assert c.post(f"/api/jobs/{job_id}/rerun", json={"from_step": "render", "latest_index": True}, headers=H).status_code == 403
     c.post("/api/auth/logout")
     c.post("/api/auth/login", json={"email": "admin@example.com", "password": "admin-password-1"}).raise_for_status()
     assert c.post(f"/api/jobs/{job_id}/approve", headers=H).json()["approved_by"] == "admin@example.com"
@@ -325,8 +329,8 @@ def test_job_page_adjustments(app_client, monkeypatch):
     assert d["outputs"]["texture"]["textures"]["gusset"]["color"] == "#336699"
     assert d["outputs"]["build_geometry"]["geometry"]["zipper"]["y_from_top_mm"] == 30
 
-    # operators cannot save item defaults; an admin can, and a new upload of the item starts from them
-    r = c.post(f"/api/jobs/{job_id}/adjust", json={"adjust": adjust, "save_item_default": True}, headers=H)
+    # designers cannot save keyline values as an item default; an admin can, and a new upload of the item starts from them
+    r = c.post(f"/api/jobs/{job_id}/adjust", json={"adjust": {**adjust, "keyline": {"zipper_offset_from_top_mm": 31}}, "save_item_default": True}, headers=H)
     assert r.status_code == 403
     c.post("/api/auth/logout")
     c.post("/api/auth/login", json={"email": "admin@example.com", "password": "admin-password-1"}).raise_for_status()

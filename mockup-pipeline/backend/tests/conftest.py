@@ -9,6 +9,7 @@ import pytest
 # (settings default = .work/dev.db) goes to a throwaway file instead. Set before app.config loads.
 os.environ.setdefault("DATABASE_URL", f"sqlite:///{(Path(__file__).parent / '.tmp' / 'default.db').as_posix()}")
 os.environ.setdefault("WORK_DIR", str(Path(__file__).parent / ".tmp" / "work"))
+os.environ.setdefault("DATA_DIR", str(Path(__file__).parent / ".tmp" / "data"))  # uploads copies and logs
 # ... and never call a paid vision API, whatever backend/.env says (environment beats .env).
 os.environ["VISION_FALLBACK"] = "none"
 os.environ["TEXT_READER"] = "ocr"

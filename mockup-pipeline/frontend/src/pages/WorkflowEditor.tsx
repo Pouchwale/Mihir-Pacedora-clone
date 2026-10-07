@@ -21,7 +21,8 @@ const starter = (name: string): WfGraph => {
 
 export default function WorkflowEditor() {
   const { key = "default" } = useParams();
-  const { isAdmin } = useSession();
+  const { canEdit } = useSession();
+  const editable = canEdit("workflow");
   const navigate = useNavigate();
   const [meta, setMeta] = useState<WorkflowMeta | null>(null);
   const [info, setInfo] = useState<WorkflowOut | null>(null);
@@ -157,7 +158,7 @@ export default function WorkflowEditor() {
         <div>
           <div className="muted small"><Link to="/workflows">Workflows</Link> / <code>{key}</code></div>
           <h1 className="row" style={{ gap: 8 }}>
-            <input className="wf-name" value={graph.name} onChange={(e) => change({ ...graph, name: e.target.value })} disabled={!isAdmin} aria-label="workflow name" />
+            <input className="wf-name" value={graph.name} onChange={(e) => change({ ...graph, name: e.target.value })} disabled={!editable} aria-label="workflow name" />
             {info.published ? <span className="badge ok">published v{info.published.version}</span> : <span className="badge warn">never published</span>}
             {(info.draft || dirty) && <span className="badge accent">{dirty ? "unsaved changes" : "draft"}</span>}
           </h1>
@@ -169,12 +170,12 @@ export default function WorkflowEditor() {
         <div className="row">
           <button onClick={layout} disabled={busy}>Auto-layout</button>
           <button onClick={validate} disabled={busy}>Validate</button>
-          {isAdmin && <button onClick={saveDraft} disabled={busy || !dirty}>Save draft</button>}
-          {isAdmin && info.draft && <button onClick={discard} disabled={busy}>Discard draft</button>}
-          {isAdmin && <button className="primary" onClick={publish} disabled={busy}>Publish…</button>}
+          {editable && <button onClick={saveDraft} disabled={busy || !dirty}>Save draft</button>}
+          {editable && info.draft && <button onClick={discard} disabled={busy}>Discard draft</button>}
+          {editable && <button className="primary" onClick={publish} disabled={busy}>Publish…</button>}
         </div>
       </div>
-      <input className="wf-desc" placeholder="What this workflow is for (shown in the list)" value={graph.description} onChange={(e) => change({ ...graph, description: e.target.value })} disabled={!isAdmin} />
+      <input className="wf-desc" placeholder="What this workflow is for (shown in the list)" value={graph.description} onChange={(e) => change({ ...graph, description: e.target.value })} disabled={!editable} />
       {problems.length > 0 && <div className="msg bad" style={{ margin: "10px 0" }}>Not publishable yet:<ul>{problems.map((p) => <li key={p}>{p}</li>)}</ul></div>}
       {notice && <div className="msg ok" style={{ margin: "10px 0" }}>{notice}</div>}
       {error && <div className="msg bad" style={{ margin: "10px 0" }}>{error}</div>}
@@ -184,7 +185,7 @@ export default function WorkflowEditor() {
           <h2>Node library</h2>
           <div className="muted small" style={{ marginBottom: 8 }}>Click to add. Drag a node's right handle to another node to connect them. Delete with Backspace.</div>
           {PALETTE.map((t) => (
-            <button key={t} className="wf-palette-item" onClick={() => addNode(t)} disabled={!isAdmin} title={meta.node_types.find((x) => x.type === t)?.help}>
+            <button key={t} className="wf-palette-item" onClick={() => addNode(t)} disabled={!editable} title={meta.node_types.find((x) => x.type === t)?.help}>
               <span className={`wf-swatch type-${t}`} />{NODE_LABELS[t]}
             </button>
           ))}
@@ -192,7 +193,7 @@ export default function WorkflowEditor() {
         </aside>
 
         <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-          <WorkflowCanvas graph={graph} onChange={isAdmin ? change : undefined} path={path} currentNode={testJob?.job?.current_node}
+          <WorkflowCanvas graph={graph} onChange={editable ? change : undefined} path={path} currentNode={testJob?.job?.current_node}
             selectedNode={selNode} selectedEdge={selEdge} onSelectNode={(id) => { setSelNode(id); if (id) setSide("settings"); }} onSelectEdge={(id) => { setSelEdge(id); if (id) setSide("settings"); }} height={620} />
         </div>
 
@@ -201,7 +202,7 @@ export default function WorkflowEditor() {
             {(["settings", "test", "versions"] as Side[]).map((s) => <button key={s} className={side === s ? "on" : ""} onClick={() => setSide(s)}>{{ settings: "Settings", test: "Test mode", versions: "Versions" }[s]}</button>)}
           </div>
           {side === "settings" && (
-            <fieldset disabled={!isAdmin} style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }}>
+            <fieldset disabled={!editable} style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }}>
               {node && <NodeSettings graph={graph} node={node} meta={meta}
                 onChange={(n) => change({ ...graph, nodes: graph.nodes.map((x) => (x.id === n.id ? n : x)) })}
                 onDelete={() => { change({ ...graph, nodes: graph.nodes.filter((x) => x.id !== node.id), edges: graph.edges.filter((e) => e.source !== node.id && e.target !== node.id) }); setSelNode(null); }} />}

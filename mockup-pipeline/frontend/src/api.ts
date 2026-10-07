@@ -60,8 +60,15 @@ export const api = {
   upload,
 };
 
-export type Role = "admin" | "operator";
-export interface User { id: number; email: string; name: string; role: Role; active: boolean }
+export type Role = "admin" | "head_designer" | "designer" | "manager";
+export type Permission = "manage_users" | "view_activity" | "edit_index" | "edit_keyline" | "approve";
+export const ROLE_LABELS: Record<Role, string> = { admin: "Admin", head_designer: "Head of Designer", designer: "Designer", manager: "Manager" };
+/** Index kinds holding keyline / dieline values (mirrors app.auth.KEYLINE_KINDS): edit_keyline only. */
+export const KEYLINE_KINDS = new Set(["keyline_template", "pouch_type", "standard_size", "workflow"]);
+export interface User {
+  id: number; email: string; name: string; role: Role; active: boolean;
+  permissions: Permission[]; locked: boolean; created_at: string | null; last_login_at: string | null;
+}
 export interface KindInfo { kind: string; label: string; singleton: boolean; count: number; page?: string | null }
 export interface EntrySummary { kind: string; key: string; name: string; version: number; archived: boolean; updated_at: string; author: string; extra?: Record<string, unknown> }
 

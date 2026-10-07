@@ -30,7 +30,8 @@ export default function EntryPage() {
   const { kind = "", key = "" } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
-  const { isAdmin, kinds, refreshKinds } = useSession();
+  const { canEdit, kinds, refreshKinds } = useSession();
+  const editable = canEdit(kind);
   const state = (location.state ?? {}) as { isNew?: boolean; copyFrom?: string | null };
   const info = kinds.find((k) => k.kind === kind);
   const hasForm = kind in FORMS;
@@ -147,7 +148,7 @@ export default function EntryPage() {
           <h1>{title} {isNew && <span className="badge accent">new</span>} {entry?.archived && <span className="badge warn">archived</span>}</h1>
           {entry && <div className="muted small">Version {entry.version} · {entry.meta.action} by {entry.meta.author} · {formatTime(entry.meta.created_at)} · “{entry.meta.reason}”</div>}
         </div>
-        {isAdmin && !isNew && (
+        {editable && !isNew && (
           <div className="row">
             {!info?.singleton && <button onClick={duplicate}>Duplicate</button>}
             {!info?.singleton && !entry?.archived && <button className="danger" onClick={archive}>Archive</button>}
@@ -162,21 +163,21 @@ export default function EntryPage() {
       </div>
 
       {tab === "form" && Form && (
-        <fieldset disabled={!isAdmin} style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }}>
+        <fieldset disabled={!editable} style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }}>
           <Form data={data} onChange={change} />
         </fieldset>
       )}
       {tab === "yaml" && (
         <div className="card stack">
           {dirty && hasForm && !isNew && <div className="msg warn">The form has unsaved changes. This YAML shows the saved version; saving here discards the form changes.</div>}
-          <textarea className="code" spellCheck={false} value={yamlText} readOnly={!isAdmin}
+          <textarea className="code" spellCheck={false} value={yamlText} readOnly={!editable}
             onChange={(e) => { setYamlText(e.target.value); setDirty(true); }} />
           <div className="muted small">Validated on save against the schema; every problem is listed.</div>
         </div>
       )}
       {tab === "history" && entry && <History kind={kind} entryKey={key} current={entry.current_version} onRestored={load} />}
 
-      {isAdmin && tab !== "history" && (
+      {editable && tab !== "history" && (
         <>
           {problems.length > 0 && (
             <div className="msg bad" style={{ marginTop: 14 }}>

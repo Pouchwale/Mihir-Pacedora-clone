@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     # and the job runs on to its 3D mockup. False brings back the review forms.
     auto_review: bool = True
     work_dir: Path = Path("./.work")
+    # The users' own folder, kept apart from the code: a readable copy of every PDF / XML / picture
+    # they upload (uploads/<date>/<email>/) and the permanent logs (logs/activity, logs/server), one
+    # file a day, written straight to disk so a shutdown or restart loses nothing (app.activity).
+    data_dir: Path = Path("./data")
 
     # Database: Render Postgres in production ("postgresql://..." is accepted and mapped to psycopg).
     database_url: str = "sqlite:///./.work/dev.db"

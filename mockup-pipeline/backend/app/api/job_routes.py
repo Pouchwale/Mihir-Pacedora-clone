@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
-from app import auth
+from app import activity, auth
 from app.api import tunnel
 from app.config import get_settings
 from app.db import get_session
@@ -76,6 +76,7 @@ def register_file(session: Session, name: str, data: bytes, batch: Batch | None,
     storage = get_storage()
     if not storage.exists(key):
         storage.put_bytes(key, data, "application/pdf")
+    activity.keep_upload(user, name, data, batch.id if batch else None)  # readable copy in the user's folder
     f = UploadedFile(batch_id=batch.id if batch else None, filename=name, item_code=code, sha256=sha, size=len(data),
                      storage_key=key, uploaded_by_id=user.id)
     session.add(f)
@@ -98,6 +99,7 @@ def register_artwork(session: Session, name: str, data: bytes, user: User) -> Up
     storage = get_storage()
     if not storage.exists(key):
         storage.put_bytes(key, data, panel_art.media_type(f"x.{ext}"))
+    activity.keep_upload(user, name, data)
     f = UploadedFile(batch_id=None, filename=name if name.lower().endswith(f".{ext}") else f"{name}.{ext}", item_code=None, sha256=sha,
                      size=len(data), storage_key=key, uploaded_by_id=user.id)
     session.add(f)
@@ -115,6 +117,7 @@ class UploadResult(BaseModel):
 
 @router.post("/uploads")
 async def upload(
+    request: Request,
     files: list[UploadFile] = File(...),
     name: str = Form(""),
     panels_only: bool = Form(False),
@@ -152,6 +155,7 @@ async def upload(
             storage = get_storage()
             if not storage.exists(key):
                 storage.put_bytes(key, data, "application/xml")
+            activity.keep_upload(user, filename, data, batch.id)
             for code in items:  # one row per item, so a later job for that code finds it too
                 session.add(UploadedFile(batch_id=batch.id, filename=filename, item_code=code, sha256=sha, size=len(data),
                                          storage_key=key, uploaded_by_id=user.id))
@@ -175,6 +179,7 @@ async def upload(
 
     resumed = _resume_waiting(session, {f.item_code for f in registered if f.item_code}, exclude={j.id for j in jobs})
     session.commit()
+    activity.record("uploaded", user, request, batch=batch.id, files=[up.filename for up in files], jobs=[j.id for j in jobs])
     for job in jobs:
         queue.enqueue(job.id)
     for job_id in resumed:
@@ -437,8 +442,9 @@ def adjust(job_id: int, body: AdjustIn, session: Session = Depends(get_session),
         from_step = adj.earliest_step(windows_changed=windows_before != (inputs["adjust"].get("windows") or None))
         _event(session, job, "Adjustments applied" + (f": {body.note}" if body.note else ""), user, data=adj.model_dump(exclude_defaults=True))
         if body.save_item_default:
-            if user.role != "admin":
-                raise HTTPException(403, "Only administrators can save item defaults")
+            auth.require_kind(user, "item_override")
+            if adj.keyline and not auth.can(user, "edit_keyline"):
+                raise HTTPException(403, "Your role may not save keyline values as the item default; ask a Head of Designer")
             if not job.item_code:
                 raise HTTPException(422, "The job has no item code to save defaults for")
             key = job.item_code.lower()
@@ -561,8 +567,8 @@ def rerun(job_id: int, body: RerunIn, session: Session = Depends(get_session), u
         raise HTTPException(409, "The job is running (pause or cancel it first)")
     job.control = None  # a rerun of a paused / cancelled job starts it again
     if body.latest_index:
-        if user.role != "admin":
-            raise HTTPException(403, "Only administrators can re-render on the latest index")
+        if not auth.can(user, "edit_index"):
+            raise HTTPException(403, "Your role may not move a job to the latest index")
         job.index_snapshot = store.snapshot(session)
         if job.kind != "test":
             job.workflow_version = None  # the latest published version of its workflow, too
@@ -642,7 +648,7 @@ def cancel(job_id: int, session: Session = Depends(get_session), user: User = De
 
 
 @router.post("/jobs/{job_id}/approve")
-def approve(job_id: int, session: Session = Depends(get_session), user: User = Depends(auth.require_admin)) -> JobSummary:
+def approve(job_id: int, session: Session = Depends(get_session), user: User = Depends(auth.require("approve"))) -> JobSummary:
     job = _job(session, job_id)
     if job.status != "DONE":
         raise HTTPException(409, "Only finished jobs can be approved")

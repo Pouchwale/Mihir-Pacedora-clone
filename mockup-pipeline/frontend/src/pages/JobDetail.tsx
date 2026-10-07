@@ -9,7 +9,7 @@ import Viewer from "../components/Viewer";
 import WorkflowCanvas, { nodeTitle } from "../components/WorkflowCanvas";
 import { draftFrom, type Draft } from "../three/draft";
 import type { SceneData, SceneFile } from "../three/types";
-import { formatTime } from "../util";
+import { formatTime, parseTime } from "../util";
 import { JobControls, STATUS_BADGE } from "./Jobs";
 import { NodeRun } from "./WorkflowEditor";
 
@@ -21,14 +21,14 @@ const SOURCE_BADGE: Record<string, string> = { item_override: "bad", client_over
 
 function duration(a?: string | null, b?: string | null) {
   if (!a || !b) return "";
-  const s = (new Date(b).getTime() - new Date(a).getTime()) / 1000;
+  const s = (parseTime(b).getTime() - parseTime(a).getTime()) / 1000;
   return s < 60 ? `${s.toFixed(1)} s` : `${(s / 60).toFixed(1)} min`;
 }
 
 export default function JobDetail() {
   const { id = "" } = useParams();
   const jobId = Number(id);
-  const { isAdmin } = useSession();
+  const { can } = useSession();
   const [data, setData] = useState<Dict | null>(null);
   const [scene, setScene] = useState<SceneData | null>(null);
   const [tab, setTab] = useState<Tab>("keyline_workspace");
@@ -155,7 +155,7 @@ export default function JobDetail() {
               {shareCopied ? "✓ Link Copied!" : "🔗 Share 3D"}
             </button>
           )}
-          {job.status === "DONE" && isAdmin && !job.approved_by && <button className="primary" onClick={() => act(() => api.post(`/api/jobs/${jobId}/approve`), "Approved.")}>Approve</button>}
+          {job.status === "DONE" && can("approve") && !job.approved_by && <button className="primary" onClick={() => act(() => api.post(`/api/jobs/${jobId}/approve`), "Approved.")}>Approve</button>}
         </div>
       </div>
       {msg && <div className="msg warn" style={{ marginBottom: 12 }}>{msg}</div>}
@@ -182,7 +182,7 @@ export default function JobDetail() {
 
       <TabGuard key={tab}>
       {tab === "keyline_workspace" && (
-        <KeylineWorkspace job={data} liveScene={liveScene} draft={draft} dirty={dirty} busy={adjusting} running={running} isAdmin={isAdmin}
+        <KeylineWorkspace job={data} liveScene={liveScene} draft={draft} dirty={dirty} busy={adjusting} running={running} isAdmin={can("edit_index")}
           onChange={setDraft} onApply={applyDraft} onReset={resetDraft} onUpload={uploadArtwork} onSwitchTo3D={() => setTab("results")} />
       )}
 
@@ -203,7 +203,7 @@ export default function JobDetail() {
             <div className="viewer-layout">
               <div className="card"><Viewer scene={liveScene} draft={draft} name={job.item_code} onWindows={draft ? (windows) => setDraft({ ...draft, windows }) : undefined} /></div>
               {draft && !running && (
-                <AdjustPanel scene={liveScene} job={data} draft={draft} dirty={dirty} busy={adjusting} isAdmin={isAdmin}
+                <AdjustPanel scene={liveScene} job={data} draft={draft} dirty={dirty} busy={adjusting} isAdmin={can("edit_index")}
                   onChange={setDraft} onApply={applyDraft} onReset={resetDraft} onUpload={uploadArtwork} />
               )}
             </div>
@@ -273,7 +273,7 @@ export default function JobDetail() {
               ))}
             </tbody>
           </table>
-          {isAdmin && !running && (
+          {can("edit_index") && !running && (
             <div className="row" style={{ padding: 12 }}>
               <button onClick={() => rerun("resolve_keyline", true)}>Re-render on the latest index</button>
               <span className="muted small">Pins the current index versions and reruns from resolve_keyline. This job used keyline {data.keyline_template} v{data.keyline_version}.</span>

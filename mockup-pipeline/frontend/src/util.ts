@@ -1,5 +1,12 @@
-export const formatTime = (iso: string) =>
-  new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+/** A server timestamp as a Date. The server sends UTC; one without a zone (an old record) is UTC too,
+ * never the browser's local time. */
+export const parseTime = (iso: string) => new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(iso) ? iso : `${iso}Z`);
+
+/** "07 Oct 2026, 09:32 am" in this computer's time zone, the same on every page. */
+export const formatTime = (iso: string, seconds = false) =>
+  parseTime(iso).toLocaleString("en-IN", {
+    day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", ...(seconds ? { second: "2-digit" } : {}), hour12: true,
+  });
 
 export const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
 

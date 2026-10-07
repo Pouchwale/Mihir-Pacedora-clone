@@ -20,7 +20,8 @@ const HELP: Record<string, string> = {
 
 export default function KindList() {
   const { kind = "" } = useParams();
-  const { kinds, isAdmin } = useSession();
+  const { kinds, canEdit } = useSession();
+  const editable = canEdit(kind);
   const info = kinds.find((k) => k.kind === kind);
   const [rows, setRows] = useState<EntrySummary[]>([]);
   const [catalog, setCatalog] = useState<Dict | null>(null);
@@ -54,7 +55,7 @@ export default function KindList() {
         </div>
         <div className="row">
           <label className="check small muted"><input type="checkbox" checked={archived} onChange={(e) => setArchived(e.target.checked)} /> show archived</label>
-          {isAdmin && <button className="primary" onClick={() => setCreating(!creating)}>New</button>}
+          {editable && <button className="primary" onClick={() => setCreating(!creating)}>New</button>}
         </div>
       </div>
       {creating && (

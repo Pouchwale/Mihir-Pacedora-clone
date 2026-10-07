@@ -7,6 +7,7 @@ Mutating requests must carry `X-Requested-With: fetch`, which a cross-site form 
 import hashlib
 import secrets
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import Literal
 
 import bcrypt
@@ -19,7 +20,18 @@ from app.db import get_session
 from app.models import User, UserSession, utcnow
 
 COOKIE = "pm_session"
-Role = Literal["admin", "operator"]
+Role = Literal["admin", "head_designer", "designer", "manager"]
+ROLE_LABELS = {"admin": "Admin", "head_designer": "Head of Designer", "designer": "Designer", "manager": "Manager"}
+# What each role may do beyond using jobs (upload, review, adjust, share, download), which everyone may.
+PERMISSIONS = {
+    "manage_users": {"admin"},                                    # the Users page: accounts, roles, passwords
+    "view_activity": {"admin", "manager"},                        # the activity log of every user
+    "edit_index": {"admin", "head_designer", "designer"},         # index entries (materials, clients, ...)
+    "edit_keyline": {"admin", "head_designer"},                   # keyline / dieline values and workflows
+    "approve": {"admin", "head_designer", "manager"},             # approve finished jobs
+}
+# Index kinds that hold keyline and dieline values: designers may look but not change them.
+KEYLINE_KINDS = {"keyline_template", "pouch_type", "standard_size", "workflow"}
 MAX_FAILED = 8
 LOCK_MINUTES = 15
 MIN_PASSWORD = 10
@@ -99,13 +111,38 @@ def current_user(request: Request, session: Session = Depends(get_session)) -> U
         raise HTTPException(401, "Session expired")
     if request.method not in ("GET", "HEAD", "OPTIONS") and request.headers.get("x-requested-with") != "fetch":
         raise HTTPException(403, "Missing X-Requested-With header")
+    request.state.user = SimpleNamespace(email=s.user.email, role=s.user.role)  # for the activity log
     return s.user
 
 
-def require_admin(user: User = Depends(current_user)) -> User:
-    if user.role != "admin":
-        raise HTTPException(403, "Administrators only")
-    return user
+def can(user: User, permission: str) -> bool:
+    return user.role in PERMISSIONS[permission]
+
+
+def permissions(user: User) -> list[str]:
+    return [p for p, roles in PERMISSIONS.items() if user.role in roles]
+
+
+def require(permission: str):
+    """Dependency: the signed-in user, or 403 when their role lacks `permission`."""
+    def check(user: User = Depends(current_user)) -> User:
+        if not can(user, permission):
+            raise HTTPException(403, f"Your role ({ROLE_LABELS.get(user.role, user.role)}) may not do this")
+        return user
+    return check
+
+
+def can_edit_kind(user: User, kind: str) -> bool:
+    return can(user, "edit_keyline" if kind in KEYLINE_KINDS else "edit_index")
+
+
+def require_kind(user: User, kind: str) -> None:
+    if not can_edit_kind(user, kind):
+        what = "keyline, dieline and workflow values" if kind in KEYLINE_KINDS else "the index"
+        raise HTTPException(403, f"Your role ({ROLE_LABELS.get(user.role, user.role)}) may not change {what}")
+
+
+require_admin = require("manage_users")
 
 
 def ensure_admin(session: Session) -> str | None:

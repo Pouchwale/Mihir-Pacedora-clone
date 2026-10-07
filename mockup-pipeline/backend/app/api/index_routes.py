@@ -110,7 +110,7 @@ class ImportIn(BaseModel):
 
 
 @router.post("/import")
-def import_yaml(body: ImportIn, session: Session = Depends(get_session), user: User = Depends(auth.require_admin)) -> dict:
+def import_yaml(body: ImportIn, session: Session = Depends(get_session), user: User = Depends(auth.require("edit_keyline"))) -> dict:
     try:
         plan = store.plan_import(session, body.yaml, body.archive_missing)
         if not body.dry_run:
@@ -296,7 +296,7 @@ class SaveIn(BaseModel):
 
 
 @router.put("/{kind}/{key}")
-def save_entry(kind: str, key: str, body: SaveIn, session: Session = Depends(get_session), user: User = Depends(auth.require_admin)) -> EntryOut:
+def save_entry(kind: str, key: str, body: SaveIn, session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> EntryOut:
     data = body.data
     if body.yaml is not None:
         try:
@@ -305,6 +305,7 @@ def save_entry(kind: str, key: str, body: SaveIn, session: Session = Depends(get
             raise HTTPException(422, {"problems": [f"YAML syntax: {exc}"]}) from exc
     if not isinstance(data, dict):
         raise HTTPException(422, {"problems": ["entry must be a mapping"]})
+    _may_write(session, user, kind, key, data)
     try:
         author = store.Author.of(user)
         if kind == "output_preset" and data.get("is_default"):
@@ -321,12 +322,23 @@ def save_entry(kind: str, key: str, body: SaveIn, session: Session = Depends(get
     return get_entry(kind, key, None, session, user)
 
 
+def _may_write(session: Session, user: User, kind: str, key: str, data: dict) -> None:
+    """403 unless the user's role may change this kind; designers also may not change an item
+    override's keyline values (the rest of the override is theirs to edit)."""
+    auth.require_kind(user, kind)
+    if kind == "item_override" and not auth.can(user, "edit_keyline"):
+        current = store.get_version(session, kind, key)
+        if (data.get("keyline_overrides") or {}) != ((current.data if current else {}).get("keyline_overrides") or {}):
+            raise HTTPException(403, "Your role may not change keyline values; ask a Head of Designer")
+
+
 class ReasonIn(BaseModel):
     reason: str
 
 
 @router.delete("/{kind}/{key}")
-def archive_entry(kind: str, key: str, body: ReasonIn, session: Session = Depends(get_session), user: User = Depends(auth.require_admin)) -> dict:
+def archive_entry(kind: str, key: str, body: ReasonIn, session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> dict:
+    _may_write(session, user, kind, key, {})
     try:
         store.archive(session, _kind(kind), key, store.Author.of(user), body.reason)
         session.commit()
@@ -355,7 +367,9 @@ class RestoreIn(BaseModel):
 
 
 @router.post("/{kind}/{key}/restore")
-def restore(kind: str, key: str, body: RestoreIn, session: Session = Depends(get_session), user: User = Depends(auth.require_admin)) -> EntryOut:
+def restore(kind: str, key: str, body: RestoreIn, session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> EntryOut:
+    old = store.get_version(session, kind, key, body.version)
+    _may_write(session, user, kind, key, dict(old.data) if old else {})
     try:
         store.restore(session, _kind(kind), key, body.version, store.Author.of(user), body.reason)
         session.commit()

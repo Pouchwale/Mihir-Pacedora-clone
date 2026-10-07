@@ -5,7 +5,8 @@ import { useSession } from "../App";
 import { formatTime } from "../util";
 
 export default function Workflows() {
-  const { isAdmin } = useSession();
+  const { canEdit } = useSession();
+  const editable = canEdit("workflow");
   const [rows, setRows] = useState<WorkflowOut[]>([]);
   const [newKey, setNewKey] = useState("");
   const navigate = useNavigate();
@@ -24,7 +25,7 @@ export default function Workflows() {
           <h1>Workflows</h1>
           <div className="muted">What happens to a job, as a flowchart: prepare, decide, fetch fields, set the pouch type, validate, build, render. Jobs run <b>default</b>; other workflows serve as sub-workflows or for tests.</div>
         </div>
-        {isAdmin && (
+        {editable && (
           <div className="row">
             <input placeholder="new workflow key (e.g. spout_only)" value={newKey} onChange={(e) => setNewKey(e.target.value)} />
             <button className="primary" onClick={create} disabled={!newKey.trim()}>New workflow</button>

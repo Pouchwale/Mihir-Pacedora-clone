@@ -10,6 +10,7 @@ from datetime import date
 
 from pydantic import BaseModel
 
+from app import activity
 from app.workflow.context import StepContext
 from app.workflow.steps.build_geometry import Output as GeometryOutput
 from app.workflow.steps.render import Output as RenderOutput
@@ -65,4 +66,8 @@ def run(ctx: StepContext) -> Output:
     spec_key = ctx.storage.put_bytes(f"{ctx.prefix}/specs.json", json.dumps(sheet.model_dump(mode="json"), indent=1).encode(), "application/json")
     files.append(ExportFile(name="data/specs.json", key=spec_key, kind="data"))
     ctx.log(f"Export ready: {len(files)} file(s)", "audit", {"files": [f.name for f in files]})
+    if ctx.job.kind != "test":  # workflow test runs are not customer mockups
+        folder = activity.save_outputs(ctx.job.item_code, ctx.job.id, [(f.name, ctx.storage.get_bytes(f.key)) for f in files])
+        if folder:
+            ctx.log(f"Mockups saved to {folder}", "info")
     return Output(files=files)

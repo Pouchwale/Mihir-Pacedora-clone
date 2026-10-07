@@ -1,0 +1,161 @@
+"""Roles (admin, head of design, designer, manager), the Users page's account controls, and the
+activity log and upload copies in the data folder."""
+
+import json
+from datetime import date
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app import activity, auth
+from app.config import get_settings
+from app.models import User
+from tests.test_api import H, client, login  # noqa: F401 - fixture re-export
+
+PASSWORDS = {r: f"{r}-password-1" for r in ("head_designer", "designer", "manager")}
+
+
+@pytest.fixture
+def staff(client, seeded, tmp_path, monkeypatch):
+    monkeypatch.setattr(get_settings(), "data_dir", tmp_path / "data")  # a fresh data folder per test
+    seeded.add_all([User(email=f"{r}@example.com", role=r, password_hash=auth.hash_password(p)) for r, p in PASSWORDS.items()])
+    seeded.commit()
+    return client
+
+
+def as_role(c, role):
+    c.post("/api/auth/logout")
+    return login(c, f"{role}@example.com", PASSWORDS[role])
+
+
+def _today() -> list[dict]:
+    path = Path(get_settings().data_dir) / "logs" / "activity" / f"{date.today().isoformat()}.jsonl"
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_what_each_role_may_change(staff):
+    c = staff
+    client_entry = {"data": {"client_name": "X"}, "reason": "r"}
+    as_role(c, "designer")
+    keyline = c.get("/api/index/keyline_template/stand_up_bottom_gusset").json()
+    assert keyline["data"]  # everyone reads the index
+
+    # designer: the index, but not keyline / dieline values or workflows
+    assert c.put("/api/index/client/x", json=client_entry, headers=H).status_code == 200
+    r = c.put("/api/index/keyline_template/stand_up_bottom_gusset", json={"data": keyline["data"], "reason": "r"}, headers=H)
+    assert r.status_code == 403 and "keyline" in r.json()["detail"]
+    for kind in ("pouch_type", "standard_size"):
+        assert c.put(f"/api/index/{kind}/x", json={"data": {}, "reason": "r"}, headers=H).status_code == 403
+    graph = c.get("/api/workflows/default").json()["published"]["graph"]
+    assert c.put("/api/workflows/default/draft", json={"graph": graph}, headers=H).status_code == 403
+    assert c.post("/api/index/import", json={"yaml": ""}, headers=H).status_code == 403
+    # an item override is the designer's, except its keyline values
+    assert c.put("/api/index/item_override/fgpo1", json={"data": {"notes": "n"}, "reason": "r"}, headers=H).status_code == 200
+    r = c.put("/api/index/item_override/fgpo1", json={"data": {"keyline_overrides": {"zipper_offset_from_top_mm": 30}}, "reason": "r"}, headers=H)
+    assert r.status_code == 403
+    assert c.get("/api/users").status_code == 403 and c.get("/api/activity").status_code == 403
+    assert set(c.get("/api/auth/me").json()["permissions"]) == {"edit_index"}
+
+    # head of design: keyline values and workflows too, but no users or activity log
+    as_role(c, "head_designer")
+    r = c.put("/api/index/keyline_template/stand_up_bottom_gusset", json={"data": keyline["data"], "reason": "same"}, headers=H)
+    assert r.status_code == 200, r.text
+    assert c.put("/api/workflows/default/draft", json={"graph": graph}, headers=H).status_code == 200
+    assert c.get("/api/users").status_code == 403 and c.get("/api/activity").status_code == 403
+
+    # manager: reads everything and sees the activity log; changes nothing in the index
+    as_role(c, "manager")
+    assert c.put("/api/index/client/y", json=client_entry, headers=H).status_code == 403
+    assert c.get("/api/activity").status_code == 200 and c.get("/api/users").status_code == 403
+    assert {r["role"] for r in c.get("/api/roles").json()} == {"admin", "head_designer", "designer", "manager"}
+
+
+def test_admin_controls_accounts_and_every_change_is_logged(staff):
+    c = staff
+    login(c)
+    users = {u["email"]: u for u in c.get("/api/users").json()}
+    d = users["designer@example.com"]
+
+    # rename the sign-in email and name, change the role: the user's open sessions end
+    other = TestClient(c.app)  # the designer's own browser
+    login(other, "designer@example.com", PASSWORDS["designer"])
+    r = c.patch(f"/api/users/{d['id']}", json={"email": "Lead@Example.com", "name": "Lead", "role": "head_designer"}, headers=H)
+    assert r.status_code == 200 and (r.json()["email"], r.json()["role"]) == ("lead@example.com", "head_designer")
+    assert other.get("/api/auth/me").status_code == 401
+    assert c.patch(f"/api/users/{d['id']}", json={"email": "manager@example.com"}, headers=H).status_code == 409
+
+    # lock-out after wrong passwords, cleared by the admin; a new password works, the old does not
+    for _ in range(auth.MAX_FAILED):
+        other.post("/api/auth/login", json={"email": "lead@example.com", "password": "wrong"})
+    assert next(u for u in c.get("/api/users").json() if u["id"] == d["id"])["locked"]
+    assert c.patch(f"/api/users/{d['id']}", json={"unlock": True, "password": "brand-new-pass-1"}, headers=H).json()["locked"] is False
+    assert other.post("/api/auth/login", json={"email": "lead@example.com", "password": PASSWORDS["designer"]}).status_code == 401
+    login(other, "lead@example.com", "brand-new-pass-1")
+
+    # deactivate: signed out at once and cannot sign in; sign-out-everywhere for an active user
+    assert c.patch(f"/api/users/{d['id']}", json={"active": False}, headers=H).json()["active"] is False
+    assert other.get("/api/auth/me").status_code == 401
+    assert other.post("/api/auth/login", json={"email": "lead@example.com", "password": "brand-new-pass-1"}).status_code == 401
+    m = users["manager@example.com"]
+    login(other, "manager@example.com", PASSWORDS["manager"])
+    assert c.post(f"/api/users/{m['id']}/sign-out", headers=H).json()["sessions_ended"] == 1
+    assert other.get("/api/auth/me").status_code == 401
+
+    log = _today()
+    changed = [e for e in log if e["action"] == "user changed" and e["user"] == "admin@example.com"]
+    assert changed[0]["changes"]["email"] == ["designer@example.com", "lead@example.com"]
+    assert any(e["changes"].get("credentials_reset") for e in changed)
+    assert any(e["action"] == "sign-in failed" and e["email"] == "lead@example.com" for e in log)
+    assert any(e["action"] == "user signed out by admin" for e in log)
+    text = json.dumps(log)
+    assert "brand-new-pass-1" not in text and PASSWORDS["designer"] not in text  # never a password
+    # every API call is a line too, with who made it
+    assert any(e["action"] == "request" and e["method"] == "PATCH" and e["user"] == "admin@example.com" for e in log)
+
+    # the admin reads it on the activity page: filtered by user, reads hidden unless asked
+    out = c.get("/api/activity", params={"user": "admin@example.com"}).json()
+    assert out["entries"] and all(e["user"] == "admin@example.com" for e in out["entries"])
+    assert not any(e.get("method") == "GET" for e in out["entries"])
+    assert any(e.get("method") == "GET" for e in c.get("/api/activity", params={"reads": True}).json()["entries"])
+    c.post("/api/activity", json={"page": "/jobs"}, headers=H)
+    assert c.get("/api/activity", params={"action": "page"}).json()["entries"][0]["page"] == "/jobs"
+
+
+def test_upload_copies_and_share_tokens_never_logged(staff):
+    user = User(email="designer@example.com", role="designer")
+    path = activity.keep_upload(user, "../FGPO1 Front App.pdf", b"%PDF-1.4", 12)
+    assert path.read_bytes() == b"%PDF-1.4" and path.parent.name == "designer@example.com"
+    assert path.name.endswith("_b12_FGPO1_Front_App.pdf") and Path(get_settings().data_dir).resolve() in path.resolve().parents
+    activity.record("request", None, None, path="/api/jobs/1/scene", query={"token": "1.2.secret"})
+    assert _today()[-1]["query"] == {"token": "***"}
+
+
+def test_activity_pages_and_output_folder(staff):
+    c = staff
+    login(c)
+    for i in range(25):
+        c.post("/api/activity", json={"page": f"/jobs/{i}"}, headers=H)
+    first = c.get("/api/activity", params={"action": "page", "page_size": 10}).json()
+    assert (first["total"], first["pages"], len(first["entries"])) == (25, 3, 10)
+    assert first["entries"][0]["page"] == "/jobs/24"  # newest first
+    last = c.get("/api/activity", params={"action": "page", "page_size": 10, "page": 3}).json()
+    assert [e["page"] for e in last["entries"]] == [f"/jobs/{i}" for i in range(4, -1, -1)]
+    assert c.get("/api/activity", params={"page": 0}).status_code == 422
+
+    # a finished job's mockups as plain files; a rerun replaces the folder (nothing stale is left)
+    folder = activity.save_outputs("FGPO7031", 277, [("renders/a_front.png", b"1"), ("renders/a_back.png", b"2"), ("../x.json", b"3")])
+    assert folder.name == "FGPO7031_job277" and folder.parent.name == "Output Mockups"
+    assert (folder / "renders" / "a_back.png").read_bytes() == b"2" and (folder / "x.json").exists()
+    activity.save_outputs("FGPO7031", 277, [("renders/a_front.png", b"9")])
+    assert sorted(p.name for p in (folder / "renders").iterdir()) == ["a_front.png"] and not (folder / "x.json").exists()
+
+
+def test_timestamps_leave_in_utc_with_their_zone(staff):
+    """SQLite keeps no zone: read back, a time must still say UTC, or browsers show it as local time."""
+    c = staff
+    login(c)
+    me = c.get("/api/auth/me").json()
+    for value in (me["created_at"], me["last_login_at"]):
+        assert value.endswith(("+00:00", "Z")), value
+    assert all(u["created_at"].endswith(("+00:00", "Z")) for u in c.get("/api/users").json())

@@ -12,10 +12,13 @@ if (-not (Test-Path $env:TESSERACT_CMD) -and (Test-Path "$userTess\Library\bin\t
     $env:TESSERACT_CMD = "$userTess\Library\bin\tesseract.exe"
     if (-not $env:TESSDATA_PREFIX) { $env:TESSDATA_PREFIX = "$userTess\share\tessdata" }
 }
+# The users' data folder (upload copies, activity and server logs), outside the code so updates never touch it.
+if (-not $env:DATA_DIR) { $env:DATA_DIR = Join-Path (Resolve-Path ..\..\..).Path "MockupData" }
 if (-not $env:ADMIN_EMAIL) { $env:ADMIN_EMAIL = "admin@example.com" }
 if (-not $env:ADMIN_PASSWORD) { $env:ADMIN_PASSWORD = "change-me-please-1" }
 if (-not (Test-Path ..\frontend\dist\index.html)) { Push-Location ..\frontend; npm install; npm run build; Pop-Location }
 & .venv\Scripts\python.exe -m alembic upgrade head
 & .venv\Scripts\python.exe -m app.cli bootstrap
 Write-Host "Open http://127.0.0.1:8765  (sign in: $env:ADMIN_EMAIL)"
+Write-Host "Uploads and logs are kept in $env:DATA_DIR"
 & .venv\Scripts\python.exe -m uvicorn app.api.main:app --host 127.0.0.1 --port 8765

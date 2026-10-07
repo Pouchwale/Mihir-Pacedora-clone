@@ -63,7 +63,7 @@ def test_editor_draft_validate_publish_and_test_run(app_client, monkeypatch):
     assert [(w["key"], w["published"]["version"], w["draft"]) for w in lst] == [("default", 1, None), ("phase1", 1, None), ("phase2", 1, None), ("phase3", 1, None)]
     published = c.get("/api/workflows/default").json()["published"]["graph"]
 
-    # operators may look but not save
+    # designers may look but not save workflows
     assert c.put("/api/workflows/default/draft", json={"graph": published}, headers=H).status_code == 403
     _login_admin(c)
 
