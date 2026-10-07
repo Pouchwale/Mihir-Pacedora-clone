@@ -449,3 +449,7 @@ pre.diff .del { color: var(--bad); }
 .kl-svg .dl-measure circle { fill: #e5484d; }
 
 .viewer-panel.compact { bottom: auto; }
+
+.style-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: -6px 0 16px; }
+.style-row-label { font-size: 11.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-right: 4px; }
+.style-row .pill:disabled { opacity: .45; cursor: default; }

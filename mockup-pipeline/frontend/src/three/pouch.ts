@@ -119,6 +119,7 @@ function gridGeometry(us: number[], vs: number[], pos: (u: number, v: number) =>
 interface FaceMaps {
   alpha?: THREE.Texture | null;
   normal?: THREE.Texture | null;
+  window?: boolean; // `alpha` is a window mask (clear film in parts), not a cut
 }
 
 // Artwork textures are large (up to 4096 px): load each URL once and share it between rebuilds.
@@ -135,6 +136,19 @@ async function loadTexture(url: string): Promise<THREE.Texture> {
     }));
   }
   return textureCache.get(url)!;
+}
+
+/** A grayscale mask used as transparency (linear, not colour). */
+async function loadMask(url: string): Promise<THREE.Texture> {
+  const key = `mask:${url}`;
+  if (!textureCache.has(key)) {
+    textureCache.set(key, loader.loadAsync(url).then((t) => {
+      t.colorSpace = THREE.NoColorSpace;
+      cachedTextures.add(t);
+      return t;
+    }));
+  }
+  return textureCache.get(key)!;
 }
 
 /** Free a replaced model's GPU resources (shared artwork textures are kept). */
@@ -189,12 +203,15 @@ async function filmMaterial(g: GeometrySpec, tex: SceneTexture, maps: FaceMaps):
     clear.name = "film";
     return clear;
   }
+  // a side / gusset with a window left unprinted (texture step: masks.window): clear film there
+  if (!maps.alpha && tex.masks.window) maps = { ...maps, alpha: await loadMask(tex.masks.window), window: true };
+  const clearParts = hasWindow(g) || !!maps.window;
   if (unlit(g)) {
     const flat = new THREE.MeshBasicMaterial({ map: await panelMap(tex), side: THREE.DoubleSide, toneMapped: false });
     if (maps.alpha) {
       flat.alphaMap = maps.alpha;
-      flat.alphaTest = hasWindow(g) ? 0.05 : 0.5;
-      if (hasWindow(g)) flat.transparent = true;
+      flat.alphaTest = clearParts ? 0.05 : 0.5;
+      if (clearParts) flat.transparent = true;
     }
     flat.name = "film";
     return flat;
@@ -216,7 +233,7 @@ async function filmMaterial(g: GeometrySpec, tex: SceneTexture, maps: FaceMaps):
   }
   if (maps.alpha) {
     mat.alphaMap = maps.alpha;
-    if (hasWindow(g)) {
+    if (clearParts) {
       mat.transparent = true;
       mat.alphaTest = 0.05;
       mat.depthWrite = true;
@@ -427,8 +444,11 @@ function pouchFaces(g: GeometrySpec, filled: boolean, shape: string, inside?: (x
       z = filled ? (g.body_bulge_percent / 100) * W * 0.8 * Math.pow(k, 0.7) : 0;
     }
     if (fin) z += finBulge(f);
+    // The film offset closes to nothing at the side edges: there front and back are one fold (a pillow)
+    // or two layers sealed together, never a see-through slit 2 x FILM wide down the side.
+    const closed = Math.min(1, f / 0.5, (W - f) / 0.5);
     // each face's own left edge is at world -x for the front and +x for the back
-    return [sign === 1 ? x : -x, y, sign * (z + FILM)];
+    return [sign === 1 ? x : -x, y, sign * (z + FILM * closed)];
   };
   const front = gridGeometry(us, vs, (u, v) => place(u, v, 1, false));
   const back = gridGeometry(us, vs, (u, v) => place(u, v, -1, pillow), true);
@@ -767,18 +787,8 @@ async function boxGroup(g: GeometrySpec, textures: Record<string, SceneTexture>,
   grp.add(await mk(f.back, textures.back ?? textures.front, "back", W, true));
   grp.add(await mk(f.right, textures.side_right ?? sideTex, "side_right", f.S, false));
   grp.add(await mk(f.left, textures.side_left ?? sideTex, "side_left", f.S, false));
-  if (filled && sideTex?.clear) {
-    // product seen through clear sides: a block in the same neutral product colour as behind a window
-    // ponytail: a plain box; shape it to the filled body if the corners ever show through the film
-    // inside the part where the gussets are (nearly) fully open, so it never pokes through the film
-    const reach = 1.17 * f.S; // gussetRise is at 90 % this far from a seal
-    const y0 = f.openBottom ? 0 : Math.max(g.seals.bottom, g.seals.crimp) + reach;
-    const y1 = Math.min((g.fill_level_percent / 100) * H, H - Math.max(g.seals.top, g.seals.crimp) - reach);
-    const fill = Math.max(1, y1 - y0);
-    const product = new THREE.Mesh(new THREE.BoxGeometry(2 * f.X * 0.9, fill * 0.95, f.S * 0.85), solidMaterial(g, { color: "#b98b52", roughness: 0.9 }));
-    product.position.y = y0 + fill * 0.5;
-    grp.add(product);
-  }
+  // (No stand-in product behind clear sides or gusset windows: a box, or the walls' shape copied inside,
+  // showed through the window as a fake block; the window shows the clear film, as an empty pouch does.)
   if (filled && f.openBottom) {
     const bottomTex = textures.bottom ?? sideTex ?? textures.front;
     const geo = new THREE.PlaneGeometry(2 * f.X, f.S);

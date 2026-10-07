@@ -416,25 +416,43 @@ export class Stage {
     return url;
   }
 
-  /** The current view (camera as the operator left it) at `scale` x the canvas size, as a PNG data URL. */
-  capture(scale = 2, transparent = false): string {
+  /** The current view (as the operator left it) at `scale` x the canvas size, as a data URL:
+   *  "png" is the pouch alone on a transparent background (no backdrop, no floor; its shadow stays),
+   *  "jpeg" is the view with its background and floor (white where the view itself is transparent). */
+  capture(scale = 2, kind: "png" | "jpeg" = "png"): string {
     const el = this.renderer.domElement;
     const w = el.clientWidth || el.width, h = el.clientHeight || el.height;
     const ratio = this.renderer.getPixelRatio();
-    const overlayVisible = this.overlay.visible;
+    const overlayVisible = this.overlay.visible, floorVisible = this.floor.visible;
     const bg = this.scene.background;
+    const clear = this.renderer.getClearColor(new THREE.Color()), clearAlpha = this.renderer.getClearAlpha();
     this.overlay.visible = false;
-    if (transparent) {
+    if (kind === "png") {
       this.scene.background = null;
+      this.floor.visible = false;
       this.renderer.setClearColor(0x000000, 0);
     }
     this.renderer.setPixelRatio(scale);
     this.renderer.setSize(w, h, false);
     this.render();
-    const url = el.toDataURL("image/png");
+    let url: string;
+    if (kind === "png") url = el.toDataURL("image/png");
+    else {
+      // JPEG has no transparency: lay the render on white so see-through parts are not black
+      const c = document.createElement("canvas");
+      c.width = el.width;
+      c.height = el.height;
+      const ctx = c.getContext("2d")!;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(el, 0, 0);
+      url = c.toDataURL("image/jpeg", 0.92);
+    }
     this.renderer.setPixelRatio(ratio);
     this.renderer.setSize(w, h, false);
     this.scene.background = bg;
+    this.floor.visible = floorVisible;
+    this.renderer.setClearColor(clear, clearAlpha);
     this.overlay.visible = overlayVisible;
     this.render();
     return url;

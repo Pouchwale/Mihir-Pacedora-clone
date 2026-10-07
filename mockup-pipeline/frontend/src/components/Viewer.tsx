@@ -340,13 +340,13 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
   gotoRef.current = goto;
 
   // A PNG of the view as it is on screen (turn, filled / flat, draft edits), at 2x, optionally transparent.
-  const snapshot = (transparent: boolean) => {
+  const snapshot = (kind: "png" | "jpeg") => {
     const stage = stageRef.current;
     if (!stage) return;
-    const url = stage.capture(2, transparent);
+    const url = stage.capture(2, kind);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${name ?? "pouch"}_${filled ? "filled" : "flat"}${transparent ? "_transparent" : ""}.png`;
+    a.download = `${name ?? "pouch"}_${filled ? "filled" : "flat"}.${kind === "png" ? "png" : "jpg"}`;
     a.click();
     stage.invalidate();
   };
@@ -511,8 +511,8 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
           </div>
           <div className="seg">
             <button className={spin ? "on" : ""} onClick={() => setSpin(!spin)} title="Turn the pouch all the way round"><Icon d={ICONS.spin} /> {spin ? "Stop" : "Spin 360°"}</button>
-            <button onClick={() => snapshot(false)} disabled={busy} title="Save this view as a PNG at twice the screen size"><Icon d={ICONS.download} /> PNG</button>
-            <button onClick={() => snapshot(true)} disabled={busy} title="Save this view with a transparent background">Transparent</button>
+            <button onClick={() => snapshot("png")} disabled={busy} title="The pouch alone on a transparent background (PNG, twice the screen size)"><Icon d={ICONS.download} /> PNG</button>
+            <button onClick={() => snapshot("jpeg")} disabled={busy} title="This view with its background and floor (JPEG, twice the screen size)"><Icon d={ICONS.download} /> JPEG</button>
           </div>
         </div>
         {busy && <div className="viewer-note"><span className="spinner" /> Building 3D model…</div>}

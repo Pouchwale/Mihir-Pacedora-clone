@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from app.errors import NeedsReview
 from app.geometry.dieline import panel_svg
 from app.models import UploadedFile
+from app.ocr import pdf_text
 from app.pdf.inks import emphasize_inks
 from app.pdf.layers import Box, output_intent_profile, write_layer_copy
 from app.pdf.render import pdftoppm_png
@@ -234,6 +235,14 @@ def run(ctx: StepContext) -> Output:
             fitted = tuple(exc.details["finished_mm"])
             fin = trim_impl.finish(trim, pdf, bleed, *fitted, ctx.prefix, profile, ctx.storage)
         img = _load(ctx, fin.finished_key)
+        labels: list[str] = []
+        if role in ("front", "back"):
+            x0, y0, x1, y1 = trim.trim_box_pt
+            b, pt = fin.bleed_mm, 72 / 25.4
+            box = (x0 + b.left * pt, y0 + b.bottom * pt, x1 - b.right * pt, y1 - b.top * pt)
+            img, labels = drop_labels(img, pdf, box, fin.finished_mm[0])
+            if labels:
+                ctx.log(f"{role}: technical note(s) on the drawing painted out: {' '.join(labels)}", "audit")
         if fitted:
             img = img.resize((max(1, round(img.width * ew / fitted[0])), max(1, round(img.height * eh / fitted[1]))), Image.LANCZOS)
             issues.append(Issue(code="artwork_fitted", field=f"artwork.{role}", severity="warning",
@@ -247,13 +256,20 @@ def run(ctx: StepContext) -> Output:
             img = front_img if role == "front" else back_img
         if rule.mirror:
             img = ImageOps.mirror(img)
-        if role in ("front", "back") and not profile.include_eyemarks:
+        marks: list = []
+        if role != "roll" and not profile.include_eyemarks:
+            # (sides and gussets carry eyemarks too: FGPO7030's black squares in the gussets' bottom corners)
             img, marks = drop_eyemarks(img, w, geo.seals.side, geo.seals.top, geo.seals.bottom)
             if marks:
                 ctx.log(f"{role}: {len(marks)} eyemark(s) in the seals removed: " + ", ".join(f"{a:g} x {b:g} mm" for a, b in marks), "audit")
+        window = None
+        if role.startswith("side") or role == "gusset":
+            window = window_rect(img, w)
+            if window is not None and not window_named(ctx, pdf, trim):
+                window = None  # an unprinted white area is a window only where the designer says "Window"
         raw = img
         img, changed = baked(role, img, w) if role != "roll" else (img, False)
-        if turn or rule.mirror or p.source == "blank" or fitted or changed:
+        if turn or rule.mirror or p.source == "blank" or fitted or changed or labels or marks:
             ctx.storage.put_bytes(fin.finished_key, _png(img), "image/png")
         if rule.rotation or rule.mirror or (rule.bleed_mm is not None and role != "front"):
             ctx.log(f"{role}: panel rule applied (turn {rule.rotation}, mirror {rule.mirror}, bleed {rule.bleed_mm})", "audit")
@@ -272,6 +288,9 @@ def run(ctx: StepContext) -> Output:
             spot = _spot_mask(pdf, trim, bleed, profile, turn)
             if spot is not None:
                 masks["spot"] = ctx.storage.put_bytes(f"{base}_spot.png", _png(spot), "image/png")
+        if window is not None:
+            masks["window"] = ctx.storage.put_bytes(f"{base}_window.png", _png(window), "image/png")
+            ctx.log(f"{role}: the unprinted area marked \"Window\" is clear film", "audit")
         web_key = ctx.storage.put_bytes(f"{base}_web.webp", _jpeg(img, WEB_MAX), "image/webp")
         svg = panel_svg(role, geo, img)
         prev = ctx.storage.put_bytes(f"{base}_keyline.svg", svg.encode(), "image/svg+xml")
@@ -397,13 +416,114 @@ def split_blank(blank: Image.Image, open_w: float, w: float) -> tuple[Image.Imag
     return front, back
 
 
+WINDOW_ALPHA = 34  # alpha of clear film in a window mask (the 3D viewer's operator windows use the same)
+
+
+def window_rect(img: Image.Image, width_mm: float) -> Image.Image | None:
+    """A window left unprinted in a side / gusset panel (FGPO7030 / FGPO7032: the 1 kg pouches' side
+    gussets print the logo at the top and the base colour below, and leave the middle "Window" clear):
+    the largest unprinted (paper-white) rectangle, at least a quarter of the panel and filling its box.
+    Returns an alpha mask (255 film, WINDOW_ALPHA in the window) or None."""
+    from collections import deque
+
+    k = img.width / width_mm
+    cell = max(1, round(k))  # 1 mm grid
+    small = np.asarray(img.convert("RGB").reduce(cell)).astype(int)
+    white = small.min(axis=2) >= 240  # (a corner an eyemark was filled in reads a hair off white)
+    gh, gw = white.shape
+    seen = np.zeros_like(white)
+    best: list[tuple[int, int]] = []
+    for sy, sx in zip(*np.nonzero(white)):  # the largest 4-connected white area
+        if seen[sy, sx]:
+            continue
+        seen[sy, sx] = True
+        q, cells = deque([(sy, sx)]), []
+        while q:
+            y, x = q.popleft()
+            cells.append((y, x))
+            for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+                if 0 <= ny < gh and 0 <= nx < gw and white[ny, nx] and not seen[ny, nx]:
+                    seen[ny, nx] = True
+                    q.append((ny, nx))
+        if len(cells) > len(best):
+            best = cells
+    if not best:
+        return None
+    comp = np.zeros_like(white)
+    ys, xs = zip(*best)
+    comp[list(ys), list(xs)] = True
+    # the window's own box: rows / columns the area covers at least half as fully as its widest, so a few
+    # stray near-white cells (a corner an eyemark was filled in) do not stretch it
+    rows, cols = comp.sum(axis=1), comp.sum(axis=0)
+    ry, cx = np.nonzero(rows >= 0.5 * rows.max())[0], np.nonzero(cols >= 0.5 * cols.max())[0]
+    y0, y1, x0, x1 = ry.min(), ry.max() + 1, cx.min(), cx.max() + 1
+    area = (y1 - y0) * (x1 - x0)
+    if comp[y0:y1, x0:x1].sum() < 0.9 * area or area < 0.25 * white.size:
+        return None
+    mask = Image.new("L", img.size, 255)
+    mask.paste(WINDOW_ALPHA, (x0 * cell, y0 * cell, min(img.width, x1 * cell), min(img.height, y1 * cell)))
+    return mask
+
+
+def window_named(ctx: StepContext, pdf: Path, trim) -> bool:
+    """The panel's PDF says "Window" (its text, or OCR when outlined)."""
+    import pymupdf
+
+    from app.ocr import tesseract
+    from app.workflow.steps.link_panels import _window_label
+
+    try:
+        if _window_label(ctx, pdf, trim):
+            return True
+    except Exception:  # noqa: BLE001 - (a two-page approval file): the page itself is read below
+        pass
+    try:
+        # the label drawn in a technical ink the artwork render leaves out (FGPO7030: an outlined blue
+        # "Window" on each gusset): read the whole page as printed, every ink, turned each way
+        doc = pymupdf.open(pdf)
+        pix = doc[-1].get_pixmap(dpi=60)
+        page = Image.frombytes("RGB", (pix.width, pix.height), pix.samples).convert("L")
+        # (turned only: a gusset's label runs along the tall panel, while the spec table's
+        # "Transparent Window:" field on the same page reads level and must not count)
+        return any(w.text.strip().lower() == "window" for angle in (90, 270) for w in tesseract.words(page.rotate(angle, expand=True), psm=11))
+    except Exception:  # noqa: BLE001 - unreadable: no window
+        return False
+
+
+LABEL_WORDS = {"notch", "v-notch", "vnotch", "spout", "hang", "euro"}  # a technical note's key word
+LABEL_EDGE_MM = 15.0  # notes sit on the dieline at the panel edge; product text stays further in
+
+
+def drop_labels(img: Image.Image, pdf: Path, box_pt: tuple[float, float, float, float], width_mm: float) -> tuple[Image.Image, list[str]]:
+    """Technical notes written on the drawing in the artwork's own ink ("V NOTCH" on FGPO6813's top seal,
+    "SPOUT" in FGPO5834's corner) out of a panel: text-layer words within LABEL_EDGE_MM of the panel edge
+    whose line names a notch / spout / hang hole, filled from the colour around them. `box_pt` is the
+    panel's box on the page (PDF points), the image that box upright."""
+    from app.pdf.safety import mask_out
+
+    dpi = img.width / (width_mm / 25.4)
+    words = pdf_text.words(pdf, Box(*box_pt), round(dpi))
+    k = img.width / width_mm
+    edge = LABEL_EDGE_MM * k
+    near = [w for w in words if w.left < edge or w.right > img.width - edge or w.top < edge or w.top + w.height > img.height - edge]
+    hits = [w for w in near if w.text.lower().strip(".:,()") in LABEL_WORDS]
+    # the rest of the note: words on the same line right beside a key word ("V", "TEAR", "HOLE", "SLOT")
+    line = [w for w in near for h in hits if w is not h and abs(w.top - h.top) <= h.height and min(abs(w.left - h.right), abs(h.left - w.right)) <= 2 * h.height]
+    marked = hits + [w for w in line if len(w.text) <= 6]
+    if not marked:
+        return img, []
+    mask = np.zeros((img.height, img.width), bool)
+    for w in marked:
+        pad = max(2, round(0.6 * w.height))  # the glyph core grows back to the full letters
+        mask[max(0, w.top - pad):w.top + w.height + pad, max(0, w.left - pad // 2):w.right + pad // 2] = True
+    return mask_out(img, mask, radius=max(4, round(2 * k))), sorted({w.text for w in marked})
+
+
 def drop_eyemarks(img: Image.Image, width_mm: float, side: float, top: float, bottom: float) -> tuple[Image.Image, list[tuple[float, float]]]:
     """The print eyemark (the sensor mark the bag machine reads) out of a face: a solid near-black block
     lying in a seal and touching the panel edge (FGPO7150: 10 x 10 mm in the back's bottom corners).
     It is printed on the web, but not part of the pouch's look (PdfProfile.include_eyemarks; layered
     files keep it on its own layer). Filled from the seal colour around it. Returns the marks' sizes."""
-    from collections import deque
-
     from app.pdf.safety import mask_out
 
     k = img.width / width_mm  # px per mm
@@ -414,9 +534,25 @@ def drop_eyemarks(img: Image.Image, width_mm: float, side: float, top: float, bo
     ys, xs = np.mgrid[0:gh, 0:gw] * mm
     hmm, wmm = gh * mm, gw * mm
     band = (xs < side + 1.5) | (xs > wmm - side - 1.5) | (ys < top + 1.5) | (ys > hmm - bottom - 1.5)
-    dark = small.max(axis=2) < 70  # (all dark: a photo's dark area reaching into a seal is one blob with it, and stays)
-    seen, marks = np.zeros_like(dark), []
+    marks: list[tuple[float, float]] = []
     mask = np.zeros((img.height, img.width), bool)
+    # Two kinds: a near-black block on a light seal (FGPO7150), and a white block on a dark seal (FGPO7029's
+    # back: white squares in the green bottom corners). (All dark / all white: a photo's area reaching into
+    # a seal is one blob with it, and stays.)
+    for dark, stands_out in ((small.max(axis=2) < 70, lambda med: med > 110), (small.min(axis=2) > 240, lambda med: med < 150)):
+        _eyemark_blocks(small, dark, band, stands_out, mm, cell, mask, marks)
+    if not marks:
+        return img, []
+    return mask_out(img, mask, radius=max(4, round(2 * k))), marks
+
+
+def _eyemark_blocks(small, dark, band, stands_out, mm: float, cell: int, mask, marks) -> None:
+    """Mark-sized blocks of `dark` (the candidate colour) in the seal `band`, touching the panel edge and
+    standing out from the 2 mm around them (`stands_out(ring median brightness)`); adds them to `mask`."""
+    from collections import deque
+
+    gh, gw = dark.shape
+    seen = np.zeros_like(dark)
     for y, x in zip(*np.nonzero(dark & band)):
         if seen[y, x]:
             continue
@@ -439,14 +575,22 @@ def drop_eyemarks(img: Image.Image, width_mm: float, side: float, top: float, bo
         r = 4  # the 2 mm around it: a mark stands out from the seal colour (a dark design's own corner does not)
         ring = small.max(axis=2)[max(0, y0 - r):y1 + r, max(0, x0 - r):x1 + r].astype(float)
         ring[y0 - max(0, y0 - r):y0 - max(0, y0 - r) + (y1 - y0), x0 - max(0, x0 - r):x0 - max(0, x0 - r) + (x1 - x0)] = np.nan
-        contrast = np.nanmedian(ring) > 110 if np.isfinite(ring).any() else False
+        contrast = bool(stands_out(np.nanmedian(ring))) if np.isfinite(ring).any() else False
         if 3 <= bw <= 25 and 3 <= bh <= 25 and edge and inside and contrast and len(cells) >= 0.6 * (x1 - x0) * (y1 - y0):
             g = cell  # (a little wider: the block's anti-aliased rim and the dieline drawn over it)
             mask[max(0, y0 * g - g):(y1 + 1) * g, max(0, x0 * g - g):(x1 + 1) * g] = True
+            # a white box printed around the mark (FGPO7029: black squares in white squares on a green
+            # seal) goes with it, so the seal colour fills the whole corner, not a white square
+            e, e2 = 8, 12  # 4 mm around the mark; the seal colour read 4-6 mm out
+            by0, by1, bx0, bx1 = max(0, y0 - e), min(gh, y1 + e), max(0, x0 - e), min(gw, x1 + e)
+            outer = small.min(axis=2)[max(0, y0 - e2):y1 + e2, max(0, x0 - e2):x1 + e2].astype(float)
+            outer[by0 - max(0, y0 - e2):by1 - max(0, y0 - e2), bx0 - max(0, x0 - e2):bx1 - max(0, x0 - e2)] = np.nan
+            if np.isfinite(outer).any() and np.nanmedian(outer) < 225:
+                box = small[by0:by1, bx0:bx1].min(axis=2) >= 235
+                for yy, xx in zip(*np.nonzero(box)):
+                    cy0, cx0 = (by0 + yy) * g, (bx0 + xx) * g
+                    mask[max(0, cy0 - g):cy0 + 2 * g, max(0, cx0 - g):cx0 + 2 * g] = True
             marks.append((round(bw, 1), round(bh, 1)))
-    if not marks:
-        return img, []
-    return mask_out(img, mask, radius=max(4, round(2 * k))), marks
 
 
 def _unprinted_mask(img: Image.Image) -> Image.Image:

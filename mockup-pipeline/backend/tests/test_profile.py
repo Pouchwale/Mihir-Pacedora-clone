@@ -29,3 +29,13 @@ def test_item_code_from_filename():
     assert p.item_code_from_filename("FGPO7215_Dog_Food_Front_App (exported).pdf") == "FGPO7215"
     assert p.item_code_from_filename("fgpo6862-Korean.pdf") == "FGPO6862"
     assert p.item_code_from_filename("Dog_Food.pdf") is None
+
+
+def test_linked_code_written_with_use():
+    """FGPO6828: "Color match as per old code FGPO4356 Gusset Use FGPO4357" links the gusset, not the old code."""
+    from app.pdf.profile import PdfProfile
+
+    p = PdfProfile()
+    assert p.parse_linked_codes("Color match as per old code FGPO4356 Gusset Use FGPO4357") == {"gusset": "FGPO4357"}
+    assert p.parse_linked_codes("Glossy Finish Pouch | Gusset Code : FGPO7429 | Color Match with : FGPO6195") == {"gusset": "FGPO7429"}
+    assert p.parse_linked_codes("Back Use Code FGPO7003") == {"back": "FGPO7003"}

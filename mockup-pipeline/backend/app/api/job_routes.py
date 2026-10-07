@@ -27,7 +27,16 @@ from app.workflow.adjust import Adjustments, adjustments
 from app.workflow.engine import STEPS
 
 router = APIRouter(prefix="/api")
-FRONT_PATTERN = re.compile(r"front", re.IGNORECASE)
+# A file names a front (also "F+B", "F&B" and the typos seen in client files) or only another panel
+# (back / gusset): the second kind is linked to its front's job, everything else becomes a job.
+from app.workflow.steps.link_panels import FRONT_NAME as FRONT_PATTERN  # noqa: E402 - one rule for uploads and linking
+PANEL_PATTERN = re.compile(r"(?<![a-z])(back|gusset|gussett|guesst|gazette)(?=[^a-z]|app|$)", re.IGNORECASE)  # "Side GussetApp" too
+
+
+def is_job_root(filename: str) -> bool:
+    """Whether an uploaded PDF starts a job: a front, or a whole pouch (no panel named), not a back / gusset."""
+    stem = filename.rsplit("/", 1)[-1]
+    return bool(FRONT_PATTERN.search(stem)) or not PANEL_PATTERN.search(stem)
 
 
 def _profile(session: Session):
@@ -152,7 +161,7 @@ async def upload(
     if not registered and not xml_items:
         raise HTTPException(422, "No PDF found in the upload")
 
-    roots = [] if panels_only else [f for f in registered if FRONT_PATTERN.search(f.filename)] or registered
+    roots = [] if panels_only else [f for f in registered if is_job_root(f.filename)] or registered
     jobs = []
     for f in roots:
         fields = xml_items.get((f.item_code or "").upper())
@@ -173,6 +182,20 @@ async def upload(
     return UploadResult(batch_id=batch.id, jobs=[j.id for j in jobs], resumed=resumed,
                         files=[{"id": f.id, "filename": f.filename, "item_code": f.item_code, "sha256": f.sha256} for f in registered],
                         xml_specs=xml_items or None)
+
+
+def drop_auto_answers(inputs: dict | None, from_step: str | None) -> dict:
+    """A rerun from link_panels or earlier forgets the automatic panel answers ("back: same as the
+    front") and the record of automatic answers, so the job decides again with the fixed code or new
+    uploads (FGPO6164 kept a substitute back after its back PDF had become readable). The operator's
+    own choices stay."""
+    inputs = dict(inputs or {})
+    if from_step is None or from_step not in STEPS or STEPS.index(from_step) > STEPS.index("link_panels"):
+        return inputs
+    choices = {r: c for r, c in (inputs.get("panel_choices") or {}).items() if not (isinstance(c, dict) and c.get("auto"))}
+    inputs["panel_choices"] = choices
+    inputs.pop("auto_reviews", None)
+    return inputs
 
 
 def _resume_waiting(session: Session, codes: set[str], exclude: set[int]) -> list[int]:
@@ -219,19 +242,23 @@ def _summary(job: Job) -> JobSummary:
 
 @router.get("/jobs")
 def list_jobs(status: str | None = None, q: str | None = None, limit: int = 20, offset: int = 0, kind: str = "job",
-              session: Session = Depends(get_session), _: User = Depends(auth.current_user)) -> dict:
+              pouch_type: str | None = None, session: Session = Depends(get_session), _: User = Depends(auth.current_user)) -> dict:
     """`kind`: "job" (default) hides the workflow editor's test runs; "test" lists only those.
+    `pouch_type`: only that pouch style ("none": jobs not typed yet). `types` counts the jobs per style.
     Newest first, `limit` (at most 500) per page from `offset`; `total` counts every match."""
     query = select(Job).where(Job.kind == kind)
     if status:
         query = query.where(Job.status == status)
+    if pouch_type:
+        query = query.where(Job.pouch_type.is_(None) if pouch_type == "none" else Job.pouch_type == pouch_type)
     if q:
         like = f"%{q.strip()}%"
         query = query.where((Job.item_code.ilike(like)) | (Job.client_name.ilike(like)))
     total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
     page = query.order_by(desc(Job.id)).limit(max(1, min(limit, 500))).offset(max(0, offset))
     counts = dict(session.execute(select(Job.status, func.count()).where(Job.kind == kind).group_by(Job.status)).all())
-    return {"jobs": [_summary(j) for j in session.scalars(page)], "counts": counts, "total": total, "limit": limit, "offset": offset}
+    types = {t or "none": n for t, n in session.execute(select(Job.pouch_type, func.count()).where(Job.kind == kind).group_by(Job.pouch_type)).all()}
+    return {"jobs": [_summary(j) for j in session.scalars(page)], "counts": counts, "types": types, "total": total, "limit": limit, "offset": offset}
 
 
 def _job(session: Session, job_id: int) -> Job:
@@ -423,7 +450,7 @@ def adjust(job_id: int, body: AdjustIn, session: Session = Depends(get_session),
             snapshot.setdefault("item_override", {})[key] = version.version
             job.index_snapshot = snapshot
             _event(session, job, f"Adjustments saved as the default for {job.item_code} (item_override v{version.version})", user)
-    job.inputs, job.status, job.updated_at = inputs, "QUEUED", utcnow()
+    job.inputs, job.status, job.updated_at = drop_auto_answers(inputs, from_step), "QUEUED", utcnow()
     session.commit()
     queue.enqueue(job.id, from_step)
     return _summary(job)
@@ -550,6 +577,7 @@ def rerun(job_id: int, body: RerunIn, session: Session = Depends(get_session), u
                 corrections.pop(k)
             job.inputs = {**(job.inputs or {}), "spec_corrections": corrections}
             _event(session, job, f"{len(stale)} confirmed keyline measurement(s) dropped: the drawing is measured again", user, data={"dropped": stale})
+    job.inputs = drop_auto_answers(job.inputs, from_step)
     job.status, job.updated_at = "QUEUED", utcnow()
     _event(session, job, f"Rerun from {from_step or 'node ' + str(body.from_node)}", user)
     session.commit()

@@ -193,19 +193,42 @@ def detect(
 def _blanks(sheet_w: float, sheet_h: float, xs: list[float], ys: list[float], open_width: float, height: float,
             gap_max: float, bleed_max: float, tol: float) -> SheetLayout | None:
     """Pillow blanks (open width x height) side by side ("horizontal"), or drawn on their side and
-    stacked ("vertical": open width runs down the sheet, the blank is turned 90 degrees upright)."""
+    stacked ("vertical": open width runs down the sheet, the blank is turned 90 degrees upright).
+    Both ways are tried with the whole sheet first; a cut-off repeat at the end only after that."""
+    for cut_tail in (False, True):
+        found = _blanks_way(sheet_w, sheet_h, xs, ys, open_width, height, gap_max, bleed_max, tol, cut_tail)
+        if found is not None:
+            return found
+    return None
+
+
+def _blanks_way(sheet_w: float, sheet_h: float, xs: list[float], ys: list[float], open_width: float, height: float,
+                gap_max: float, bleed_max: float, tol: float, cut_tail: bool) -> SheetLayout | None:
     for axis in ("horizontal", "vertical"):
         along, across = (xs, ys) if axis == "horizontal" else (ys, xs)
         length, cross = (sheet_w, sheet_h) if axis == "horizontal" else (sheet_h, sheet_w)
         # (several blanks across the chain too: FGPO7058 has two 164 mm ups beside each other)
         ups = _ups_across(cross, height, bleed_max, gap_max, tol)
         if ups is None:
-            continue
-        span = (_finished_span([0.0, *across, cross], cross, height, tol) if ups == 1
-                else _first_up([0.0, *across, cross], cross, height, ups, tol))
+            # the blank does not fill the sheet across (FGPO6813: one blank under the spec table on the
+            # same page): it is where two drawn lines sit exactly its height apart
+            drawn = [(a, b) for a in across for b in across if b > a and abs((b - a) - height) <= tol]
+            if not drawn:
+                continue
+            ups, span = 1, min(drawn, key=lambda ab: abs((ab[1] - ab[0]) - height))
+        else:
+            span = (_finished_span([0.0, *across, cross], cross, height, tol) if ups == 1
+                    else _first_up([0.0, *across, cross], cross, height, ups, tol))
         if span is None:
             continue
         chain = _chain([0.0, *along, length], length, {"blank": open_width}, gap_max, bleed_max, tol)
+        if not chain and cut_tail:
+            # the next repeat cut off by the sheet edge (FGPO7338: three flavours across, a second row of
+            # them starting 7 mm below the first and running off the sheet): end before that tail
+            for end in sorted({p for p in along if 0 < length - p < open_width + gap_max}, reverse=True):
+                chain = _chain([0.0, *[p for p in along if p <= end + tol]], end, {"blank": open_width}, gap_max, bleed_max, tol)
+                if chain:
+                    break
         if not chain:
             continue
         panels = []
@@ -282,6 +305,14 @@ def _faces(sheet_w: float, sheet_h: float, xs: list[float], ys: list[float], wid
         sizes = {"face": face_len, "gusset": g}
         positions, virtual = _with_undrawn_ends([0.0, *along, length], length, sizes, bleed_max, tol)
         chain = _chain(positions, length, sizes, gap_max, bleed_max, tol, virtual, frozenset(implied_y if axis == "vertical" else ()))
+        for copies in (2, 3, 4):
+            if chain:
+                break
+            # the web repeated along the sheet (FGPO6059: the artwork, then its white-ink plate drawn
+            # as a second copy 34 mm below): read the first copy, its `length / copies` share
+            part = length / copies
+            near = [p for p in positions if p <= part + tol]
+            chain = _chain([*near, part], part, sizes, gap_max, bleed_max, tol, virtual, frozenset(implied_y if axis == "vertical" else ()))
         if not chain:
             continue
         pieces = [c for c in chain if c[0] != "gap"]

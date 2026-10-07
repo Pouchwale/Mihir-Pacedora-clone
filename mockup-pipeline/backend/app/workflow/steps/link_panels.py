@@ -20,6 +20,7 @@ an uploaded image, or a PDF whose page is not a dieline panel of this size, beco
 panel that the texture step fits to the panel (cover / contain / stretch).
 """
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel
@@ -42,6 +43,7 @@ from app.workflow.steps.resolve_keyline import Output as KeylineOutput
 from app.workflow.steps.validate import Output as ValidateOutput
 
 BLEED_SLACK_MM = 25.0  # TrimBox may exceed the finished panel by at most this much per axis
+ROUND_MM = 0.5  # sizes rounded differently (TrimBox vs the spec table) still match
 SIZE_TOL_MM = 1.0  # a panel on a sheet matches a pouch type's panel of this size
 
 
@@ -91,12 +93,38 @@ def _batch_file(ctx: StepContext, role: str) -> UploadedFile | None:
     words = _ROLE_WORDS.get(role)
     if not words or ctx.job.file.batch_id is None:
         return None
-    for f in ctx.session.scalars(select(UploadedFile).where(UploadedFile.batch_id == ctx.job.file.batch_id, _NOT_XML,
-                                                             UploadedFile.id != ctx.job.file_id).order_by(UploadedFile.id)):
-        name = f.filename.lower()
-        if any(w in name for w in words) and "front" not in name:
-            return f
-    return None
+    found = [f for f in ctx.session.scalars(select(UploadedFile).where(UploadedFile.batch_id == ctx.job.file.batch_id, _NOT_XML,
+                                                                        UploadedFile.id != ctx.job.file_id).order_by(UploadedFile.id))
+             if any(w in f.filename.lower() for w in words) and not names_front(f.filename)]
+    # the one numbered next to this job's (FGPO4585 front + gusset, FGPO4586 back), never another pouch's:
+    # FGPO6828 (TAMAQ pistachios) once took the almonds' gusset FGPO7024 because it was the only one uploaded
+    def gap(f: UploadedFile) -> int | None:
+        a, b = _code_number(ctx.job.item_code), _code_number(f.item_code)
+        return abs(b - a) if a is not None and b is not None else None
+    if len(found) == 1:
+        g = gap(found[0])
+        return found[0] if g is None or g <= 3 else None  # alone in the batch: only when numbered next to the job
+    # a tie goes to the code after the job's: a front's panels are numbered after it (FGPO7031 front & back,
+    # FGPO7032 its gussets; FGPO7030 is the pouch before, and was once taken)
+    after = lambda f: (_code_number(f.item_code) or 0) > (_code_number(ctx.job.item_code) or 0)  # noqa: E731
+    near = sorted(((g, f.id, f) for f in found if (g := gap(f)) is not None and g <= 3), key=lambda t: (t[0], not after(t[2]), t[1]))
+    return near[0][2] if near else None
+
+
+FRONT_NAME = re.compile(r"(?<![a-z])(front|friont|fornt|frnt)(?![a-z])|(?<![a-z])f\s*[+&]\s*b(?![a-z])", re.IGNORECASE)
+
+
+def names_front(filename: str) -> bool:
+    """The file name says it is a front ("Front&Back", the typos "Friont" / "Fornt", "F+B")."""
+    return bool(FRONT_NAME.search(filename.rsplit("/", 1)[-1]))
+
+
+def _code_number(code: str | None) -> int | None:
+    """FGPO4586 -> 4586 (None for codes without a number)."""
+    import re
+
+    m = re.fullmatch(r"[A-Za-z]*(\d+)", code or "")
+    return int(m.group(1)) if m else None
 
 
 def _next_code_file(ctx: StepContext, role: str) -> UploadedFile | None:
@@ -109,7 +137,7 @@ def _next_code_file(ctx: StepContext, role: str) -> UploadedFile | None:
     if role != "back" or not m:
         return None
     f = _latest_file(ctx, f"{m.group(1)}{int(m.group(2)) + 1:0{len(m.group(2))}d}")
-    return f if f is not None and "back" in f.filename.lower() and "front" not in f.filename.lower() else None
+    return f if f is not None and "back" in f.filename.lower() and not names_front(f.filename) else None
 
 
 def _front_colour(ctx: StepContext, trim: trim_impl.TrimArtworkOutput) -> str:
@@ -158,6 +186,10 @@ def run(ctx: StepContext) -> Output:
     for role, code in sheet.linked_codes.items():
         for target in [role, *pouch.panel_aliases.get(role, [])]:
             codes.setdefault(target, code)
+    # "Gusset Use FGPO4357" on a quad / side-gusset pouch (FGPO6828) names its side gussets
+    for side in ("side_left", "side_right"):
+        if side in wanted and side not in codes and "gusset" in codes:
+            codes[side] = codes["gusset"]
 
     extracted = ctx.output("extract_specs", extract_impl.ExtractSpecsOutput)
     panels: dict[str, Panel] = {}
@@ -476,7 +508,12 @@ def _matching_up(ctx: StepContext, role: str, f: UploadedFile, pdf, trim: trim_i
     n = len(boxes)
     # a back sits in the mirrored position of the front's first up; anything else defaults to the first
     pick, why = (len(xs) - 1, "the mirrored position of the front's first up") if like is not None and role == "back" else (0, "the first")
-    if like is not None and like.trim is not None:
+    two_sides = role in ("side_left", "side_right") and len(xs) == 2 and len(ys) == 1
+    if two_sides:
+        # the pouch's two side gussets drawn side by side (FGPO7032: the QR is printed on one side only):
+        # each side takes its own, never both the same one
+        pick, why = (0, "the left one, for the left side") if role == "side_left" else (1, "the right one, for the right side")
+    elif like is not None and like.trim is not None:
         full = Image.open(io.BytesIO(ctx.storage.get_bytes(trim.bleed_key)))
         px = full.width / (t.x1 - t.x0)
         want = _colours(Image.open(io.BytesIO(ctx.storage.get_bytes(like.trim.bleed_key))))
@@ -506,13 +543,23 @@ def _render_linked(ctx: StepContext, role: str, f: UploadedFile, expected: tuple
         ctx.log(f"{role}: {f.filename} marks the panel \"Window\": clear film, {w:g} x {th:g} mm", "audit")
         return Panel(role=role, source="plain", expected_mm=(w, th), file_id=f.id, item_code=f.item_code, filename=f.filename,
                      color="#ffffff", clear=True)
-    fits = lambda a, b: 0 <= tw - a <= BLEED_SLACK_MM and 0 <= th - b <= BLEED_SLACK_MM  # noqa: E731
+    # (a hair under is rounding: a 161.925 mm back for a panel stored as 161.93 mm)
+    fits = lambda a, b: -ROUND_MM <= tw - a <= BLEED_SLACK_MM and -ROUND_MM <= th - b <= BLEED_SLACK_MM  # noqa: E731
     if fits(w, h):
         rotated, mw, mh = False, w, h
     elif fits(h, w):
         rotated, mw, mh = True, h, w
     elif (up := _matching_up(ctx, role, f, pdf, trim, expected, profile, like)) is not None:
         return up
+    elif role in ("front", "back") and -ROUND_MM <= tw - w <= BLEED_SLACK_MM and th - h > BLEED_SLACK_MM:
+        # the face with its bottom gusset on one PDF (FGPO6165 back + gusset, laid out like the front's
+        # sheet): the face is the top `h`, with the side bleed above it too
+        bx = max(0.0, (tw - w) / 2)
+        bleed = Sides(left=bx, right=bx, top=bx, bottom=max(0.0, th - h - bx))
+        ctx.log(f"{role}: {f.filename} ({f.item_code}) {tw} x {th} mm carries more than the face (a gusset below): "
+                f"the top {h:g} mm is used", "audit", {"sha256": f.sha256, "bleed": bleed.model_dump()})
+        return Panel(role=role, source="file", expected_mm=expected, file_id=f.id, item_code=f.item_code, filename=f.filename,
+                     trim=trim, bleed=bleed, bleed_source="trimbox")
     else:
         raise NeedsReview("panel_size", f"{role} PDF {f.filename} is {tw} x {th} mm; expected a {w} x {h} mm panel plus bleed", {
             "form": "panels", "missing": [{"role": role, "code": f.item_code, "expected_mm": expected}], "found": {},
@@ -522,7 +569,7 @@ def _render_linked(ctx: StepContext, role: str, f: UploadedFile, expected: tuple
     if all(v is not None for v in vals):
         bleed, source = Sides(left=vals[0], right=vals[1], top=vals[2], bottom=vals[3]), "measured"
     else:
-        bx, by = (tw - mw) / 2, (th - mh) / 2
+        bx, by = max(0.0, (tw - mw) / 2), max(0.0, (th - mh) / 2)
         bleed, source = Sides(left=bx, right=bx, top=by, bottom=by), "trimbox"
         ctx.log(f"{role}: dieline not measurable, bleed split evenly from the TrimBox ({bx:.3f} / {by:.3f} mm)", "warning")
     ctx.log(f"{role}: {f.filename} ({f.item_code}) {tw} x {th} mm{' rotated' if rotated else ''}, bleed {source}", "audit",

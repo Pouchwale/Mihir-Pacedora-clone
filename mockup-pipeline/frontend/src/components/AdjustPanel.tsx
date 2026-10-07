@@ -37,6 +37,9 @@ const NOTCHES = [["none", "None"], ["v_notch", "V notch"], ["straight", "Straigh
 const HANG_HOLES = [["none", "None"], ["round", "Round"], ["euro", "Euro slot"]];
 const WINDOW_FIELDS: [string, string][] = [["window_x_mm", "From left"], ["window_y_mm", "From top"], ["window_width_mm", "Width"], ["window_height_mm", "Height"], ["window_corner_radius_mm", "Corner radius"]];
 const FIT = [["cover", "Fill the panel (crop)"], ["contain", "Fit inside (show all)"], ["stretch", "Stretch to the panel"]];
+// Per-panel controls kept in the code but hidden from the panel for now: switch on to show them again.
+const SHOW_MOVE_SCALE = false; // Move ↔ / Move ↕ / Scale sliders
+const SHOW_LOGOS_TEXT = false; // the "Logos and text" section
 const FONT_CSS: Record<Overlay["font"], string> = { sans: "Arial, Helvetica, sans-serif", serif: '"Times New Roman", serif', mono: '"Courier New", monospace' };
 
 function Section({ title, children, open = false }: { title: string; children: React.ReactNode; open?: boolean }) {
@@ -183,6 +186,7 @@ export default function AdjustPanel({ scene, job, draft, dirty, busy, isAdmin, o
                 <label className="check"><input type="checkbox" checked={p.flip_y} onChange={(e) => setPanel(role, { flip_y: e.target.checked })} /> Flip</label>
                 <span className="muted small">{p.rotation ? `${p.rotation}°` : ""}</span>
               </div>
+              {SHOW_MOVE_SCALE && <>
               <label className="small">Move ↔ {p.offset_x_mm} mm
                 <input type="range" min={-span} max={span} step={0.5} value={p.offset_x_mm} onChange={(e) => setPanel(role, { offset_x_mm: Number(e.target.value) })} />
               </label>
@@ -192,6 +196,7 @@ export default function AdjustPanel({ scene, job, draft, dirty, busy, isAdmin, o
               <label className="small">Scale {Math.round(p.scale * 100)}%
                 <input type="range" min={0.5} max={2} step={0.01} value={p.scale} onChange={(e) => setPanel(role, { scale: Number(e.target.value) })} />
               </label>
+              </>}
 
               <details className="adjust-sub" open={!!(p.brightness || p.contrast || p.saturation)}>
                 <summary className="small">Colour correction{p.brightness || p.contrast || p.saturation ? " · on" : ""}</summary>
@@ -203,7 +208,7 @@ export default function AdjustPanel({ scene, job, draft, dirty, busy, isAdmin, o
                 {(p.brightness || p.contrast || p.saturation) ? <button className="link" onClick={() => setPanel(role, { brightness: 0, contrast: 0, saturation: 0 })}>as printed</button> : null}
               </details>
 
-              <details className="adjust-sub" open={p.overlays.length > 0}>
+              {SHOW_LOGOS_TEXT && <details className="adjust-sub" open={p.overlays.length > 0}>
                 <summary className="small">Logos and text{p.overlays.length ? ` · ${p.overlays.length}` : ""}</summary>
                 <div className="row">
                   <button onClick={() => addOverlay(role, { kind: "text", text: "Your text" })}>+ Text</button>
@@ -219,7 +224,7 @@ export default function AdjustPanel({ scene, job, draft, dirty, busy, isAdmin, o
                     onOrder={(dir) => moveOverlay(role, sel.id, dir)} />
                 )}
                 {p.overlays.length > 0 && !sel && <div className="muted small">Click a logo or text in the panel to edit it; drag to move.</div>}
-              </details>
+              </details>}
 
               {panelChanged(p) && (
                 <button className="link" onClick={() => { onChange({ ...draft, panels: { ...draft.panels, [role]: { ...IDENTITY_PANEL } } }); if (selected?.role === role) setSelected(null); }}>reset {role}</button>

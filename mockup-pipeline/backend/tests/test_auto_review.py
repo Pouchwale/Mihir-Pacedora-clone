@@ -41,7 +41,7 @@ def test_missing_panels_get_substitutes():
     review = {"code": "missing_panels", "details": {"form": "panels", "default_color": "#123456",
                                                     "missing": [{"role": "back"}, {"role": "gusset"}]}}
     body = auto_review.answer(_job(), review, None)
-    assert body["panel_choices"] == {"back": {"substitute": "front"}, "gusset": {"substitute": "plain", "color": "#123456"}}
+    assert body["panel_choices"] == {"back": {"substitute": "front", "auto": True}, "gusset": {"substitute": "plain", "color": "#123456", "auto": True}}
 
 
 def test_texture_and_workflow_reviews():
@@ -69,3 +69,33 @@ def test_the_same_question_twice_waits_for_a_person():
     job.status, job.review = "NEEDS_REVIEW", review
     assert auto_review.try_answer(session, job, ctx, ["link_panels"]) is False  # the answer did not help
     assert "Waiting for a person" in added[-1].message
+
+
+def test_missing_gusset_type_is_read_from_the_drawing():
+    """FGPO5452: gusset, back, gusset, front on one sheet, gusset type empty -> "Side" (an empty answer looped)."""
+    from app.geometry.sheet_layout import SheetLayout, SheetPanel
+
+    def ctx_with(panels):
+        job = _job(review=review)
+        ctx = _ctx(job)
+        ctx.output = lambda *a: SimpleNamespace(layout=SheetLayout(kind="multi", panels=panels))
+        return job, ctx
+
+    review = {"code": "fetch_fields", "details": {"form": "specs", "sheet": {"spec_table": {"gusset_type": {"value": None, "confidence": 0.0}}},
+              "issues": [{"code": "missing", "field": "gusset_type", "severity": "review"}]}}
+    side = [SheetPanel(kind="gusset", x_mm=0, y_mm=0, width_mm=80, height_mm=387.35), SheetPanel(kind="face", x_mm=80, y_mm=0, width_mm=142, height_mm=387.35, role="back"),
+            SheetPanel(kind="gusset", x_mm=222, y_mm=0, width_mm=80, height_mm=387.35), SheetPanel(kind="face", x_mm=302, y_mm=0, width_mm=142, height_mm=387.35, role="front")]
+    bottom = [SheetPanel(kind="face", x_mm=0, y_mm=0, width_mm=161.9, height_mm=283, role="front"), SheetPanel(kind="gusset", x_mm=0, y_mm=290, width_mm=161.9, height_mm=96)]
+    for panels, want in ((side, "Side"), (bottom, "Bottom"), ([SheetPanel(kind="face", x_mm=0, y_mm=0, width_mm=100, height_mm=150, role="front")], "None")):
+        job, ctx = ctx_with(panels)
+        assert auto_review.answer(job, review, ctx)["corrections"]["spec_table.gusset_type"] == want
+
+
+def test_rerun_from_link_panels_forgets_automatic_panel_answers():
+    from app.api.job_routes import drop_auto_answers
+
+    body = auto_review._panels_answer({"missing": [{"role": "back"}, {"role": "gusset"}], "default_color": "#123456"})
+    inputs = {"panel_choices": {**body["panel_choices"], "side_left": {"file_id": 7}}, "auto_reviews": ["x"]}
+    assert drop_auto_answers(inputs, "link_panels") == {"panel_choices": {"side_left": {"file_id": 7}}}  # the operator's choice stays
+    assert drop_auto_answers(inputs, "texture") == inputs  # a later step keeps them
+    assert drop_auto_answers(inputs, None) == inputs  # (a rerun from a workflow node)

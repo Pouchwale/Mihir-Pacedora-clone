@@ -88,6 +88,10 @@ def _spec_answer(job: Job, details: dict, ctx) -> dict:
             if size:
                 corrections[f"spec_table.{name}"] = size
                 continue
+        if part == "spec_table" and name == "gusset_type" and not current:
+            # an empty answer would only bring the question back: the drawing says which gusset it is
+            corrections["spec_table.gusset_type"] = _drawn_gusset(ctx)
+            continue
         if name in values:
             corrections[f"{part}.{name}"] = None  # confirmed as read (an empty field stays empty)
     return {"action": "specs", "corrections": corrections, "acknowledge": sorted(set(acknowledge)),
@@ -113,6 +117,27 @@ def _drawn_size(ctx, name: str) -> float | None:
     if name == "pouch_height_mm":
         return round(seg_h or h, 3)
     return None
+
+
+def _drawn_gusset(ctx) -> str:
+    """The gusset type the sheet's own panels show: gussets as tall as the front are side gussets,
+    one as wide as the front is a bottom gusset, none drawn is "None"."""
+    from app.steps import extract_specs as extract_impl
+
+    try:
+        layout = ctx.output("extract_specs", extract_impl.ExtractSpecsOutput).layout
+    except Exception:  # noqa: BLE001 - nothing extracted: no gusset seen
+        return "None"
+    faces = [p for p in layout.panels if p.kind == "face"]
+    gussets = [p for p in layout.panels if p.kind == "gusset"]
+    if not faces or not gussets:
+        return "None"
+    front = layout.face("front") or faces[0]
+    if any(abs(g.height_mm - front.height_mm) <= 2 for g in gussets):
+        return "Side"
+    if any(abs(g.width_mm - front.width_mm) <= 2 for g in gussets):
+        return "Bottom"
+    return "None"
 
 
 def _pouch_type_answer(details: dict, ctx) -> dict | None:
@@ -153,7 +178,8 @@ def _panels_answer(details: dict) -> dict:
     choices = {}
     for item in details.get("missing") or []:
         role = item.get("role")
-        choices[role] = {"substitute": "front"} if role == "back" else {"substitute": "plain", "color": colour}
+        # (marked automatic: a rerun from link_panels drops it, so a later fix gets its chance)
+        choices[role] = {"substitute": "front", "auto": True} if role == "back" else {"substitute": "plain", "color": colour, "auto": True}
     return {"action": "panels", "panel_choices": choices,
             "note": ", ".join(f"{r}: {'same artwork as the front' if c['substitute'] == 'front' else 'plain film ' + c['color']}" for r, c in choices.items())}
 

@@ -1,4 +1,4 @@
-"""Step extract_specs (spec 2.2): read the job spec table and the dimension labels, offline.
+﻿"""Step extract_specs (spec 2.2): read the job spec table and the dimension labels, offline.
 
 1. Render the spec table region and the dimension drawing, 300 dpi. Layered (ArtPro+) files: every
    layer except the artwork, left of the artwork area. Files without layers (app.pdf.sheet): the
@@ -37,7 +37,7 @@ from app.pdf.profile import PdfProfile
 from app.pdf.render import pdftoppm_png
 from app.pdf import sheet as sheet_impl
 from app.pdf.sheet import Sheet, analyse, non_technical_copy, technical_copy
-from app.pdf.vector import corner_cut, dashed_lines, dieline, dieline_grids, horizontal_rules
+from app.pdf.vector import corner_cut, corner_cut_at, dashed_lines, dieline, dieline_grids, horizontal_rules
 from app.specs.schema import CellRead, MeasuredKeyline, Num, NumList, SpecSheet
 from app.specs.validate import ValidationReport, ValidationRules, validate
 from app.storage import Storage
@@ -343,6 +343,25 @@ def _spec_value(reads: dict[str, FieldRead], corrections: dict[str, Any], name: 
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
 
 
+def _blank_below_table(trim: Box, renders: "Renders", reads: dict, open_w: float, height: float, profile: PdfProfile) -> SheetLayout | None:
+    """A pillow blank drawn under the spec table on the same page, with no technical ink and no
+    closed dieline box (FGPO6813): the space below the table's lowest read field, when one open
+    width x height blank fits it (with at most a bleed around), is that blank."""
+    bottoms = [r.bbox[3] for r in reads.values() if getattr(r, "bbox", None)]
+    if not bottoms:
+        return None
+    k = 72 / profile.spec_dpi  # pt per pixel of the table as read (a wrong guess only makes the fit fail)
+    table_bottom = renders.spec_box.y1 - max(bottoms) * k  # PDF y (up)
+    free_h = (min(table_bottom, trim.y1) - trim.y0) * PT_TO_MM
+    sheet_w = trim.width_mm
+    margin = (sheet_w - open_w) / 2  # the bleed at the sides; the blank keeps the same at the page bottom
+    if not (-profile.finished_size_tolerance_mm <= margin <= 25.0 and free_h >= height + margin):
+        return None
+    x0, y0 = max(0.0, margin), trim.height_mm - max(0.0, margin) - height  # mm from the sheet's top-left
+    return SheetLayout(kind="multi", axis="horizontal", message="pillow blank under the spec table",
+                       panels=[SheetPanel(kind="blank", x_mm=round(x0, 2), y_mm=round(y0, 2), width_mm=open_w, height_mm=height)])
+
+
 def _blank_front_box(sheet_box: Box, blank: SheetPanel, width: float, open_w: float | None) -> Box:
     """The front panel inside a pillow blank: the middle `width` of the blank's open width (the blank
     may be drawn on its side: open width down the sheet)."""
@@ -558,6 +577,7 @@ def run(
     tpl = profile.spec_template
 
     sheet = analyse(inp.pdf_path, profile)
+    can_ocr = profile.ocr != "off"  # (the XML shortcut below turns table OCR off; reading which way a blank stands still needs it)
     if inp.xml_fields.get("pouch_height_mm") and inp.xml_fields.get("pouch_closed_width_mm"):
         # The ERP gives the pouch (an SAP item master XML): the table is not read at all - no 300 dpi
         # renders, OCR, AI call or ink row. Only what the XML cannot know comes from the PDF's text layer
@@ -599,10 +619,12 @@ def run(
     with tempfile.TemporaryDirectory() as tmp, dashed_lines(sheet.dashed):
         vec = vectors(inp.pdf_path, profile, sheet, Path(tmp))
         spout_corner = corner_cut(vec.pdf, vec.layers) if sheet.mode in ("separation", "layers") else None
+        if not spout_corner and "spout" in " ".join(str(reads[k].value or "") for k in ("sealing_type", "raw_remarks") if k in reads).lower():
+            spout_corner = corner_cut_at(inp.pdf_path, sheet.trim)  # marked in process colours (FGPO5834)
         top_spout = not spout_corner and (_top_spout_label(pdf_text.words(inp.pdf_path, sheet.trim, 72)) or (
             # outlined or flattened label (FGPO6292 "Top Center Side Spout"): read on the technical-ink copy,
             # only for a job whose table says spout
-            sheet.mode == "separation" and profile.ocr != "off"
+            sheet.mode == "separation" and can_ocr
             and "spout" in " ".join(str(reads[k].value or "") for k in ("sealing_type", "raw_remarks") if k in reads).lower()
             and _top_spout_label(_ocr_words(vec.pdf, sheet.trim, tpl.tesseract_lang))))
         if width and height and not roll and sheet.mode in ("separation", "layers"):
@@ -632,17 +654,21 @@ def run(
             cells = [((g.box.x0 - t.x0) * PT_TO_MM, (t.y1 - g.box.y1) * PT_TO_MM, g.box.width_mm, g.box.height_mm)
                      for g in dieline_grids(inp.pdf_path)]
             layout = grid_layout(cells, width, height) or layout
+            if layout.kind == "single" and open_w and open_w > width:
+                layout = _blank_below_table(sheet.trim, renders, reads, open_w, height, profile) or layout
         if layout.kind == "multi" and layout.blank() is not None:
             # Pillow blanks: the front is the middle `closed width` of the first blank.
             front_box = _blank_front_box(sheet.trim, layout.blank(), width, open_w)  # type: ignore[arg-type]
-            if layout.blank().rotation == 90 and inp.sheet_image_key and profile.ocr != "off":
+            if layout.blank().rotation == 90 and inp.sheet_image_key and can_ocr:
                 # A blank on its side stands up either way round; its dieline is symmetric, so the print
-                # says which: the way the front reads as text (FGPO7058 reads turned clockwise).
+                # says which: the way the blank reads as text (FGPO7058 reads turned clockwise). The whole
+                # blank, back included: a stylised front alone reads too few words (FGPO7338 stood upside down).
                 image = Image.open(io.BytesIO(storage.get_bytes(inp.sheet_image_key)))
                 k = image.width / sheet.trim.width_mm * PT_TO_MM
                 t = sheet.trim
-                crop = image.crop((round((front_box.x0 - t.x0) * k), round((t.y1 - front_box.y1) * k),
-                                   round((front_box.x1 - t.x0) * k), round((t.y1 - front_box.y0) * k)))
+                cell = panel_box(sheet.trim, layout.blank())  # type: ignore[arg-type]
+                crop = image.crop((round((cell.x0 - t.x0) * k), round((t.y1 - cell.y1) * k),
+                                   round((cell.x1 - t.x0) * k), round((t.y1 - cell.y0) * k)))
                 ccw, cw = _word_count(crop.rotate(90, expand=True), tpl), _word_count(crop.rotate(270, expand=True), tpl)
                 if cw >= 3 and cw >= 1.5 * max(ccw, 1):
                     for panel in layout.panels:

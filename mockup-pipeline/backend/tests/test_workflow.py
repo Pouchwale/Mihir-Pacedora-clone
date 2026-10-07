@@ -550,3 +550,26 @@ def test_real_render_combined_sheet_dimensions(app_client, monkeypatch):
     assert m["filled"]["x"] == pytest.approx(120.65, abs=0.01) and m["filled"]["y"] == pytest.approx(210, abs=0.5)
     assert 25 < m["filled"]["z"] < 80  # a filled doypack on its 40 mm deep gusset
     headless.local_base_url.cache_clear()
+
+
+@pytest.mark.parametrize("name, root", [
+    ("FGPO7215_Dog_Food_Front_App.pdf", True), ("FGPO7216_Dog_Food_Back_App.pdf", False),
+    ("FGPO6059_Nagin Indian Hot Sauce_APP_.pdf", True),  # the whole pouch on one sheet
+    ("FGPO7025_California Pistachios 1kg_Friont&Back_App_refine_ (1).pdf", True),  # typo, still a front
+    ("FGPO7026_California Pistachios 1kg_Side Gusset_App_.pdf", False), ("FGPO7028_CASHEW 1kg_Side GussetApp_.pdf", False), ("FGPO7024-Almonds 1kg Final-Gusset-app_.pdf", False),
+    ("FGPO6164_Honest-Cashews-250g_Standup-pouch_Front&gusset_.pdf", True), ("FGPO6165_Honest-Cashews-250g_Standup-pouch-Back_.pdf", False),
+    ("FGPO7150 Almond House Khara Andhra Style Chekkalu_Large_F+B_App_.pdf", True), ("FGPO6367-Cashew Jumbo 500gm Fornt-app.pdf", True),
+    ("FGPO6828-TAMAQ PISTACHIOS 1KG CC-appp.pdf", True), ("FGPO5835 Hand Wash 1L_Back_App (exported).pdf", False),
+    ("Backpack Snacks_App.pdf", True),  # "back" only as a whole word
+])
+def test_job_roots(name, root):
+    from app.api.job_routes import is_job_root
+    assert is_job_root(name) is root
+
+
+def test_jobs_list_filters_by_pouch_style(app_client, monkeypatch):
+    monkeypatch.setattr(queue, "enqueue", lambda *a, **k: None)
+    job_id = app_client.post("/api/uploads", files={"files": ("FGPO7215_Dog_Food_Front_App.pdf", SAMPLE.read_bytes(), "application/pdf")}, headers=H).json()["jobs"][0]
+    r = app_client.get("/api/jobs?pouch_type=none").json()
+    assert [j["id"] for j in r["jobs"]] == [job_id] and r["types"] == {"none": 1}
+    assert app_client.get("/api/jobs?pouch_type=quad_seal").json()["total"] == 0

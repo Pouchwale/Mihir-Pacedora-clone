@@ -230,3 +230,54 @@ def test_eyemark_in_the_seal_is_removed_but_dark_artwork_stays():
     assert len(marks) == 1 and 9 <= marks[0][0] <= 11
     assert b[1450, 50].min() > 40  # filled with the seal colour
     assert b[1450, 700].max() < 40  # the photo is untouched
+
+
+def test_eyemark_in_a_white_box_leaves_no_white_square():
+    """FGPO7029: a black square inside a white square in the green bottom seal; the whole corner turns green."""
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    from app.workflow.steps.texture import drop_eyemarks
+
+    k = 10  # px per mm
+    img = Image.new("RGB", (160 * k, 120 * k), (240, 240, 240))
+    d = ImageDraw.Draw(img)
+    d.rectangle((0, 80 * k, 160 * k, 120 * k), fill=(20, 80, 30))  # green base and bottom seal
+    d.rectangle((0, 108 * k, 12 * k, 120 * k), fill=(255, 255, 255))  # the white box in the corner...
+    d.rectangle((0, 110 * k, 10 * k, 120 * k), fill=(0, 0, 0))  # ...holding the black eyemark
+    out, marks = drop_eyemarks(img, 160, 10, 10, 10)
+    assert marks
+    corner = np.asarray(out)[109 * k:120 * k, 0:12 * k].astype(int)
+    assert corner.min(axis=2).max() < 200  # no white left in the corner
+
+
+def test_window_left_unprinted_in_a_gusset():
+    """FGPO7032: logo at the top, colour at the bottom, the middle left unprinted for the "Window"."""
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    from app.workflow.steps.texture import WINDOW_ALPHA, window_rect
+
+    k = 5
+    img = Image.new("RGB", (90 * k, 320 * k), (220, 240, 225))
+    ImageDraw.Draw(img).rectangle((5 * k, 70 * k, 85 * k, 290 * k), fill=(255, 255, 255))
+    mask = np.asarray(window_rect(img, 90))
+    assert mask[150 * k, 45 * k] == WINDOW_ALPHA and mask[30 * k, 45 * k] == 255 and mask[300 * k, 45 * k] == 255
+    assert window_rect(Image.new("RGB", (90 * k, 320 * k), (220, 240, 225)), 90) is None  # nothing unprinted
+
+
+def test_white_eyemark_block_on_a_dark_seal():
+    """FGPO7029's back: plain white squares in the green bottom corners (no black mark in them)."""
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    from app.workflow.steps.texture import drop_eyemarks
+
+    k = 10
+    img = Image.new("RGB", (160 * k, 120 * k), (240, 240, 240))
+    d = ImageDraw.Draw(img)
+    d.rectangle((0, 80 * k, 160 * k, 120 * k), fill=(20, 80, 30))
+    d.rectangle((150 * k, 110 * k, 160 * k, 120 * k), fill=(255, 255, 255))  # bottom-right corner
+    out, marks = drop_eyemarks(img, 160, 10, 10, 10)
+    assert marks
+    assert np.asarray(out)[111 * k:120 * k, 151 * k:160 * k].astype(int).min(axis=2).max() < 200

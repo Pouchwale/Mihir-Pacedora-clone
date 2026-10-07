@@ -1,4 +1,4 @@
-"""Vector geometry from the PDF (PyMuPDF drawings, which carry their optional-content layer).
+﻿"""Vector geometry from the PDF (PyMuPDF drawings, which carry their optional-content layer).
 
 Coordinates returned here are PDF user space (points, y up) so they line up with page boxes and
 with renders made by app.pdf.render. PyMuPDF's own page space (y down, origin at the MediaBox's
@@ -168,6 +168,32 @@ def _to_pdf(rect, inv) -> Box:
 def _on(d, layers: list[str] | None) -> bool:
     """`layers=None` accepts every drawing (files without layers, or an already filtered copy)."""
     return layers is None or d.get("layer") in layers
+
+
+def corner_cut_at(pdf: Path, box: Box, length_mm: tuple[float, float] = (20.0, 120.0), reach_mm: float = 25.0) -> str | None:
+    """The spout corner marked in any ink (FGPO5834: a 29.9 mm diagonal with a "SPOUT" label, drawn
+    in process colours, not the technical ink): a ~45 degree line from `box`'s top edge to its left
+    or right edge, ends within `reach_mm` of them (the TrimBox may carry bleed and a seal margin around the face: FGPO5834 15-19 mm), so a diagonal stripe in the artwork does not count."""
+    drawings, inv = _drawings(pdf)
+    lo, hi = (v / PT_TO_MM for v in length_mm)
+    reach = reach_mm / PT_TO_MM
+    found = set()
+    for d in drawings:
+        for item in d["items"]:
+            if item[0] != "l":
+                continue
+            a, b = pymupdf.Point(item[1]) * inv, pymupdf.Point(item[2]) * inv  # PDF space: y runs up
+            dx, dy = b.x - a.x, b.y - a.y
+            if not (lo <= (dx * dx + dy * dy) ** 0.5 <= hi and dx and 0.8 <= abs(dy / dx) <= 1.25):
+                continue
+            top, low = (a, b) if a.y >= b.y else (b, a)
+            if abs(top.y - box.y1) > reach:
+                continue
+            if abs(low.x - box.x0) <= reach and top.x > low.x:
+                found.add("left")
+            elif abs(low.x - box.x1) <= reach and top.x < low.x:
+                found.add("right")
+    return found.pop() if len(found) == 1 else None
 
 
 def corner_cut(pdf: Path, layers: list[str] | None, length_mm: tuple[float, float] = (30.0, 120.0)) -> str | None:

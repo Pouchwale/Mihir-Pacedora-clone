@@ -12,6 +12,13 @@ export interface JobSummary {
 export const STATUS_BADGE: Record<string, string> = { DONE: "ok", NEEDS_REVIEW: "warn", FAILED: "bad", RUNNING: "accent", QUEUED: "", PAUSED: "warn", CANCELLED: "" };
 const PAGE_SIZE = 24;
 const STATUSES = ["QUEUED", "RUNNING", "NEEDS_REVIEW", "PAUSED", "FAILED", "DONE", "CANCELLED"];
+/** Readable pouch styles (index pouch types); unknown keys fall back to their own words. */
+export const POUCH_STYLE: Record<string, string> = {
+  stand_up_bottom_gusset: "Stand-up (bottom gusset)", spout_pouch: "Spout pouch", three_side_seal: "Three-side seal",
+  center_seal_pillow: "Centre seal (pillow)", center_seal_side_gusset: "Centre seal + side gussets", quad_seal: "Quad seal",
+  flat_bottom_box_pouch: "Flat bottom / box", roll_stock: "Roll stock", shaped_diecut: "Shaped die-cut", none: "Not typed yet",
+};
+export const pouchStyle = (key: string | null | undefined) => (key ? POUCH_STYLE[key] ?? key.replace(/_/g, " ") : "type pending");
 const LABEL: Record<string, string> = { QUEUED: "Queued", RUNNING: "Running", NEEDS_REVIEW: "Needs review", PAUSED: "Paused", FAILED: "Failed", DONE: "Done", CANCELLED: "Cancelled" };
 // the workflow's steps, for the progress bar of a running job
 const STEPS = ["ingest", "trim_artwork", "extract_specs", "validate", "match_pouch_type", "resolve_keyline", "link_panels", "build_geometry", "texture", "render", "export"];
@@ -91,6 +98,8 @@ function Status({ job }: { job: JobSummary }) {
 export default function Jobs() {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
+  const [types, setTypes] = useState<Record<string, number>>({});
+  const [style, setStyle] = useState(""); // pouch style filter ("" = all)
   const [status, setStatus] = useState("");
   const [q, setQ] = useState("");
   const [tests, setTests] = useState(false); // workflow editor test runs instead of real jobs
@@ -107,21 +116,21 @@ export default function Jobs() {
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   // a new filter or search starts again at the first page
-  useEffect(() => { setPage(0); }, [status, q, tests]);
+  useEffect(() => { setPage(0); }, [status, q, tests, style]);
 
   useEffect(() => {
     let alive = true;
-    const load = () => api.get<{ jobs: JobSummary[]; counts: Record<string, number>; total: number }>(
-      `/api/jobs?status=${status}&q=${encodeURIComponent(q)}&kind=${tests ? "test" : "job"}&limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}`)
+    const load = () => api.get<{ jobs: JobSummary[]; counts: Record<string, number>; types?: Record<string, number>; total: number }>(
+      `/api/jobs?status=${status}&q=${encodeURIComponent(q)}&kind=${tests ? "test" : "job"}&pouch_type=${encodeURIComponent(style)}&limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}`)
       .then((r) => {
         if (!alive) return;
-        setJobs(r.jobs); setCounts(r.counts); setTotal(r.total); setLoaded(true);
+        setJobs(r.jobs); setCounts(r.counts); setTypes(r.types ?? {}); setTotal(r.total); setLoaded(true);
         if (r.jobs.length === 0 && page > 0) setPage(Math.max(0, Math.ceil(r.total / PAGE_SIZE) - 1)); // the last page emptied (jobs removed)
       });
     load();
     const t = setInterval(load, 4000);
     return () => { alive = false; clearInterval(t); };
-  }, [status, q, tests, tick, page]);
+  }, [status, q, tests, tick, page, style]);
 
   const n = (...s: string[]) => s.reduce((a, k) => a + (counts[k] ?? 0), 0);
   const all = n(...STATUSES);
@@ -165,14 +174,28 @@ export default function Jobs() {
           <label className="check small muted"><input type="checkbox" checked={tests} onChange={(e) => setTests(e.target.checked)} /> test runs</label>
         </div>
       </div>
+      <div className="style-row" role="group" aria-label="Pouch style">
+        <span className="style-row-label">Pouch style</span>
+        <button className={`pill ${style === "" ? "on" : ""}`} onClick={() => setStyle("")}>All styles</button>
+        {[...Object.keys(POUCH_STYLE), ...Object.keys(types).filter((k) => !(k in POUCH_STYLE))].map((k) => {
+          const n = types[k] ?? 0;
+          if (!n && k === "none") return null;
+          return (
+            <button key={k} className={`pill ${style === k ? "on" : ""}`} disabled={!n && style !== k} onClick={() => setStyle(style === k ? "" : k)}
+              title={n ? `Show only ${pouchStyle(k)} jobs` : "No jobs of this style yet"}>
+              {POUCH_STYLE[k] ?? pouchStyle(k)} <span className="pill-count">{n}</span>
+            </button>
+          );
+        })}
+      </div>
       {msg && <div className="msg warn" style={{ marginBottom: 12 }}>{msg}</div>}
 
       {loaded && jobs.length === 0 && (
         <div className="card empty-state">
           <div className="dropzone-icon"><Icon d={I.box} size={26} /></div>
-          <b>{q || status ? "No jobs match" : "No jobs yet"}</b>
-          <span className="muted">{q || status ? "Try another filter or search." : "Upload approval PDFs and each one becomes a 3D mockup automatically."}</span>
-          {!q && !status && <Link className="btn primary" to="/upload"><Icon d={I.upload} /> Upload PDFs</Link>}
+          <b>{q || status || style ? "No jobs match" : "No jobs yet"}</b>
+          <span className="muted">{q || status || style ? "Try another filter or search." : "Upload approval PDFs and each one becomes a 3D mockup automatically."}</span>
+          {!q && !status && !style && <Link className="btn primary" to="/upload"><Icon d={I.upload} /> Upload PDFs</Link>}
         </div>
       )}
 
@@ -186,7 +209,7 @@ export default function Jobs() {
                   <b>{j.item_code ?? j.filename}</b>
                   <span className="muted small">#{j.id}</span>
                 </div>
-                <div className="muted small ellipsis">{j.client_name ?? "Client unknown"} · {j.pouch_type ?? "type pending"}</div>
+                <div className="muted small ellipsis">{j.client_name ?? "Client unknown"} · {pouchStyle(j.pouch_type)}</div>
                 <Status job={j} />
                 <div className="job-card-foot">
                   <span className="muted small" title={formatTime(j.updated_at)}>{ago(j.updated_at)}</span>
@@ -206,7 +229,7 @@ export default function Jobs() {
                   <td style={{ width: 64 }}><Thumb job={j} /></td>
                   <td><b>{j.item_code ?? "—"}</b> <span className="muted small">#{j.id}</span><div className="muted small">{j.filename}</div></td>
                   <td>{j.client_name ?? <span className="muted">—</span>}</td>
-                  <td>{j.pouch_type ?? <span className="muted">—</span>}</td>
+                  <td>{j.pouch_type ? pouchStyle(j.pouch_type) : <span className="muted">—</span>}</td>
                   <td style={{ minWidth: 160 }}><Status job={j} /></td>
                   <td className="muted">{j.batch_id ?? "—"}</td>
                   <td className="muted small" title={formatTime(j.updated_at)}>{ago(j.updated_at)}</td>

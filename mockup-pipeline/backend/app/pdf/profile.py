@@ -187,7 +187,8 @@ class PdfProfile(BaseModel):
 
     def _code_pairs(self, remarks: str) -> list[tuple[list[str], str]]:
         # The ":" is optional: OCR often drops punctuation-only words.
-        pattern = rf"([A-Za-z][A-Za-z ]*?)\s*Code\s*[:\-]?\s*({self.item_code_pattern})"
+        # "Gusset Code : FGPO7429", and "Gusset Use FGPO4357" (FGPO6828), "Back Use Code FGPO..."
+        pattern = rf"([A-Za-z][A-Za-z ]*?)\s*(?:Use\s+Code|Code\s+Use|Code|Use)\s*[:\-]?\s*({self.item_code_pattern})"
         pairs = []
         for label, code in re.findall(pattern, remarks, re.IGNORECASE):
             # Remarks are joined with separators like "Matt Finish Pouch | Back Code"; keep the last words.

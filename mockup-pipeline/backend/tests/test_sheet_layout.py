@@ -141,3 +141,39 @@ def test_pillow_blanks_on_their_side_two_across():
     assert layout.kind == "multi" and layout.ups == 2 and len(blanks) == 2
     first = blanks[0]
     assert (round(first.width_mm), round(first.height_mm), first.rotation) == (164, 170, 90)
+
+
+def test_blank_under_a_table_found_by_its_drawn_lines():
+    """FGPO6813-like: one 316 x 247.65 blank drawn low on a tall sheet (a spec table above it)."""
+    from app.geometry.sheet_layout import detect
+
+    lay = detect(339.66, 606.84, [11.83, 21.83, 95.83, 243.83, 317.83, 327.83], [347.36, 595.01], 148, 247.65, None,
+                 open_width=316, prefer_blank=True)
+    assert lay.kind == "multi" and lay.blank() is not None
+    b = lay.blank()
+    assert (round(b.y_mm, 2), round(b.height_mm, 2), round(b.width_mm, 2)) == (347.36, 247.65, 316.0)
+
+
+def test_web_repeated_for_the_white_plate_reads_the_first_copy():
+    """FGPO6059: front, gusset, back, then the same web again 34 mm lower (its white-ink plate)."""
+    from app.geometry.sheet_layout import detect
+
+    ys = [4.25, 11.25, 167.0, 174.0, 177.0, 184.0, 250.0, 257.0, 260.0, 267.0, 423.25, 430.25, 433.99, 441.0, 448.0, 460.53,
+          464.56, 471.81, 627.56, 634.56, 637.56, 644.56, 710.56, 717.56, 720.56, 727.56, 883.81, 890.81]
+    lay = detect(122.6, 894.56, [7.0, 100.95, 107.95, 114.95], ys, 107.95, 170.0, 80.0)
+    assert lay.kind == "multi" and lay.axis == "vertical"
+    assert [(p.kind, round(p.y_mm, 2)) for p in lay.panels] == [("face", 4.25), ("gusset", 177.0), ("face", 260.0)]
+    assert lay.panels[2].rotation == 180  # the back stands the other way up on the web
+
+
+def test_blanks_with_a_cut_off_repeat_below():
+    """FGPO7338: three pillow blanks across (one per flavour) drawn on their side, 174 mm open width down
+    the sheet, and the next row of them cut off by the sheet's bottom edge."""
+    from app.geometry.sheet_layout import detect
+
+    xs = [0.33, 1.32, 8.32, 112.33, 119.32, 120.65, 121.97, 128.97, 232.98, 239.97, 241.3, 242.62, 249.62, 353.62, 360.62, 361.62]
+    ys = [1.97, 8.97, 49.0, 129.0, 169.0, 175.97, 182.97]
+    lay = detect(361.95, 222.94, xs, ys, 87.0, 115.0, None, open_width=174.0, prefer_blank=True)
+    assert lay.kind == "multi" and lay.ups == 3
+    b = lay.blank()
+    assert (round(b.y_mm, 2), round(b.height_mm, 2), b.rotation) == (1.97, 174.0, 90)

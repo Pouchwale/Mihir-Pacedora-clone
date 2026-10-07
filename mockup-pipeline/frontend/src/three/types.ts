@@ -93,7 +93,7 @@ export interface SceneTexture {
   height_mm: number;
   color: string | null;
   clear?: boolean; // transparent unprinted film
-  masks: { metal?: string; spot?: string };
+  masks: { metal?: string; spot?: string; window?: string }; // window: alpha mask, clear film where dark
   transform?: PanelTransform | null;
   bake?: PanelBake | null;
   raw_url?: string | null; // the texture before the job's overlays / colour correction were baked in
