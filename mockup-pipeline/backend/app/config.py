@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # Where the headless renderer reaches this app. The worker starts its own local server; in
     # thread mode it is the API itself.
     internal_base_url: str = "http://127.0.0.1:8765"
+    # Share links for people outside this PC: the ngrok address customers open (your free static
+    # domain, e.g. "https://name.ngrok-free.app"). Empty = whatever address ngrok hands out. The first
+    # "Share" click starts ngrok when it is not running (app.api.tunnel).
+    public_url: str = ""
     render_timeout_s: int = 600
     # Browser for the headless renderer: empty = Playwright's own Chromium (`playwright install
     # chromium`); "chrome" or "msedge" = the one installed on this machine (no download).

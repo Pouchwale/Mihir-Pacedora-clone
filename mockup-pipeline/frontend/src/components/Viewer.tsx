@@ -247,7 +247,7 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
     };
     raf = requestAnimationFrame(loop);
     firstBuild.current = true;
-    const onFull = () => setFull(document.fullscreenElement === wrap.current);
+    const onFull = () => { if (!document.fullscreenElement) setFull(false); };  // Esc / back leaves full screen
     document.addEventListener("fullscreenchange", onFull);
     return () => {
       cancelAnimationFrame(raf);
@@ -352,8 +352,15 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
   };
 
   const toggleFull = () => {
-    if (document.fullscreenElement) document.exitFullscreen();
-    else wrap.current?.requestFullscreen().catch(() => undefined);
+    // The viewer fills the window by itself (iPhone Safari has no element full screen, and some
+    // browsers refuse or ignore it); where the browser allows, it also goes truly full screen.
+    if (full) {
+      setFull(false);
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => undefined);
+    } else {
+      setFull(true);
+      wrap.current?.requestFullscreen?.().catch(() => undefined);
+    }
   };
 
   const pick = async (file: File | undefined, apply: (img: HTMLImageElement) => void) => {

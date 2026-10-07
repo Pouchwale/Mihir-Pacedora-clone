@@ -573,3 +573,14 @@ def test_jobs_list_filters_by_pouch_style(app_client, monkeypatch):
     r = app_client.get("/api/jobs?pouch_type=none").json()
     assert [j["id"] for j in r["jobs"]] == [job_id] and r["types"] == {"none": 1}
     assert app_client.get("/api/jobs?pouch_type=quad_seal").json()["total"] == 0
+
+
+def test_ngrok_address_reaches_share_pages_only(app_client):
+    from app.render import tokens
+    c, out = app_client, {"Host": "abc.ngrok-free.app", **H}
+    assert c.get("/api/jobs", headers=H).status_code == 200  # this PC: everything
+    for path in ("/api/jobs", "/api/auth/session", "/api/jobs/1/share-token", "/api/jobs/1", "/api/jobs/1?token=forged.1.x"):
+        assert c.get(path, headers=out).json() == {"detail": "Not found"}, path
+    assert c.post("/api/auth/login", json={"email": "admin@example.com", "password": "x"}, headers=out).status_code == 404
+    ok = f"/api/jobs/999/scene?token={tokens.make(999, ttl_s=60)}"  # a real share token passes to the route
+    assert c.get(ok, headers=out).json() == c.get(ok, headers=H).json() != {"detail": "Not found"}

@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from app import logging_setup
-from app.api import auth_routes, index_routes, job_routes, workflow_routes
+from app.api import auth_routes, index_routes, job_routes, tunnel, workflow_routes
 from app.config import get_settings
 from app.db import get_engine
 
@@ -65,6 +65,7 @@ def create_app(resume_jobs: bool = True) -> FastAPI:
 
     app = FastAPI(title="Pouch mockup pipeline", docs_url="/api/docs", openapi_url="/api/openapi.json", lifespan=lifespan)
     app.add_middleware(logging_setup.RequestLog)
+    app.middleware("http")(tunnel.guard)  # through ngrok: share pages only
     app.include_router(auth_routes.router)
     app.include_router(index_routes.router)
     app.include_router(job_routes.router)
@@ -100,7 +101,8 @@ def _mount_frontend(app: FastAPI) -> None:
         file = (dist / path).resolve()
         if path and file.is_file() and dist.resolve() in file.parents:
             return FileResponse(file)
-        return FileResponse(index)  # client-side routes
+        # client-side routes; no-cache so a rebuilt app (new hashed /assets) reaches phones at once
+        return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
 
 app = create_app()

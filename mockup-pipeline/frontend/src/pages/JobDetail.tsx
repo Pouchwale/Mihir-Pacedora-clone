@@ -133,15 +133,17 @@ export default function JobDetail() {
               style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 5, background: shareCopied ? "var(--ok)" : undefined, color: shareCopied ? "#fff" : undefined }}
               onClick={async () => {
                 if (shareLink) {
-                  navigator.clipboard.writeText(window.location.origin + shareLink);
+                  navigator.clipboard.writeText(shareLink);
                   setShareCopied(true);
                   setTimeout(() => setShareCopied(false), 2500);
                   return;
                 }
                 try {
-                  const res = await api.get<{ share_url: string }>(`/api/jobs/${jobId}/share-token`);
-                  const fullUrl = window.location.origin + res.share_url;
-                  setShareLink(res.share_url);
+                  const res = await api.get<{ share_url: string; public: boolean }>(`/api/jobs/${jobId}/share-token`);
+                  // the ngrok address when the tunnel is up; otherwise a link that opens on this PC only
+                  const fullUrl = res.public ? res.share_url : window.location.origin + res.share_url;
+                  if (!res.public) setMsg("ngrok is not running or not installed: this link opens on this PC only.");
+                  setShareLink(fullUrl);
                   navigator.clipboard.writeText(fullUrl);
                   setShareCopied(true);
                   setTimeout(() => setShareCopied(false), 2500);

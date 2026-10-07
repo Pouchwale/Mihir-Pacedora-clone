@@ -16,6 +16,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from app import auth
+from app.api import tunnel
 from app.config import get_settings
 from app.db import get_session
 from app.index import store
@@ -313,7 +314,8 @@ def share_token(job_id: int, session: Session = Depends(get_session), _: User = 
     _job(session, job_id)  # 404 if job does not exist
     token = tokens.make(job_id, ttl_s=7 * 24 * 3600)  # 7-day share link
     share_url = f"/share/{job_id}?token={token}"
-    return {"token": token, "share_url": share_url, "expires_in_days": 7}
+    base = tunnel.public_base()  # the ngrok address (started on the first share); None = this PC only
+    return {"token": token, "share_url": (base or "") + share_url, "public": bool(base), "expires_in_days": 7}
 
 
 

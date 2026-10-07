@@ -258,7 +258,8 @@ pre.diff .del { color: var(--bad); }
 .dropzone.over, .dropzone:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent-soft) 60%, var(--panel)); }
 .dropzone.over { transform: scale(1.01); }
 .viewer { position: relative; height: min(74vh, 780px); min-height: 420px; border-radius: 16px; overflow: hidden; background: #fff; border: 1px solid var(--border); box-shadow: var(--shadow); }
-.viewer.viewer-full { height: 100vh; border-radius: 0; border: 0; }
+/* fixed: also covers the page where the browser has no real full screen (iPhone); dvh skips the phone's address bar */
+.viewer.viewer-full { position: fixed; inset: 0; z-index: 1000; height: 100vh; height: 100dvh; min-height: 0; border-radius: 0; border: 0; }
 .viewer canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
 .viewer-note { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: rgba(255,255,255,.92); color: #2a3140; padding: 10px 16px; border-radius: 999px; box-shadow: 0 6px 24px rgba(20,30,50,.15); display: flex; align-items: center; gap: 10px; font-weight: 500; }
 .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
@@ -449,6 +450,7 @@ pre.diff .del { color: var(--bad); }
 .kl-svg .dl-measure circle { fill: #e5484d; }
 
 .viewer-panel.compact { bottom: auto; }
+@media (max-width: 700px) { .viewer-panel.compact { bottom: 64px; } }  /* phones: the panel sits above the bottom bar */
 
 .style-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: -6px 0 16px; }
 .style-row-label { font-size: 11.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-right: 4px; }
