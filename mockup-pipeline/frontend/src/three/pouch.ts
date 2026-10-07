@@ -214,6 +214,7 @@ async function filmMaterial(g: GeometrySpec, tex: SceneTexture, maps: FaceMaps):
       if (clearParts) flat.transparent = true;
     }
     flat.name = "film";
+    plainInside(flat, g);
     return flat;
   }
   const mat = new THREE.MeshPhysicalMaterial({
@@ -255,7 +256,54 @@ async function filmMaterial(g: GeometrySpec, tex: SceneTexture, maps: FaceMaps):
     }
   }
   mat.name = "film";
+  plainInside(mat, g);
   return mat;
+}
+
+/** The film's inside is its plain inner layer, white (silver on metallised film), never the print seen
+ * backwards: a window on one face looks into the pouch and saw the other face's artwork mirrored.
+ * Which side of a mesh is outside is set per mesh by outsideFaces (panels are wound either way). */
+function plainInside(mat: THREE.Material, g: GeometrySpec) {
+  const inside = new THREE.Color(g.materials.surfaces.white_less ? "#cfd2d6" : "#f3f3f0");
+  const outsideFront = { value: true };
+  mat.userData.outsideFront = outsideFront;
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.insideColor = { value: inside };
+    shader.uniforms.outsideFront = outsideFront;
+    shader.fragmentShader = "uniform vec3 insideColor;\nuniform bool outsideFront;\n" + shader.fragmentShader.replace(
+      "#include <map_fragment>", "#include <map_fragment>\n  if (gl_FrontFacing != outsideFront) diffuseColor.rgb = insideColor;\n"
+      // a clear window (alpha mask below half) keeps a faint sheen of plain film, not a ghost of the print
+      + "#ifdef USE_ALPHAMAP\n  if (texture2D(alphaMap, vAlphaMapUv).g < 0.5) diffuseColor.rgb = vec3(1.0);\n#endif");
+  };
+  mat.customProgramCacheKey = () => `inside:${inside.getHexString()}`;
+  mat.forceSinglePass = true; // two passes (see-through double-sided film) flip gl_FrontFacing
+}
+
+/** For each film mesh: is its outside the triangles' front side? Their winding normals, summed against
+ * the direction away from the pouch's centre, say which way the mesh was built. */
+function outsideFaces(grp: THREE.Group) {
+  grp.updateMatrixWorld(true);
+  const centre = new THREE.Box3().setFromObject(grp).getCenter(new THREE.Vector3());
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3(), m = new THREE.Vector3();
+  grp.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    const flag = mesh.isMesh ? ((mesh.material as THREE.Material).userData?.outsideFront as { value: boolean } | undefined) : undefined;
+    if (!flag) return;
+    const pos = mesh.geometry.getAttribute("position");
+    const index = mesh.geometry.getIndex();
+    const count = index ? index.count : pos.count;
+    let sum = 0;
+    for (let i = 0; i + 2 < count; i += 3) {
+      const [i0, i1, i2] = index ? [index.getX(i), index.getX(i + 1), index.getX(i + 2)] : [i, i + 1, i + 2];
+      a.fromBufferAttribute(pos, i0).applyMatrix4(mesh.matrixWorld);
+      b.fromBufferAttribute(pos, i1).applyMatrix4(mesh.matrixWorld);
+      c.fromBufferAttribute(pos, i2).applyMatrix4(mesh.matrixWorld);
+      n.subVectors(c, b).cross(m.subVectors(a, b)); // = (b - a) x (c - a): the front side's normal, area-weighted
+      m.copy(a).add(b).add(c).divideScalar(3).sub(centre);
+      sum += n.dot(m);
+    }
+    flag.value = sum >= 0;
+  });
 }
 
 function plasticMaterial(g: GeometrySpec, color = "#f4f4f2", roughness = 0.35): THREE.Material {
@@ -753,17 +801,8 @@ async function flatLikeGroup(g: GeometrySpec, textures: Record<string, SceneText
     }
     grp.add(sp);
   }
-  if (hasWindow(g) && filled) {
-    // product seen through the window: an inner body in a neutral product colour
-    // (both halves, seen from either side: a window on the back shows product too, not the front's print)
-    const product = solidMaterial(g, { color: "#b98b52", roughness: 0.9, side: THREE.DoubleSide });
-    for (const half of [faces.front, faces.back]) {
-      const inner = new THREE.Mesh(half.clone(), product);
-      inner.scale.set(0.97, 0.97, 0.9);
-      inner.position.y = H * 0.015;
-      grp.add(inner);
-    }
-  }
+  // (No stand-in product behind windows: a brown inner body filled every window, drawn or printed,
+  // instead of clear film. As in boxGroup, a window shows the clear film and what is behind it.)
   return grp;
 }
 
@@ -812,6 +851,7 @@ export async function buildPouch(g: GeometrySpec, textures: Record<string, Scene
     if (face) placeOnFace(face, g.valve.x_mm / g.width_mm, 1 - g.valve.y_from_top_mm / g.height_mm, valveGroup(g, g.valve.diameter_mm));
   }
   grp.name = "pouch";
+  outsideFaces(grp);
   grp.traverse((o) => {
     if ((o as THREE.Mesh).isMesh) {
       o.castShadow = true;
