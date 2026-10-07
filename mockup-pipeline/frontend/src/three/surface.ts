@@ -260,7 +260,7 @@ export function normalMap(wMm: number, hMm: number, z: SealZones, seed = 1): THR
         // the fin strip, knurled, laid over to the right: its free edge casts a hard line, the fold side is soft
         const dx = x - z.finX;
         if (dx > -fw - 2 && dx < fw + 0.6) {
-          v += dx < -fw ? 0.6 * (dx + fw + 2) / 2 : dx < fw ? 0.6 + 0.3 * Math.sin((y / 1.2) * Math.PI * 2) : -0.4;
+          v += dx < -fw ? 1.2 * (dx + fw + 2) / 2 : dx < fw ? 1.2 + 0.45 * Math.sin((y / 1.2) * Math.PI * 2) : -0.8;
         }
       }
       h[j * W + i] = v;

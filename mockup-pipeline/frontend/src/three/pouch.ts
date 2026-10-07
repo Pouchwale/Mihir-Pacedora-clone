@@ -266,29 +266,54 @@ async function filmMaterial(g: GeometrySpec, tex: SceneTexture, maps: FaceMaps):
 function plainInside(mat: THREE.Material, g: GeometrySpec) {
   const inside = new THREE.Color(g.materials.surfaces.white_less ? "#cfd2d6" : "#f3f3f0");
   const outsideFront = { value: true };
+  const sealEdge = { value: 0 }; // corner seal fins (quad seal): the outer share of the width at each edge
+  // back fin seal (centre seal): its centre and half width as shares of the panel width, and 0.5 mm
+  const fin = { value: new THREE.Vector3(0.5, 0, 0) };
   mat.userData.outsideFront = outsideFront;
+  mat.userData.sealEdge = sealEdge;
+  mat.userData.fin = fin;
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.insideColor = { value: inside };
     shader.uniforms.outsideFront = outsideFront;
-    shader.fragmentShader = "uniform vec3 insideColor;\nuniform bool outsideFront;\n" + shader.fragmentShader.replace(
-      "#include <map_fragment>", "#include <map_fragment>\n  if (gl_FrontFacing != outsideFront) diffuseColor.rgb = insideColor;\n"
+    shader.uniforms.sealEdge = sealEdge;
+    shader.uniforms.fin = fin;
+    shader.fragmentShader = "uniform vec3 insideColor;\nuniform bool outsideFront;\nuniform float sealEdge;\nuniform vec3 fin;\n" + shader.fragmentShader.replace(
+      "#include <map_fragment>", "#include <map_fragment>\n"
+      + "  if (gl_FrontFacing != outsideFront && vMapUv.x > sealEdge && vMapUv.x < 1.0 - sealEdge) diffuseColor.rgb = insideColor;\n"
+      // the centre seal reads as on a real pack: the folded double strip a shade deeper, a soft
+      // highlight at its fold, a hard shadow line under its free edge
+      + "  if (fin.y > 0.0 && gl_FrontFacing == outsideFront) {\n"
+      + "    float d = vMapUv.x - fin.x;\n"
+      + "    if (abs(d) < fin.y) diffuseColor.rgb *= 0.93;\n"
+      + "    diffuseColor.rgb *= 1.0 + 0.08 * (1.0 - smoothstep(0.0, fin.z * 3.0, abs(d + fin.y)));\n"
+      + "    diffuseColor.rgb *= 1.0 - 0.4 * (smoothstep(fin.y - fin.z, fin.y, d) * (1.0 - smoothstep(fin.y + fin.z, fin.y + fin.z * 4.0, d)));\n"
+      + "  }\n"
       // a clear window (alpha mask below half) keeps a faint sheen of plain film, not a ghost of the print
       + "#ifdef USE_ALPHAMAP\n  if (texture2D(alphaMap, vAlphaMapUv).g < 0.5) diffuseColor.rgb = vec3(1.0);\n#endif");
   };
-  mat.customProgramCacheKey = () => `inside:${inside.getHexString()}`;
+  mat.customProgramCacheKey = () => `inside:${inside.getHexString()}:fin`;
   mat.forceSinglePass = true; // two passes (see-through double-sided film) flip gl_FrontFacing
+}
+
+/** The back's centre seal, shaded where it runs down the middle of the panel (plainInside's fin). */
+function markFin(mat: THREE.Material, wMm: number, finW: number) {
+  (mat.userData.fin as { value: THREE.Vector3 } | undefined)?.value.set(0.5, finW / 2 / wMm, 0.5 / wMm);
 }
 
 /** For each film mesh: is its outside the triangles' front side? Their winding normals, summed against
  * the direction away from the pouch's centre, say which way the mesh was built. */
 function outsideFaces(grp: THREE.Group) {
   grp.updateMatrixWorld(true);
-  const centre = new THREE.Box3().setFromObject(grp).getCenter(new THREE.Vector3());
+  const centres = new Map<THREE.Object3D, THREE.Vector3>();
   const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3(), m = new THREE.Vector3();
   grp.traverse((o) => {
     const mesh = o as THREE.Mesh;
     const flag = mesh.isMesh ? ((mesh.material as THREE.Material).userData?.outsideFront as { value: boolean } | undefined) : undefined;
     if (!flag) return;
+    // the centre of the pouch the panel belongs to (its group): a roll's sachet is not measured from the roll
+    const body = mesh.parent ?? grp;
+    if (!centres.has(body)) centres.set(body, new THREE.Box3().setFromObject(body).getCenter(new THREE.Vector3()));
+    const centre = centres.get(body)!;
     const pos = mesh.geometry.getAttribute("position");
     const index = mesh.geometry.getIndex();
     const count = index ? index.count : pos.count;
@@ -563,7 +588,13 @@ function boxFaces(g: GeometrySpec, filled: boolean, shape: string, sideH = g.hei
   };
   const bulge = filled ? (g.body_bulge_percent / 100) * W * 0.25 : 0;
   const vs = sortedUnique([...Array.from({ length: 161 }, (_, i) => i / 160), 1 - top / H, bottomSeal / H]);
-  const us = sortedUnique([...Array.from({ length: 81 }, (_, i) => i / 80), cs / W, 1 - cs / W]);
+  // centre seal + side gusset: the back's fin seal runs down the middle, laid flat (as on the pillow)
+  const fw = shape === "center_seal_side_gusset" ? g.seals.fin / 2 : 0;
+  const finCols = fw ? [-fw - 2, -fw, fw - 0.4, fw, fw + 0.4].map((d) => (W / 2 + d) / W) : [];
+  const finBulge = (f: number, o: number) => !fw ? 0
+    // two films folded over: a strip standing ~1.5 mm proud, rising softly at the fold, dropping sharply at its free edge
+    : (0.8 + 0.8 * o) * smooth(W / 2 - fw - 2, W / 2 - fw + 0.5, f) * (1 - smooth(W / 2 + fw - 0.25, W / 2 + fw + 0.25, f));
+  const us = sortedUnique([...Array.from({ length: 81 }, (_, i) => i / 80), cs / W, 1 - cs / W, ...finCols]);
   const r = 0.12 * S; // rounded vertical corners when open
 
   const faceFront = (sign: 1 | -1) =>
@@ -585,6 +616,7 @@ function boxFaces(g: GeometrySpec, filled: boolean, shape: string, sideH = g.hei
         x = f - W / 2;
         const xi = x / X;
         z = Zd + bulge * o * prof(xi, 2, 1.5) - (Math.abs(xi) > 1 - r / X ? (Math.abs(xi) - (1 - r / X)) * X * 0.35 * o : 0);
+        if (sign === -1) z += finBulge(f, o);
       }
       return [sign === 1 ? x : -x, y, sign * (z + FILM)];
     }, sign === -1);
@@ -606,7 +638,7 @@ function boxFaces(g: GeometrySpec, filled: boolean, shape: string, sideH = g.hei
       sideSign === 1,
     );
 
-  return { front: faceFront(1), back: faceFront(-1), right: faceSide(1), left: faceSide(-1), X, S, openBottom: !closedBottom };
+  return { front: faceFront(1), back: faceFront(-1), right: faceSide(1), left: faceSide(-1), X, S, openBottom: !closedBottom, finW: fw * 2 };
 }
 
 // ---------------------------------------------------------------- spout
@@ -723,8 +755,11 @@ async function rollGroup(g: GeometrySpec, textures: Record<string, SceneTexture>
   const mapW = map.clone();
   mapW.needsUpdate = true;
   mapW.wrapS = mapW.wrapT = THREE.RepeatWrapping;
+  // the print's repeat runs along the web, its lanes (ac_ups) across it, exactly as on the roll. three
+  // scales uv before turning it: repeat x counts along the length (v), so the lanes stay once across
+  // the width (repeat (1, n) gave n copies of the lanes: 3 designs for FGPO7042's 2 ups).
   mapW.rotation = Math.PI / 2;
-  mapW.repeat.set(1, webLen / roll.repeat_mm);
+  mapW.repeat.set(webLen / roll.repeat_mm, 1);
   const webMesh = new THREE.Mesh(web, unlit(g) ? new THREE.MeshBasicMaterial({ map: mapW, side: THREE.DoubleSide, toneMapped: false })
     : new THREE.MeshPhysicalMaterial({ map: mapW, roughness: base.roughness ?? 0.5, side: THREE.DoubleSide }));
   webMesh.rotation.x = -Math.PI / 2;
@@ -773,6 +808,7 @@ async function flatLikeGroup(g: GeometrySpec, textures: Record<string, SceneText
     alpha: cutMask(g, W, H, { corners: true, spoutCorner: spoutCorner === "left" ? "right" : spoutCorner === "right" ? "left" : null, outline, mirror: !!outline, face: "back" }),
     normal: normalMap(W, H, { ...zones, finX: shape === "center_seal_pillow" ? W / 2 : null, finW: g.seals.fin }, 2),
   });
+  if (shape === "center_seal_pillow" && g.seals.fin > 0) markFin(backMat, W, g.seals.fin);
   const front = new THREE.Mesh(faces.front, frontMat);
   const back = new THREE.Mesh(faces.back, backMat);
   front.name = "front";
@@ -816,7 +852,11 @@ async function boxGroup(g: GeometrySpec, textures: Record<string, SceneTexture>,
   const mk = async (geo: THREE.BufferGeometry, tex: SceneTexture | undefined, name: string, wMm: number, alpha: boolean) => {
     const t = tex ?? textures.front;
     const face = name === "front" || name === "back" ? name : undefined;
-    const mat = await filmMaterial(g, t, { alpha: alpha ? cutMask(g, wMm, H, { corners: false, face }) : null, normal: normalMap(wMm, H, zones, name.length) });
+    const fin = name === "back" && f.finW ? { finX: wMm / 2, finW: f.finW } : {}; // the knurled centre seal strip
+    const mat = await filmMaterial(g, t, { alpha: alpha ? cutMask(g, wMm, H, { corners: false, face }) : null, normal: normalMap(wMm, H, { ...zones, ...fin }, name.length) });
+    // a corner seal fin is two films sealed back to back: printed on both faces, never the pouch's inside
+    if (face && mat.userData.sealEdge) mat.userData.sealEdge.value = zones.side / wMm;
+    if (name === "back" && f.finW) markFin(mat, wMm, f.finW);
     const mesh = new THREE.Mesh(geo, mat);
     mesh.name = name;
     if (face) windowsOn(g, mesh, face);
