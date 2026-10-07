@@ -468,7 +468,13 @@ def job_file(job_id: int, key: str, request: Request, session: Session = Depends
     except (FileNotFoundError, OSError, KeyError) as exc:
         raise HTTPException(404, "File not found") from exc
     media = mimetypes.guess_type(key)[0] or ("model/gltf-binary" if key.endswith(".glb") else "application/octet-stream")
-    return Response(data, media_type=media, headers={"Cache-Control": "private, max-age=300"})
+    # ETag: a browser that already has the file gets an empty 304 (share links over ngrok count every byte);
+    # no-cache = always ask, so a re-rendered texture under the same key is never shown stale.
+    etag = '"' + hashlib.md5(data).hexdigest() + '"'
+    headers = {"Cache-Control": "private, no-cache", "ETag": etag}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(data, media_type=media, headers=headers)
 
 
 @router.get("/uploads/{file_id}/pdf")

@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
@@ -66,6 +67,7 @@ def create_app(resume_jobs: bool = True) -> FastAPI:
     app = FastAPI(title="Pouch mockup pipeline", docs_url="/api/docs", openapi_url="/api/openapi.json", lifespan=lifespan)
     app.add_middleware(logging_setup.RequestLog)
     app.middleware("http")(tunnel.guard)  # through ngrok: share pages only
+    app.add_middleware(GZipMiddleware, minimum_size=1024)  # the 1.2 MB app script goes out as ~0.35 MB
     app.include_router(auth_routes.router)
     app.include_router(index_routes.router)
     app.include_router(job_routes.router)
@@ -85,6 +87,15 @@ def create_app(resume_jobs: bool = True) -> FastAPI:
     return app
 
 
+class ImmutableFiles(StaticFiles):
+    """/assets names carry a content hash (Vite): a browser keeps them for a year and never asks again."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
 def _mount_frontend(app: FastAPI) -> None:
     dist = Path(get_settings().frontend_dist)
     index = dist / "index.html"
@@ -92,7 +103,7 @@ def _mount_frontend(app: FastAPI) -> None:
         log.info("frontend not built; API only", extra={"fields": {"dist": str(dist)}})
         return
     if (dist / "assets").exists():
-        app.mount("/assets", StaticFiles(directory=dist / "assets"), name="assets")
+        app.mount("/assets", ImmutableFiles(directory=dist / "assets"), name="assets")
 
     @app.get("/{path:path}", include_in_schema=False)
     def spa(path: str):
