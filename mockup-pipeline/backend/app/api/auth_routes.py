@@ -119,6 +119,28 @@ def list_users(session: Session = Depends(get_session), _: User = Depends(auth.r
     return [UserOut.of(u) for u in session.scalars(select(User).order_by(User.email))]
 
 
+@router.get("/users/summary")
+def users_summary(session: Session = Depends(get_session), _: User = Depends(auth.require_admin)) -> dict:
+    """Who has done how much: per user, their jobs by status, files uploaded, the last upload and the
+    errors they raised (open / all). Test runs of the workflow editor are not jobs."""
+    from app.models import ErrorReport, Job, UploadedFile
+
+    out: dict[int, dict] = {u.id: {"jobs": {}, "jobs_total": 0, "files": 0, "last_upload": None, "errors_open": 0, "errors": 0}
+                            for u in session.scalars(select(User))}
+    for uid, status, n in session.execute(select(Job.created_by_id, Job.status, func.count()).where(Job.kind == "job").group_by(Job.created_by_id, Job.status)):
+        if uid in out:
+            out[uid]["jobs"][status] = n
+            out[uid]["jobs_total"] += n
+    for uid, n, last in session.execute(select(UploadedFile.uploaded_by_id, func.count(func.distinct(UploadedFile.sha256)), func.max(UploadedFile.created_at)).group_by(UploadedFile.uploaded_by_id)):
+        if uid in out:
+            out[uid]["files"], out[uid]["last_upload"] = n, last
+    for uid, status, n in session.execute(select(ErrorReport.user_id, ErrorReport.status, func.count()).group_by(ErrorReport.user_id, ErrorReport.status)):
+        if uid in out:
+            out[uid]["errors"] += n
+            out[uid]["errors_open"] += n if status == "open" else 0
+    return {"users": {str(k): v for k, v in out.items()}}
+
+
 @router.post("/users")
 def create_user(body: UserCreate, request: Request, session: Session = Depends(get_session), admin: User = Depends(auth.require_admin)) -> UserOut:
     auth.validate_password(body.password)

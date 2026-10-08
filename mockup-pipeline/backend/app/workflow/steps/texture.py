@@ -236,6 +236,7 @@ def run(ctx: StepContext) -> Output:
             fin = trim_impl.finish(trim, pdf, bleed, *fitted, ctx.prefix, profile, ctx.storage)
         img = _load(ctx, fin.finished_key)
         labels: list[str] = []
+        face_window = None  # a window drawn in the face's artwork, transformed with the image below
         if role in ("front", "back"):
             x0, y0, x1, y1 = trim.trim_box_pt
             b, pt = fin.bleed_mm, 72 / 25.4
@@ -243,34 +244,54 @@ def run(ctx: StepContext) -> Output:
             img, labels = drop_labels(img, pdf, box, fin.finished_mm[0])
             if labels:
                 ctx.log(f"{role}: technical note(s) on the drawing painted out: {' '.join(labels)}", "audit")
+            img, face_window = window_marked(img, pdf, box, fin.finished_mm[0])
+            if face_window is not None:
+                labels.append("Window")
         if fitted:
-            img = img.resize((max(1, round(img.width * ew / fitted[0])), max(1, round(img.height * eh / fitted[1]))), Image.LANCZOS)
+            size = (max(1, round(img.width * ew / fitted[0])), max(1, round(img.height * eh / fitted[1])))
+            img = img.resize(size, Image.LANCZOS)
+            face_window = face_window.resize(size, Image.NEAREST) if face_window is not None else None
             issues.append(Issue(code="artwork_fitted", field=f"artwork.{role}", severity="warning",
                                 message=f"{role}: the artwork between the dieline lines is {fitted[0]:g} x {fitted[1]:g} mm; "
                                         f"fitted to the {ew:g} x {eh:g} mm panel size"))
             ctx.log(issues[-1].message, "warning")
         if turn:
             img = img.rotate(turn, expand=True)
+            face_window = face_window.rotate(turn, expand=True, fillcolor=255) if face_window is not None else None
         if p.source == "blank":
             front_img, back_img = split_blank(img, open_w, w)
             img = front_img if role == "front" else back_img
+            if face_window is not None:
+                face_window = split_blank(face_window.convert("RGB"), open_w, w)[0 if role == "front" else 1].convert("L")
         if rule.mirror:
             img = ImageOps.mirror(img)
+            face_window = ImageOps.mirror(face_window) if face_window is not None else None
+        if face_window is not None and face_window.getextrema()[0] == 255:
+            face_window = None  # the window lies on the other face of the blank
         marks: list = []
+        ruled = 0
+        if role in ("front", "back") and trim.mode != "layers":
+            # (a layered file draws its dieline on a technical layer the render already leaves out)
+            img, ruled = drop_drawn_rules(img, w, geo.seals.top, geo.seals.bottom)
+            if ruled:
+                ctx.log(f"{role}: {ruled} dieline / seal line(s) drawn in the artwork removed", "audit")
         if role != "roll" and not profile.include_eyemarks:
             # (sides and gussets carry eyemarks too: FGPO7030's black squares in the gussets' bottom corners)
             img, marks = drop_eyemarks(img, w, geo.seals.side, geo.seals.top, geo.seals.bottom)
             if marks:
                 ctx.log(f"{role}: {len(marks)} eyemark(s) in the seals removed: " + ", ".join(f"{a:g} x {b:g} mm" for a, b in marks), "audit")
-        window = None
+        window = face_window
         if role.startswith("side") or role == "gusset":
             window = window_rect(img, w)
             if window is not None and not window_named(ctx, pdf, trim):
                 window = None  # an unprinted white area is a window only where the designer says "Window"
         raw = img
         img, changed = baked(role, img, w) if role != "roll" else (img, False)
-        if turn or rule.mirror or p.source == "blank" or fitted or changed or labels or marks:
-            ctx.storage.put_bytes(fin.finished_key, _png(img), "image/png")
+        # a flat blank's two faces are cut from one render: each keeps its own file (sharing the blank's,
+        # the back overwrote the front, and "back: same as front" or a download got the wrong face)
+        finished_key = f"{base}_finished.png" if p.source == "blank" else fin.finished_key
+        if turn or rule.mirror or p.source == "blank" or fitted or changed or labels or marks or ruled:
+            ctx.storage.put_bytes(finished_key, _png(img), "image/png")
         if rule.rotation or rule.mirror or (rule.bleed_mm is not None and role != "front"):
             ctx.log(f"{role}: panel rule applied (turn {rule.rotation}, mirror {rule.mirror}, bleed {rule.bleed_mm})", "audit")
         for issue in fin.issues:
@@ -294,7 +315,7 @@ def run(ctx: StepContext) -> Output:
         web_key = ctx.storage.put_bytes(f"{base}_web.webp", _jpeg(img, WEB_MAX), "image/webp")
         svg = panel_svg(role, geo, img)
         prev = ctx.storage.put_bytes(f"{base}_keyline.svg", svg.encode(), "image/svg+xml")
-        textures[role] = PanelTexture(role=role, source=p.source, finished_key=fin.finished_key, web_key=web_key, width_mm=w, height_mm=h,
+        textures[role] = PanelTexture(role=role, source=p.source, finished_key=finished_key, web_key=web_key, width_mm=w, height_mm=h,
                                       px=img.size, masks=masks, preview_key=prev, technical_preview_key=fin.preview_key,
                                       raw_web_key=raw_web(base, raw if changed else None))
         ctx.log(f"{role}: finished {img.width}x{img.height} px = {fin.finished_mm[0]} x {fin.finished_mm[1]} mm", "audit",
@@ -465,6 +486,51 @@ def window_rect(img: Image.Image, width_mm: float) -> Image.Image | None:
     return mask
 
 
+def window_marked(img: Image.Image, pdf: Path, box_pt: tuple[float, float, float, float], width_mm: float) -> tuple[Image.Image, Image.Image | None]:
+    """A window drawn into a face's artwork (FGPO6813: a white leaf on the front labelled "Transparent
+    Window"): the unprinted white area around a "Window" label in the text layer, whatever its shape,
+    is clear film, and the label (a note to the printer) goes. Returns the image with the label painted
+    out and an alpha mask (255 film, WINDOW_ALPHA in the window), or the image as it was and None.
+    (A spec table's "Transparent Window:" field ends in a colon and lies outside the panel: never a label.)"""
+    from collections import deque
+
+    dpi = img.width / (width_mm / 25.4)
+    words = [w for w in pdf_text.words(pdf, Box(*box_pt), round(dpi)) if 0 <= w.left < img.width and 0 <= w.top < img.height]
+    labels = [w for w in words if w.text.lower().strip(".,()") == "window"]
+    if not labels:
+        return img, None
+    # the whole note: the words beside or above the key word ("Transparent", "Clear")
+    line = {id(w): w for h in labels for w in words
+            if abs(w.top - h.top) <= 2 * h.height and abs((w.left + w.right) / 2 - (h.left + h.right) / 2) <= 6 * h.height}
+    arr = np.asarray(img.convert("RGB")).copy()
+    for w in line.values():
+        pad = max(2, round(0.5 * w.height))
+        arr[max(0, w.top - pad):w.top + w.height + pad, max(0, w.left - pad):w.right + pad] = 255
+    cleaned = Image.fromarray(arr)
+    k = img.width / width_mm
+    cell = max(1, round(k / 2))  # 0.5 mm grid
+    white = np.asarray(cleaned.reduce(cell)).astype(int).min(axis=2) >= 235
+    gh, gw = white.shape
+    seen = np.zeros_like(white)
+    q = deque()
+    for h in labels:
+        y, x = min(gh - 1, (h.top + h.height // 2) // cell), min(gw - 1, ((h.left + h.right) // 2) // cell)
+        if white[y, x] and not seen[y, x]:
+            seen[y, x] = True
+            q.append((y, x))
+    while q:
+        y, x = q.popleft()
+        for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+            if 0 <= ny < gh and 0 <= nx < gw and white[ny, nx] and not seen[ny, nx]:
+                seen[ny, nx] = True
+                q.append((ny, nx))
+    share = seen.sum() / seen.size
+    if not 0.01 <= share <= 0.5:  # a label on a printed area, or a white pouch: no window shape to take
+        return img, None
+    mask = Image.fromarray(np.where(seen, WINDOW_ALPHA, 255).astype(np.uint8), "L").resize(img.size, Image.NEAREST)
+    return cleaned, mask
+
+
 def window_named(ctx: StepContext, pdf: Path, trim) -> bool:
     """The panel's PDF says "Window" (its text, or OCR when outlined)."""
     import pymupdf
@@ -515,8 +581,77 @@ def drop_labels(img: Image.Image, pdf: Path, box_pt: tuple[float, float, float, 
     mask = np.zeros((img.height, img.width), bool)
     for w in marked:
         pad = max(2, round(0.6 * w.height))  # the glyph core grows back to the full letters
-        mask[max(0, w.top - pad):w.top + w.height + pad, max(0, w.left - pad // 2):w.right + pad // 2] = True
+        # a note's pointer sits right above or below it (FGPO6813: the small triangle under "V NOTCH")
+        vpad = max(pad, round(2.5 * w.height))  # (text-layer boxes are the glyph core: ~2 mm for an 8 pt note)
+        mask[max(0, w.top - vpad):w.top + w.height + vpad, max(0, w.left - pad // 2):w.right + pad // 2] = True
     return mask_out(img, mask, radius=max(4, round(2 * k))), sorted({w.text for w in marked})
+
+
+RULE_COVER = 0.85  # share of a face's width (height) a drawn rule's dark row (column) covers
+RULE_MAX_MM = 0.6  # a rule is a hairline; a stripe in the design is thicker
+POINTER_MAX_MM = 4.0
+
+
+def drop_drawn_rules(img: Image.Image, width_mm: float, top: float, bottom: float) -> tuple[Image.Image, int]:
+    """The dieline drawn into the artwork itself (files with no technical ink, FGPO6813): hairline rules
+    across the whole face in the top and bottom seal bands (the cut edge and the seal lines), rules down
+    the whole face (the back's fin line), and the small pointers drawn on them (the V-notch triangles),
+    filled from the colour around them. Returns the image and the number of rules removed."""
+    from collections import deque
+
+    from app.pdf.safety import mask_out
+
+    k = img.width / width_mm
+    dark = np.asarray(img.convert("RGB")).max(axis=2) < 100
+    h, w = dark.shape
+    thin = max(1, round(RULE_MAX_MM * k))
+
+    def rules(cover: np.ndarray, allowed: np.ndarray) -> list[tuple[int, int]]:
+        flags, runs, start = (cover >= RULE_COVER) & allowed, [], None
+        for i, f in enumerate([*flags, False]):
+            if f and start is None:
+                start = i
+            elif not f and start is not None:
+                if i - start <= thin:
+                    runs.append((start, i))
+                start = None
+        return runs
+
+    band = round((max(top, bottom) + 3) * k)
+    rows_ok = np.zeros(h, bool)
+    rows_ok[:band] = rows_ok[h - band:] = True
+    rows = rules(dark.mean(axis=1), rows_ok)
+    cols = rules(dark.mean(axis=0), np.ones(w, bool))
+    if not rows and not cols:
+        return img, 0
+    mask = np.zeros_like(dark)
+    near = np.zeros_like(dark)
+    reach = round(3 * k)  # a pointer sits on its rule
+    for a, b in rows:
+        mask[max(0, a - 1):b + 1, :] = True
+        near[max(0, a - reach):b + reach, :] = True
+    for a, b in cols:
+        mask[:, max(0, a - 1):b + 1] = True
+    # pointers: small dark shapes touching a removed rule
+    cand = dark & near & ~mask
+    seen = np.zeros_like(cand)
+    limit = POINTER_MAX_MM * k
+    for y, x in zip(*np.nonzero(cand)):
+        if seen[y, x]:
+            continue
+        q, cells = deque([(y, x)]), []
+        seen[y, x] = True
+        while q and len(cells) <= int(limit * limit):
+            cy, cx = q.popleft()
+            cells.append((cy, cx))
+            for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+                if 0 <= ny < h and 0 <= nx < w and cand[ny, nx] and not seen[ny, nx]:
+                    seen[ny, nx] = True
+                    q.append((ny, nx))
+        cy, cx = zip(*cells)
+        if not q and max(cy) - min(cy) <= limit and max(cx) - min(cx) <= limit:
+            mask[max(0, min(cy) - 2):max(cy) + 3, max(0, min(cx) - 2):max(cx) + 3] = True
+    return mask_out(img, mask, radius=max(4, round(1.5 * k))), len(rows) + len(cols)
 
 
 def drop_eyemarks(img: Image.Image, width_mm: float, side: float, top: float, bottom: float) -> tuple[Image.Image, list[tuple[float, float]]]:

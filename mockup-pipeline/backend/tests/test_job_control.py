@@ -139,7 +139,8 @@ def test_jobs_list_is_paged(app_client, monkeypatch):
     with _session() as s:
         template = s.get(Job, first)
         for _ in range(24):  # 25 jobs in all
-            s.add(Job(file_id=template.file_id, batch_id=template.batch_id, item_code=template.item_code, status="DONE", current_step="done", kind="job"))
+            s.add(Job(file_id=template.file_id, batch_id=template.batch_id, item_code=template.item_code, status="DONE", current_step="done", kind="job",
+                      created_by_id=template.created_by_id))  # the uploader's: each user lists only their own jobs
         s.commit()
     page1 = c.get("/api/jobs").json()
     assert len(page1["jobs"]) == 20 and page1["total"] == 25 and page1["offset"] == 0

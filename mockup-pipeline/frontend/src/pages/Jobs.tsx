@@ -1,12 +1,13 @@
 import { useEffect, useState, type MouseEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { api } from "../api";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { api, type User } from "../api";
+import { useSession } from "../App";
 import { formatTime, parseTime } from "../util";
 
 export interface JobSummary {
   id: number; batch_id: number | null; filename: string; item_code: string | null; client_name: string | null; status: string;
   current_step: string; pouch_type: string | null; review_message: string | null; error: string | null; approved_by: string | null;
-  created_at: string; updated_at: string;
+  created_by: string | null; created_at: string; updated_at: string;
 }
 
 export const STATUS_BADGE: Record<string, string> = { DONE: "ok", NEEDS_REVIEW: "warn", FAILED: "bad", RUNNING: "accent", QUEUED: "", PAUSED: "warn", CANCELLED: "" };
@@ -114,14 +115,22 @@ export default function Jobs() {
   const setLayout = (l: "grid" | "list") => { setLayoutState(l); try { localStorage.setItem("jobs-layout", l); } catch { /* private window */ } };
   const navigate = useNavigate();
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  // the admin sees everyone's jobs and can narrow them to one user (?user=<id>, from the Users page too)
+  const { can } = useSession();
+  const seesAll = can("see_all_jobs");
+  const [params, setParams] = useSearchParams();
+  const owner = params.get("user") ?? "";
+  const setOwner = (id: string) => setParams(id ? { user: id } : {}, { replace: true });
+  const [people, setPeople] = useState<User[]>([]);
+  useEffect(() => { if (seesAll) api.get<User[]>("/api/users").then(setPeople).catch(() => undefined); }, [seesAll]);
 
   // a new filter or search starts again at the first page
-  useEffect(() => { setPage(0); }, [status, q, tests, style]);
+  useEffect(() => { setPage(0); }, [status, q, tests, style, owner]);
 
   useEffect(() => {
     let alive = true;
     const load = () => api.get<{ jobs: JobSummary[]; counts: Record<string, number>; types?: Record<string, number>; total: number }>(
-      `/api/jobs?status=${status}&q=${encodeURIComponent(q)}&kind=${tests ? "test" : "job"}&pouch_type=${encodeURIComponent(style)}&limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}`)
+      `/api/jobs?status=${encodeURIComponent(status)}&q=${encodeURIComponent(q)}&kind=${tests ? "test" : "job"}&pouch_type=${encodeURIComponent(style)}${owner ? `&user=${owner}` : ""}&limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}`)
       .then((r) => {
         if (!alive) return;
         setJobs(r.jobs); setCounts(r.counts); setTypes(r.types ?? {}); setTotal(r.total); setLoaded(true);
@@ -130,15 +139,15 @@ export default function Jobs() {
     load();
     const t = setInterval(load, 4000);
     return () => { alive = false; clearInterval(t); };
-  }, [status, q, tests, tick, page, style]);
+  }, [status, q, tests, tick, page, style, owner]);
 
   const n = (...s: string[]) => s.reduce((a, k) => a + (counts[k] ?? 0), 0);
   const all = n(...STATUSES);
   const stats: { label: string; value: number; filter: string; tone: string; hint: string }[] = [
     { label: "All jobs", value: all, filter: "", tone: "", hint: "Every job" },
     { label: "Done", value: n("DONE"), filter: "DONE", tone: "ok", hint: "3D mockup ready" },
-    { label: "In progress", value: n("QUEUED", "RUNNING"), filter: "RUNNING", tone: "accent", hint: "Queued or running" },
-    { label: "Need attention", value: n("FAILED", "NEEDS_REVIEW", "PAUSED"), filter: "FAILED", tone: "bad", hint: "Failed, paused or waiting" },
+    { label: "In progress", value: n("QUEUED", "RUNNING"), filter: "QUEUED,RUNNING", tone: "accent", hint: "Queued or running" },
+    { label: "Need attention", value: n("FAILED", "NEEDS_REVIEW", "PAUSED"), filter: "FAILED,NEEDS_REVIEW,PAUSED", tone: "bad", hint: "Failed, paused or waiting" },
   ];
   const controls = (j: JobSummary) => <JobControls job={j} compact onDone={(m) => { setMsg(m); setTick((t) => t + 1); }} />;
 
@@ -166,6 +175,12 @@ export default function Jobs() {
           ))}
         </div>
         <div className="row" style={{ marginLeft: "auto" }}>
+          {seesAll && (
+            <select value={owner} onChange={(e) => setOwner(e.target.value)} aria-label="Uploaded by" title="Uploaded by">
+              <option value="">Everyone's jobs</option>
+              {people.map((u) => <option key={u.id} value={u.id}>{u.name || u.email}</option>)}
+            </select>
+          )}
           <label className="search"><Icon d={I.search} /><input placeholder="Search item code or client" value={q} onChange={(e) => setQ(e.target.value)} /></label>
           <div className="seg-toggle" role="group" aria-label="Layout">
             <button className={layout === "grid" ? "on" : ""} onClick={() => setLayout("grid")} title="Cards" aria-label="Cards"><Icon d={I.grid} /></button>
@@ -210,6 +225,7 @@ export default function Jobs() {
                   <span className="muted small">#{j.id}</span>
                 </div>
                 <div className="muted small ellipsis">{j.client_name ?? "Client unknown"} · {pouchStyle(j.pouch_type)}</div>
+                {seesAll && <div className="muted small ellipsis" title="Uploaded by">by {j.created_by ?? "unknown"}</div>}
                 <Status job={j} />
                 <div className="job-card-foot">
                   <span className="muted small" title={formatTime(j.updated_at)}>{ago(j.updated_at)}</span>
@@ -222,7 +238,7 @@ export default function Jobs() {
       ) : jobs.length > 0 && (
         <div className="card table-wrap" style={{ padding: 0 }}>
           <table className="job-table">
-            <thead><tr><th /><th>Item</th><th>Client</th><th>Pouch type</th><th>Status</th><th>Batch</th><th>Updated</th><th /></tr></thead>
+            <thead><tr><th /><th>Item</th><th>Client</th><th>Pouch type</th><th>Status</th>{seesAll && <th>Uploaded by</th>}<th>Batch</th><th>Updated</th><th /></tr></thead>
             <tbody>
               {jobs.map((j) => (
                 <tr key={j.id} className="clickable" onClick={() => navigate(`/jobs/${j.id}`)}>
@@ -231,6 +247,7 @@ export default function Jobs() {
                   <td>{j.client_name ?? <span className="muted">—</span>}</td>
                   <td>{j.pouch_type ? pouchStyle(j.pouch_type) : <span className="muted">—</span>}</td>
                   <td style={{ minWidth: 160 }}><Status job={j} /></td>
+                  {seesAll && <td className="small">{j.created_by ?? <span className="muted">—</span>}</td>}
                   <td className="muted">{j.batch_id ?? "—"}</td>
                   <td className="muted small" title={formatTime(j.updated_at)}>{ago(j.updated_at)}</td>
                   <td>{controls(j)}</td>

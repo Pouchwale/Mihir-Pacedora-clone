@@ -159,3 +159,55 @@ def test_timestamps_leave_in_utc_with_their_zone(staff):
     for value in (me["created_at"], me["last_login_at"]):
         assert value.endswith(("+00:00", "Z")), value
     assert all(u["created_at"].endswith(("+00:00", "Z")) for u in c.get("/api/users").json())
+
+
+def test_jobs_are_their_uploaders_and_errors_reach_the_admin(staff, seeded):
+    from app.models import Job, UploadedFile
+
+    c = staff
+    ids = {u.email: u.id for u in seeded.query(User)}
+    files = {}
+    for who in ("designer@example.com", "manager@example.com"):
+        f = UploadedFile(filename=f"{who}.pdf", sha256=who, size=1, storage_key="x", uploaded_by_id=ids[who])
+        seeded.add(f)
+        seeded.flush()
+        files[who] = f.id
+        seeded.add(Job(file_id=f.id, item_code="FGPO1", status="DONE", current_step="done", inputs={}, created_by_id=ids[who]))
+    seeded.commit()
+    jobs = {j.created_by_id: j.id for j in seeded.query(Job)}
+    mine, theirs = jobs[ids["designer@example.com"]], jobs[ids["manager@example.com"]]
+
+    # a designer lists, opens and acts on their own jobs only; the other's is "not found" everywhere
+    as_role(c, "designer")
+    listed = c.get("/api/jobs").json()
+    assert [j["id"] for j in listed["jobs"]] == [mine] and listed["counts"] == {"DONE": 1} and listed["jobs"][0]["created_by"] == "designer@example.com"
+    for path in (f"/api/jobs/{theirs}", f"/api/jobs/{theirs}/scene", f"/api/jobs/{theirs}/download.zip", f"/api/uploads/{files['manager@example.com']}/pdf"):
+        assert c.get(path).status_code == 404, path
+    assert c.post(f"/api/jobs/{theirs}/rerun", json={"from_step": "render"}, headers=H).status_code == 404
+    assert c.get(f"/api/jobs?user={ids['manager@example.com']}").json()["total"] == 1  # `user` is ignored: still only their own
+    assert c.get("/api/users/summary").status_code == 403
+
+    # "Raise an error": on a job (its state kept) or anywhere, the note optional; never on someone else's job
+    r = c.post("/api/errors", json={"job_id": mine, "message": "the back looks mirrored", "page": f"/jobs/{mine}"}, headers=H)
+    assert r.status_code == 200 and r.json()["context"]["status"] == "DONE" and r.json()["item_code"] == "FGPO1"
+    assert c.post("/api/errors", json={"page": "/upload"}, headers=H).json()["message"] == ""
+    assert c.post("/api/errors", json={"job_id": theirs}, headers=H).status_code == 404
+    assert len(c.get("/api/errors").json()["reports"]) == 2  # their own reports
+    assert c.patch(f"/api/errors/{r.json()['id']}", json={"status": "resolved"}, headers=H).status_code == 403
+    as_role(c, "manager")
+    assert c.get("/api/errors").json()["reports"] == []
+
+    # the admin: every job, one user's jobs, the per-user summary, every report to handle
+    c.post("/api/auth/logout")
+    login(c)
+    assert c.get("/api/jobs").json()["total"] == 2
+    assert [j["id"] for j in c.get(f"/api/jobs?user={ids['manager@example.com']}").json()["jobs"]] == [theirs]
+    assert c.get(f"/api/jobs/{theirs}").status_code == 200
+    summary = c.get("/api/users/summary").json()["users"][str(ids["designer@example.com"])]
+    assert (summary["jobs"], summary["files"], summary["errors"], summary["errors_open"]) == ({"DONE": 1}, 1, 2, 2)
+    reports = c.get("/api/errors").json()
+    assert reports["counts"] == {"open": 2, "resolved": 0} and {x["user"] for x in reports["reports"]} == {"designer@example.com"}
+    done = c.patch(f"/api/errors/{r.json()['id']}", json={"status": "resolved", "admin_note": "fixed the swap"}, headers=H).json()
+    assert (done["status"], done["resolved_by"], done["admin_note"]) == ("resolved", "admin@example.com", "fixed the swap")
+    assert c.get("/api/errors?status=resolved").json()["reports"][0]["id"] == r.json()["id"]
+    assert any(e["action"] == "error raised" for e in _today())

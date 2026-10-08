@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from app import logging_setup
-from app.api import auth_routes, index_routes, job_routes, tunnel, workflow_routes
+from app.api import auth_routes, error_routes, index_routes, job_routes, tunnel, workflow_routes
 from app.config import get_settings
 from app.db import get_engine
 
@@ -46,9 +46,21 @@ def _resume_thread_jobs() -> None:
     from app.models import Job
     from app.workflow import queue
 
+    from app.models import JobEvent
+
     try:
         with Session(get_engine()) as session:
-            stuck = session.scalars(select(Job).where(Job.status.in_(["QUEUED", "RUNNING"]))).all()
+            stuck = list(session.scalars(select(Job).where(Job.status.in_(["QUEUED", "RUNNING"]))).all())
+            if get_settings().auto_review:
+                # Review stops the automatic reviewer never saw (left from before it was switched on): rerun
+                # their step so it answers them. Ones it already gave up on ("Waiting for a person") stay.
+                seen = select(JobEvent.job_id).where(JobEvent.message.like("Waiting for a person%"))
+                waiting = session.scalars(select(Job).where(Job.status == "NEEDS_REVIEW", Job.kind == "job", Job.id.not_in(seen))).all()
+                for job in waiting:
+                    job.status = "QUEUED"
+                    session.add(JobEvent(job_id=job.id, level="audit", step=job.current_step, message="Review left from before automatic answers: rerun for the automatic reviewer", data={}))
+                session.commit()
+                stuck += waiting
             for job in stuck:
                 queue.enqueue(job.id, job.current_step if job.current_step != "done" else None)
     except Exception:  # noqa: BLE001 - e.g. tables not migrated yet
@@ -69,6 +81,7 @@ def create_app(resume_jobs: bool = True) -> FastAPI:
     app.middleware("http")(tunnel.guard)  # through ngrok: share pages only
     app.add_middleware(GZipMiddleware, minimum_size=1024)  # the 1.2 MB app script goes out as ~0.35 MB
     app.include_router(auth_routes.router)
+    app.include_router(error_routes.router)
     app.include_router(index_routes.router)
     app.include_router(job_routes.router)
     app.include_router(workflow_routes.router)

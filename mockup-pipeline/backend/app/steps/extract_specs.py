@@ -343,10 +343,14 @@ def _spec_value(reads: dict[str, FieldRead], corrections: dict[str, Any], name: 
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
 
 
-def _blank_below_table(trim: Box, renders: "Renders", reads: dict, open_w: float, height: float, profile: PdfProfile) -> SheetLayout | None:
+def _blank_below_table(trim: Box, renders: "Renders", reads: dict, open_w: float, height: float, profile: PdfProfile,
+                       pdf: Path | None = None) -> SheetLayout | None:
     """A pillow blank drawn under the spec table on the same page, with no technical ink and no
     closed dieline box (FGPO6813): the space below the table's lowest read field, when one open
-    width x height blank fits it (with at most a bleed around), is that blank."""
+    width x height blank fits it (with at most a bleed around), is that blank. Its top and bottom are
+    the two drawn lines across it exactly its height apart; without them, the side margin is assumed
+    at the bottom too (FGPO6813's is 8.4 mm against 11.8 mm at the sides: 3.5 mm off, the top dieline
+    and a white strip printed on the faces)."""
     bottoms = [r.bbox[3] for r in reads.values() if getattr(r, "bbox", None)]
     if not bottoms:
         return None
@@ -358,6 +362,13 @@ def _blank_below_table(trim: Box, renders: "Renders", reads: dict, open_w: float
     if not (-profile.finished_size_tolerance_mm <= margin <= 25.0 and free_h >= height + margin):
         return None
     x0, y0 = max(0.0, margin), trim.height_mm - max(0.0, margin) - height  # mm from the sheet's top-left
+    if pdf is not None:
+        tol = profile.finished_size_tolerance_mm / PT_TO_MM
+        rules = horizontal_rules(pdf, None, Box(trim.x0, trim.y0, trim.x1, min(table_bottom, trim.y1)), 0.8)
+        pairs = [(a, b) for a in rules for b in rules if b > a and abs((b - a) - height / PT_TO_MM) <= tol]
+        if pairs:
+            _, top = min(pairs, key=lambda ab: abs((ab[1] - ab[0]) - height / PT_TO_MM))
+            y0 = (trim.y1 - top) * PT_TO_MM
     return SheetLayout(kind="multi", axis="horizontal", message="pillow blank under the spec table",
                        panels=[SheetPanel(kind="blank", x_mm=round(x0, 2), y_mm=round(y0, 2), width_mm=open_w, height_mm=height)])
 
@@ -655,7 +666,7 @@ def run(
                      for g in dieline_grids(inp.pdf_path)]
             layout = grid_layout(cells, width, height) or layout
             if layout.kind == "single" and open_w and open_w > width:
-                layout = _blank_below_table(sheet.trim, renders, reads, open_w, height, profile) or layout
+                layout = _blank_below_table(sheet.trim, renders, reads, open_w, height, profile, inp.pdf_path) or layout
         if layout.kind == "multi" and layout.blank() is not None:
             # Pillow blanks: the front is the middle `closed width` of the first blank.
             front_box = _blank_front_box(sheet.trim, layout.blank(), width, open_w)  # type: ignore[arg-type]

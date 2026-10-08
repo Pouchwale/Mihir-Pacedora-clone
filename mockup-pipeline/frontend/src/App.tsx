@@ -2,6 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useState } from "rea
 import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { api, KEYLINE_KINDS, KindInfo, Permission, ROLE_LABELS, User } from "./api";
 import Activity from "./pages/Activity";
+import RaiseError from "./components/RaiseError";
+import ErrorReports from "./pages/ErrorReports";
 import EntryPage from "./pages/EntryPage";
 import ImportExport from "./pages/ImportExport";
 import JobDetail from "./pages/JobDetail";
@@ -90,6 +92,7 @@ function SignedIn() {
           <Route path="/index/:kind/:key" element={<EntryPage />} />
           <Route path="/users" element={can("manage_users") ? <Users /> : <Navigate to="/" />} />
           <Route path="/activity" element={can("view_activity") ? <Activity /> : <Navigate to="/" />} />
+          <Route path="/errors" element={can("manage_errors") ? <ErrorReports /> : <Navigate to="/" />} />
           <Route path="*" element={<p className="muted">Page not found.</p>} />
         </Routes>
       </Shell>
@@ -106,6 +109,7 @@ const NAV_ICONS: Record<string, string> = {
   test: "M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11",
   yaml: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5",
   activity: "M22 12h-4l-3 9L9 3l-3 9H2",
+  errors: "M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01",
   users: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75",
 };
 export const NavIcon = ({ name, size = 17 }: { name: string; size?: number }) => (
@@ -127,6 +131,15 @@ function useTheme(): [Theme, (t: Theme) => void] {
 
 function Shell({ children }: { children: React.ReactNode }) {
   const { user, kinds, can } = useSession();
+  // open error reports, for the admin's sidebar badge (checked every half minute)
+  const [openErrors, setOpenErrors] = useState(0);
+  useEffect(() => {
+    if (!can("manage_errors")) return;
+    const load = () => api.get<{ counts: { open: number } }>("/api/errors?status=open").then((r) => setOpenErrors(r.counts.open)).catch(() => undefined);
+    load();
+    const t = setInterval(load, 30000);
+    return () => clearInterval(t);
+  }, []);
   const [theme, setTheme] = useTheme();
   const logout = async () => {
     await api.post("/api/auth/logout");
@@ -165,8 +178,10 @@ function Shell({ children }: { children: React.ReactNode }) {
           <NavLink to="/index/tools/import-export"><NavIcon name="yaml" /><span>YAML import / export</span></NavLink>
           {can("manage_users") && <NavLink to="/users"><NavIcon name="users" /><span>Users</span></NavLink>}
           {can("view_activity") && <NavLink to="/activity"><NavIcon name="activity" /><span>Activity log</span></NavLink>}
+          {can("manage_errors") && <NavLink to="/errors"><NavIcon name="errors" /><span>Error reports</span>{openErrors > 0 && <span className="count alert">{openErrors}</span>}</NavLink>}
         </nav>
         <div className="sidebar-foot">
+          <RaiseError className="raise-error-side" />
           <div className="theme-switch" role="group" aria-label="Theme">
             {(["light", "dark", "system"] as Theme[]).map((t) => (
               <button key={t} className={theme === t ? "on" : ""} onClick={() => setTheme(t)}>{{ light: "Light", dark: "Dark", system: "Auto" }[t]}</button>

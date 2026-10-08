@@ -4,6 +4,7 @@ import { api, ApiError, type JobWorkflow, type PathRecord } from "../api";
 import { useSession } from "../App";
 import AdjustPanel, { type Uploaded } from "../components/AdjustPanel";
 import KeylineWorkspace from "../components/KeylineWorkspace";
+import RaiseError from "../components/RaiseError";
 import ReviewPanel from "../components/ReviewPanel";
 import Viewer from "../components/Viewer";
 import WorkflowCanvas, { nodeTitle } from "../components/WorkflowCanvas";
@@ -126,6 +127,7 @@ export default function JobDetail() {
         <div className="row">
           {running && <span className="badge accent">working: {job.current_node ? `${job.current_node} / ` : ""}{job.current_step}…</span>}
           <JobControls job={job} onDone={(m) => act(async () => undefined, m)} />
+          <RaiseError jobId={jobId} />
           {job.status === "DONE" && <a className="btn" href={`/api/jobs/${jobId}/download.zip`}>Download all (ZIP)</a>}
           {job.status === "DONE" && hasScene && (
             <button

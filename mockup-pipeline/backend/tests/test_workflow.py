@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from app import auth
 from app.api import job_routes, main
@@ -571,12 +571,27 @@ def test_job_roots(name, root):
     assert is_job_root(name) is root
 
 
-def test_jobs_list_filters_by_pouch_style(app_client, monkeypatch):
+def test_jobs_list_filters_by_pouch_style(app_client, engine, monkeypatch):
     monkeypatch.setattr(queue, "enqueue", lambda *a, **k: None)
     job_id = app_client.post("/api/uploads", files={"files": ("FGPO7215_Dog_Food_Front_App.pdf", SAMPLE.read_bytes(), "application/pdf")}, headers=H).json()["jobs"][0]
     r = app_client.get("/api/jobs?pouch_type=none").json()
     assert [j["id"] for j in r["jobs"]] == [job_id] and r["types"] == {"none": 1}
     assert app_client.get("/api/jobs?pouch_type=quad_seal").json()["total"] == 0
+
+    # every count matches the list it opens: several statuses at once, counts follow the style and search
+    with Session(engine) as s:
+        first = s.get(Job, job_id)
+        first.status = "NEEDS_REVIEW"
+        mine = first.created_by_id  # each user lists only the jobs they uploaded
+        s.add(Job(file_id=first.file_id, item_code="FGPO9001", status="FAILED", current_step="validate", pouch_type="quad_seal", inputs={}, created_by_id=mine))
+        s.add(Job(file_id=first.file_id, item_code="FGPO9002", status="DONE", current_step="done", pouch_type="quad_seal", inputs={}, created_by_id=mine))
+        s.commit()
+    attention = app_client.get("/api/jobs?status=FAILED,NEEDS_REVIEW,PAUSED").json()
+    assert attention["total"] == 2 and {j["status"] for j in attention["jobs"]} == {"FAILED", "NEEDS_REVIEW"}
+    quad = app_client.get("/api/jobs?pouch_type=quad_seal").json()
+    assert quad["counts"] == {"FAILED": 1, "DONE": 1} and quad["types"] == {"none": 1, "quad_seal": 2}
+    found = app_client.get("/api/jobs?q=FGPO9001").json()
+    assert found["counts"] == {"FAILED": 1} and found["types"] == {"quad_seal": 1}
 
 
 def test_ngrok_address_reaches_share_pages_only(app_client):
@@ -588,3 +603,28 @@ def test_ngrok_address_reaches_share_pages_only(app_client):
     assert c.post("/api/auth/login", json={"email": "admin@example.com", "password": "x"}, headers=out).status_code == 404
     ok = f"/api/jobs/999/scene?token={tokens.make(999, ttl_s=60)}"  # a real share token passes to the route
     assert c.get(ok, headers=out).json() == c.get(ok, headers=H).json() != {"detail": "Not found"}
+
+
+def test_startup_hands_old_review_stops_to_the_automatic_reviewer(app_client, engine, monkeypatch):
+    """Review stops the automatic reviewer never saw are rerun at startup; ones it gave up on wait."""
+    from app.models import JobEvent
+
+    monkeypatch.setattr(queue, "enqueue", lambda *a, **k: None)
+    job_id = _upload(app_client)["jobs"][0]
+    with Session(engine) as s:
+        f = s.get(Job, job_id).file_id
+        old = Job(file_id=f, status="NEEDS_REVIEW", current_step="validate", inputs={})
+        gave_up = Job(file_id=f, status="NEEDS_REVIEW", current_step="link_panels", inputs={})
+        s.add_all([old, gave_up])
+        s.flush()
+        s.add(JobEvent(job_id=gave_up.id, level="warning", message="Waiting for a person: no automatic answer"))
+        s.commit()
+        old_id, gave_up_id = old.id, gave_up.id
+    queued = []
+    monkeypatch.setattr(main, "get_engine", lambda: engine)
+    monkeypatch.setattr(main.get_settings(), "auto_review", True)
+    monkeypatch.setattr(queue, "enqueue", lambda job_id, from_step=None, **k: queued.append((job_id, from_step)))
+    main._resume_thread_jobs()
+    assert (old_id, "validate") in queued and gave_up_id not in {j for j, _ in queued}
+    with Session(engine) as s:
+        assert (s.get(Job, old_id).status, s.get(Job, gave_up_id).status) == ("QUEUED", "NEEDS_REVIEW")

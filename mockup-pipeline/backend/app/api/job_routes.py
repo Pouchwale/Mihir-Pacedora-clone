@@ -27,7 +27,29 @@ from app.workflow import auto_review, panel_art, queue, runner
 from app.workflow.adjust import Adjustments, adjustments
 from app.workflow.engine import STEPS
 
-router = APIRouter(prefix="/api")
+def job_scope(request: Request, session: Session = Depends(get_session)) -> None:
+    """Every /jobs/{job_id} route: a job is its uploader's (and the admin's). Anyone else gets 404, as
+    if it did not exist. A share / render token for the job is enough on its own; without a session the
+    route's own sign-in check answers."""
+    job_id = request.path_params.get("job_id")
+    if job_id is None:
+        return
+    if tokens.check(request.query_params.get("token"), int(job_id)):
+        return
+    try:
+        user = auth.current_user(request, session)
+    except HTTPException:
+        return
+    if not auth.can(user, "see_all_jobs") and session.scalar(select(Job.created_by_id).where(Job.id == int(job_id))) != user.id:
+        raise HTTPException(404, "No such job")
+
+
+def may_see(user: User, query):
+    """`query` limited to the user's own jobs, unless they see every job (the admin)."""
+    return query if auth.can(user, "see_all_jobs") else query.where(Job.created_by_id == user.id)
+
+
+router = APIRouter(prefix="/api", dependencies=[Depends(job_scope)])
 # A file names a front (also "F+B", "F&B" and the typos seen in client files) or only another panel
 # (back / gusset): the second kind is linked to its front's job, everything else becomes a job.
 from app.workflow.steps.link_panels import FRONT_NAME as FRONT_PATTERN  # noqa: E402 - one rule for uploads and linking
@@ -234,6 +256,7 @@ class JobSummary(BaseModel):
     review_message: str | None
     error: str | None
     approved_by: str | None
+    created_by: str | None = None  # the uploader's email
     created_at: datetime
     updated_at: datetime
 
@@ -243,27 +266,38 @@ def _summary(job: Job) -> JobSummary:
                       status=job.status, current_step=job.current_step, current_node=job.current_node, kind=job.kind,
                       workflow_key=job.workflow_key, workflow_version=job.workflow_version, pouch_type=job.pouch_type,
                       review_message=(job.review or {}).get("message"), error=job.error, approved_by=job.approved_by,
-                      created_at=job.created_at, updated_at=job.updated_at)
+                      created_by=job.created_by.email if job.created_by else None, created_at=job.created_at, updated_at=job.updated_at)
 
 
 @router.get("/jobs")
 def list_jobs(status: str | None = None, q: str | None = None, limit: int = 20, offset: int = 0, kind: str = "job",
-              pouch_type: str | None = None, session: Session = Depends(get_session), _: User = Depends(auth.current_user)) -> dict:
+              pouch_type: str | None = None, user: int | None = None, session: Session = Depends(get_session),
+              me: User = Depends(auth.current_user)) -> dict:
     """`kind`: "job" (default) hides the workflow editor's test runs; "test" lists only those.
+    `status`: one status or several, comma-separated ("FAILED,NEEDS_REVIEW,PAUSED": need attention).
     `pouch_type`: only that pouch style ("none": jobs not typed yet). `types` counts the jobs per style.
+    `counts` (per status) follow the style and the search, so every number matches the list it opens;
+    `types` follow the search only (a picked style must not zero the other styles' counts).
+    Each user lists only the jobs they uploaded; the admin lists everyone's, or one user's (`user`: their id).
     Newest first, `limit` (at most 500) per page from `offset`; `total` counts every match."""
-    query = select(Job).where(Job.kind == kind)
-    if status:
-        query = query.where(Job.status == status)
-    if pouch_type:
-        query = query.where(Job.pouch_type.is_(None) if pouch_type == "none" else Job.pouch_type == pouch_type)
+    base = may_see(me, select(Job).where(Job.kind == kind))
+    if user is not None and auth.can(me, "see_all_jobs"):
+        base = base.where(Job.created_by_id == user)
     if q:
         like = f"%{q.strip()}%"
-        query = query.where((Job.item_code.ilike(like)) | (Job.client_name.ilike(like)))
+        base = base.where((Job.item_code.ilike(like)) | (Job.client_name.ilike(like)))
+    styled = base
+    if pouch_type:
+        styled = styled.where(Job.pouch_type.is_(None) if pouch_type == "none" else Job.pouch_type == pouch_type)
+    query = styled
+    if status:
+        query = query.where(Job.status.in_([s.strip() for s in status.split(",") if s.strip()]))
     total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
     page = query.order_by(desc(Job.id)).limit(max(1, min(limit, 500))).offset(max(0, offset))
-    counts = dict(session.execute(select(Job.status, func.count()).where(Job.kind == kind).group_by(Job.status)).all())
-    types = {t or "none": n for t, n in session.execute(select(Job.pouch_type, func.count()).where(Job.kind == kind).group_by(Job.pouch_type)).all()}
+    sub = styled.subquery()
+    counts = dict(session.execute(select(sub.c.status, func.count()).group_by(sub.c.status)).all())
+    sub = base.subquery()
+    types = {t or "none": n for t, n in session.execute(select(sub.c.pouch_type, func.count()).group_by(sub.c.pouch_type)).all()}
     return {"jobs": [_summary(j) for j in session.scalars(page)], "counts": counts, "types": types, "total": total, "limit": limit, "offset": offset}
 
 
@@ -383,12 +417,20 @@ async def artwork_upload(job_id: int, file: UploadFile = File(...), session: Ses
                       preview_url=f"/api/uploads/{f.id}/preview")
 
 
-@router.get("/uploads/{file_id}/preview")
-def upload_preview(file_id: int, session: Session = Depends(get_session), _: User = Depends(auth.current_user)) -> Response:
-    """A PNG (at most 2048 px) of an upload for the job page's live preview; pictures small enough are served as they are."""
+def _upload_file(session: Session, user: User, file_id: int) -> UploadedFile:
+    """An uploaded file the user may open: their own upload, the PDF of one of their jobs, or any (admin)."""
     f = session.get(UploadedFile, file_id)
-    if f is None:
+    mine = f is not None and (auth.can(user, "see_all_jobs") or f.uploaded_by_id == user.id
+                              or session.scalar(select(Job.id).where(Job.file_id == f.id, Job.created_by_id == user.id).limit(1)) is not None)
+    if not mine:
         raise HTTPException(404, "No such file")
+    return f
+
+
+@router.get("/uploads/{file_id}/preview")
+def upload_preview(file_id: int, session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> Response:
+    """A PNG (at most 2048 px) of an upload for the job page's live preview; pictures small enough are served as they are."""
+    f = _upload_file(session, user, file_id)
     storage = get_storage()
     try:
         data = storage.get_bytes(f.storage_key)
@@ -484,10 +526,8 @@ def job_file(job_id: int, key: str, request: Request, session: Session = Depends
 
 
 @router.get("/uploads/{file_id}/pdf")
-def original_pdf(file_id: int, session: Session = Depends(get_session), _: User = Depends(auth.current_user)) -> Response:
-    f = session.get(UploadedFile, file_id)
-    if f is None:
-        raise HTTPException(404, "No such file")
+def original_pdf(file_id: int, session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> Response:
+    f = _upload_file(session, user, file_id)
     return Response(get_storage().get_bytes(f.storage_key), media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="{f.filename}"'})
 

@@ -204,7 +204,23 @@ async function filmMaterial(g: GeometrySpec, tex: SceneTexture, maps: FaceMaps):
     return clear;
   }
   // a side / gusset with a window left unprinted (texture step: masks.window): clear film there
-  if (!maps.alpha && tex.masks.window) maps = { ...maps, alpha: await loadMask(tex.masks.window), window: true };
+  if (tex.masks.window) {
+    const window = await loadMask(tex.masks.window);
+    const cut = maps.alpha?.image as HTMLCanvasElement | undefined;
+    if (cut?.getContext) {
+      // a face keeps its own cut mask (corners, hang hole); the window drawn in its artwork (FGPO6813's
+      // leaf) is laid over it: the lower alpha of the two wins
+      const ctx = cut.getContext("2d")!;
+      ctx.save();
+      ctx.globalCompositeOperation = "darken";
+      ctx.drawImage(window.image as CanvasImageSource, 0, 0, cut.width, cut.height);
+      ctx.restore();
+      maps.alpha!.needsUpdate = true;
+      maps = { ...maps, window: true };
+    } else {
+      maps = { ...maps, alpha: window, window: true };
+    }
+  }
   const clearParts = hasWindow(g) || !!maps.window;
   if (unlit(g)) {
     const flat = new THREE.MeshBasicMaterial({ map: await panelMap(tex), side: THREE.DoubleSide, toneMapped: false });

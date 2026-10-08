@@ -29,6 +29,8 @@ PERMISSIONS = {
     "edit_index": {"admin", "head_designer", "designer"},         # index entries (materials, clients, ...)
     "edit_keyline": {"admin", "head_designer"},                   # keyline / dieline values and workflows
     "approve": {"admin", "head_designer", "manager"},             # approve finished jobs
+    "see_all_jobs": {"admin"},                                    # everyone else sees only the jobs they uploaded
+    "manage_errors": {"admin"},                                   # the error reports users raise
 }
 # Index kinds that hold keyline and dieline values: designers may look but not change them.
 KEYLINE_KINDS = {"keyline_template", "pouch_type", "standard_size", "workflow"}

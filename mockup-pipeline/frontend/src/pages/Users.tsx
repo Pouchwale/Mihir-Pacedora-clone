@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, ApiError, Role, ROLE_LABELS, User } from "../api";
 import { useSession } from "../App";
 import { formatTime } from "../util";
@@ -11,16 +12,21 @@ const ROLE_HELP: Record<Role, string> = {
   manager: "Jobs, approves finished mockups, sees the activity log; reads the index without changing it.",
 };
 const EMPTY = { email: "", name: "", role: "designer" as Role, password: "" };
+interface Work { jobs: Record<string, number>; jobs_total: number; files: number; last_upload: string | null; errors_open: number; errors: number }
 
 export default function Users() {
   const { user: me } = useSession();
   const [users, setUsers] = useState<User[]>([]);
+  const [work, setWork] = useState<Record<string, Work>>({});
   const [form, setForm] = useState(EMPTY);
   const [editing, setEditing] = useState<{ id: number; email: string; name: string } | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  const load = () => api.get<User[]>("/api/users").then(setUsers).catch((e) => setError(String(e)));
+  const load = () => {
+    api.get<User[]>("/api/users").then(setUsers).catch((e) => setError(String(e)));
+    api.get<{ users: Record<string, Work> }>("/api/users/summary").then((r) => setWork(r.users)).catch(() => undefined);
+  };
   useEffect(() => { load(); }, []);
 
   const act = async (fn: () => Promise<unknown>, ok: string) => {
@@ -69,7 +75,7 @@ export default function Users() {
       {notice && <div className="msg ok" style={{ marginBottom: 12 }}>{notice}</div>}
       <div className="card table-wrap" style={{ padding: 0 }}>
         <table>
-          <thead><tr><th>User</th><th>Role</th><th>Status</th><th>Last sign-in</th><th /></tr></thead>
+          <thead><tr><th>User</th><th>Role</th><th>Status</th><th title="Jobs they uploaded: done / all">Jobs</th><th>Files</th><th title="Errors they raised">Errors</th><th>Last upload</th><th>Last sign-in</th><th /></tr></thead>
           <tbody>
             {users.map((u) => (
               <tr key={u.id} style={u.active ? undefined : { opacity: 0.6 }}>
@@ -89,7 +95,7 @@ export default function Users() {
                   )}
                 </td>
                 <td>
-                  <select value={u.role} onChange={(e) => changeRole(u, e.target.value as Role)} title={ROLE_HELP[u.role]} aria-label={`Role of ${u.email}`}>
+                  <select style={{ minWidth: 150 }} value={u.role} onChange={(e) => changeRole(u, e.target.value as Role)} title={ROLE_HELP[u.role]} aria-label={`Role of ${u.email}`}>
                     {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
                   </select>
                 </td>
@@ -97,6 +103,14 @@ export default function Users() {
                   {u.active ? <span className="badge ok">active</span> : <span className="badge warn">deactivated</span>}{" "}
                   {u.locked && <span className="badge bad" title="Too many wrong passwords">locked</span>}
                 </td>
+                <td>
+                  {(work[u.id]?.jobs_total ?? 0) > 0
+                    ? <Link to={`/jobs?user=${u.id}`} title={Object.entries(work[u.id].jobs).map(([s, n]) => `${s}: ${n}`).join(", ")}>{work[u.id].jobs.DONE ?? 0} / {work[u.id].jobs_total}</Link>
+                    : <span className="muted">0</span>}
+                </td>
+                <td>{work[u.id]?.files ?? 0}</td>
+                <td>{work[u.id]?.errors_open ? <Link to="/errors" className="badge bad">{work[u.id].errors_open} open</Link> : <span className="muted">{work[u.id]?.errors ?? 0}</span>}</td>
+                <td className="small muted">{work[u.id]?.last_upload ? formatTime(work[u.id].last_upload!) : "—"}</td>
                 <td className="small muted">{u.last_login_at ? formatTime(u.last_login_at) : "never"}</td>
                 <td>
                   <div className="row" style={{ justifyContent: "flex-end", flexWrap: "wrap" }}>

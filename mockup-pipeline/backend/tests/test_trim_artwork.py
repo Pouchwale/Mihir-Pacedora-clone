@@ -281,3 +281,63 @@ def test_white_eyemark_block_on_a_dark_seal():
     out, marks = drop_eyemarks(img, 160, 10, 10, 10)
     assert marks
     assert np.asarray(out)[111 * k:120 * k, 151 * k:160 * k].astype(int).min(axis=2).max() < 200
+
+
+def test_window_drawn_in_the_artwork_becomes_clear_film(tmp_path):
+    """FGPO6813: a white leaf on the green front labelled "Transparent Window" is a window of that shape;
+    the label goes. A spec table field "Transparent Window:" (with its colon) is no label."""
+    import pymupdf
+
+    from app.workflow.steps.texture import WINDOW_ALPHA, window_marked
+
+    w_mm, h_mm = 100.0, 150.0
+    pt = 72 / 25.4
+    doc = pymupdf.open()
+    page = doc.new_page(width=w_mm * pt, height=h_mm * pt)
+    page.draw_rect(page.rect, fill=(0.4, 0.7, 0.2), color=None)
+    page.draw_circle(pymupdf.Point(50 * pt, 100 * pt), 25 * pt, fill=(1, 1, 1), color=None)  # the unprinted shape
+    page.insert_text(pymupdf.Point(38 * pt, 98 * pt), "Transparent", fontsize=8)
+    page.insert_text(pymupdf.Point(42 * pt, 102 * pt), "Window", fontsize=8)
+    page.insert_text(pymupdf.Point(5 * pt, 10 * pt), "Transparent Window:", fontsize=8)  # a field, not a label
+    pdf = tmp_path / "leaf.pdf"
+    doc.save(pdf)
+    pix = doc[0].get_pixmap(dpi=100)
+    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+
+    cleaned, mask = window_marked(img, pdf, (0, 0, w_mm * pt, h_mm * pt), w_mm)
+    assert mask is not None and mask.size == img.size
+    k = img.width / w_mm
+    m = np.asarray(mask)
+    assert m[int(100 * k), int(50 * k)] == WINDOW_ALPHA and m[int(120 * k), int(50 * k)] == WINDOW_ALPHA  # the circle
+    assert m[int(40 * k), int(50 * k)] == 255 and m[int(10 * k), int(10 * k)] == 255  # the print and the field
+    label = np.asarray(cleaned)[int(96 * k):int(103 * k), int(40 * k):int(60 * k)]
+    assert label.min() >= 235  # "Transparent Window" painted out
+    # no label at all: nothing changes
+    page2 = pymupdf.open()
+    page2.new_page(width=w_mm * pt, height=h_mm * pt).draw_circle(pymupdf.Point(50 * pt, 100 * pt), 25 * pt, fill=(1, 1, 1))
+    plain = tmp_path / "plain.pdf"
+    page2.save(plain)
+    assert window_marked(img, plain, (0, 0, w_mm * pt, h_mm * pt), w_mm)[1] is None
+
+
+def test_dieline_drawn_in_the_artwork_is_removed():
+    """FGPO6813 (no technical ink): hairline cut / seal lines across the face, the back's fin line down
+    it and the V-notch pointer on the top line go; a thick stripe of the design stays."""
+    from app.workflow.steps.texture import drop_drawn_rules
+
+    k = 10  # px per mm
+    img = Image.new("RGB", (100 * k, 150 * k), (150, 200, 60))
+    d = ImageDraw.Draw(img)
+    for y in (2, 12, 138, 148):  # cut edge and seal lines, 0.3 mm
+        d.rectangle([0, y * k, 100 * k, y * k + 2], fill=(20, 20, 20))
+    d.rectangle([50 * k, 0, 50 * k + 2, 150 * k], fill=(20, 20, 20))  # fin line
+    d.polygon([(30 * k, 2 * k), (31 * k, 2 * k), (30.5 * k, 4 * k)], fill=(20, 20, 20))  # pointer on the top line
+    d.rectangle([0, 60 * k, 100 * k, 63 * k], fill=(10, 10, 10))  # a 3 mm stripe in the design
+    out, n = drop_drawn_rules(img, 100, 10, 10)
+    a = np.asarray(out).max(axis=2)
+    assert n == 5
+    for y in (2, 12, 138, 148):
+        assert a[y * k + 1, 20 * k] > 120, y
+    assert a[100 * k, 50 * k + 1] > 120 and a[int(3 * k), int(30.5 * k)] > 120  # fin line, pointer
+    assert a[61 * k, 20 * k] < 40  # the stripe stays
+    assert drop_drawn_rules(Image.new("RGB", (500, 700), (150, 200, 60)), 50, 10, 10)[1] == 0

@@ -61,7 +61,7 @@ export const api = {
 };
 
 export type Role = "admin" | "head_designer" | "designer" | "manager";
-export type Permission = "manage_users" | "view_activity" | "edit_index" | "edit_keyline" | "approve";
+export type Permission = "manage_users" | "view_activity" | "edit_index" | "edit_keyline" | "approve" | "see_all_jobs" | "manage_errors";
 export const ROLE_LABELS: Record<Role, string> = { admin: "Admin", head_designer: "Head of Designer", designer: "Designer", manager: "Manager" };
 /** Index kinds holding keyline / dieline values (mirrors app.auth.KEYLINE_KINDS): edit_keyline only. */
 export const KEYLINE_KINDS = new Set(["keyline_template", "pouch_type", "standard_size", "workflow"]);

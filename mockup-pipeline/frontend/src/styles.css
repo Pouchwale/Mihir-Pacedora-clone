@@ -455,3 +455,11 @@ pre.diff .del { color: var(--bad); }
 .style-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: -6px 0 16px; }
 .style-row-label { font-size: 11.5px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-right: 4px; }
 .style-row .pill:disabled { opacity: .45; cursor: default; }
+/* "Raise an error" and its dialog (native <dialog>) */
+.raise-error { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, var(--border)); font-weight: 600; }
+.raise-error-side { width: 100%; justify-content: center; margin-bottom: 8px; }
+.dialog { border: 1px solid var(--border); border-radius: 16px; padding: 0; width: min(480px, calc(100vw - 32px)); background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
+.dialog::backdrop { background: rgba(10, 14, 22, .45); }
+.dialog-body { padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+.dialog-body textarea { width: 100%; resize: vertical; }
+.nav .count.alert { background: var(--bad); color: #fff; }

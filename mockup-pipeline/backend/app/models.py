@@ -128,6 +128,27 @@ class Job(Base):
     workflow_path: Mapped[list | None] = mapped_column(JSON, nullable=True)
     current_node: Mapped[str | None] = mapped_column(String(80), nullable=True)
     file: Mapped[UploadedFile] = relationship()
+    created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
+
+
+class ErrorReport(Base):
+    """A problem a user raised ("Raise an error"), from a job page or anywhere in the app; the admin
+    handles it. The job's state at that moment is kept, since the job may be rerun afterwards."""
+
+    __tablename__ = "error_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+    message: Mapped[str] = mapped_column(Text, default="")  # optional: what went wrong, in the user's words
+    page: Mapped[str] = mapped_column(String(300), default="")
+    context: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # job status, step, error, review at the time
+    status: Mapped[str] = mapped_column(String(10), default="open", index=True)  # open | resolved
+    admin_note: Mapped[str] = mapped_column(Text, default="")
+    resolved_by: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    user: Mapped[User | None] = relationship()
 
 
 class WorkflowDraft(Base):
