@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
@@ -144,6 +144,8 @@ async def upload(
     name: str = Form(""),
     panels_only: bool = Form(False),
     workflow: str = Form(""),  # published workflow key; empty = default
+    product: str = Form("auto"),  # auto | pouch | sleeve: what the uploaded designs are
+    container: str = Form(""),  # shrink sleeves: a container key (index kind "container"); empty = automatic
     session: Session = Depends(get_session),
     user: User = Depends(auth.current_user),
 ) -> UploadResult:
@@ -153,6 +155,10 @@ async def upload(
     workflow_key = workflow.strip() or None
     if workflow_key and store.get_version(session, "workflow", workflow_key) is None:
         raise HTTPException(422, f"Workflow {workflow_key!r} is not published")
+    if product not in ("auto", "pouch", "sleeve"):
+        raise HTTPException(422, "product must be auto, pouch or sleeve")
+    if container and store.get_version(session, "container", container) is None:
+        raise HTTPException(422, f"No container {container!r} in the index")
     batch = Batch(name=name or datetime.now().strftime("Upload %Y-%m-%d %H:%M"), created_by_id=user.id)
     session.add(batch)
     session.flush()
@@ -192,8 +198,10 @@ async def upload(
     jobs = []
     for f in roots:
         fields = xml_items.get((f.item_code or "").upper())
+        inputs = {"xml_fields": fields} if fields else {}
+        inputs.update({k: v for k, v in (("product", product if product != "auto" else None), ("container", container or None)) if v})
         job = Job(batch_id=batch.id, file_id=f.id, item_code=f.item_code, status="QUEUED", current_step=STEPS[0],
-                  inputs={"xml_fields": fields} if fields else {}, created_by_id=user.id, workflow_key=workflow_key)
+                  inputs=inputs, created_by_id=user.id, workflow_key=workflow_key)
         session.add(job)
         session.flush()
         _event(session, job, f"Job created from {f.filename}" + (" with its item master XML specs" if fields else ""), user, data={"sha256": f.sha256})
@@ -366,7 +374,10 @@ def scene(job_id: int, request: Request, session: Session = Depends(get_session)
     if "build_geometry" not in steps or "texture" not in steps:
         raise HTTPException(409, "The job has not reached the texture step yet")
     token = request.query_params.get("token")
-    suffix = f"&token={token}" if token else ""
+    # v = when the textures were made: a re-made texture keeps its key, and the viewer (and the browser's
+    # in-page image cache) holds textures by URL, so without it an open page showed the old artwork
+    done = steps["texture"].finished_at
+    suffix = (f"&v={int(done.timestamp())}" if done else "") + (f"&token={token}" if token else "")
     url = lambda key: f"/api/jobs/{job_id}/file?key={key}{suffix}"  # noqa: E731
     job = _job(session, job_id)
     adj = job_adjustments(session, job)
@@ -640,6 +651,51 @@ def rerun(job_id: int, body: RerunIn, session: Session = Depends(get_session), u
 
 
 RUNNING_STATES = ("QUEUED", "RUNNING")
+
+
+class ContainerStyle(BaseModel):
+    """The container's look round the sleeve (its top and base), set by the team; None = the container's own."""
+    cap_color: str | None = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")  # lid / cap / can end
+    body_color: str | None = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")  # body and base
+    material: Literal["metal", "plastic", "glass", "clear"] | None = None
+    sleeve_from: float | None = Field(None, ge=0, le=0.9)  # where the sleeve's bottom edge sits (share of the height)
+    height_mm: float | None = Field(None, gt=0, le=1000)  # the container's height (a taller or shorter tin / can)
+
+
+class ContainerIn(BaseModel):
+    container: str | None = None  # a container key; None = automatic
+    front_center_pct: float | None = Field(None, ge=0, le=100)  # turn the sleeve: this point of the print faces the front
+    style: ContainerStyle | None = None  # replaces the job's look; {} = back to the container's own
+
+
+@router.post("/jobs/{job_id}/container")
+def set_container(job_id: int, body: ContainerIn, session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> JobSummary:
+    """A shrink sleeve's container (can, tin, bottle, jar...): rebuilds the 3D model from build_geometry."""
+    job = _job(session, job_id)
+    if job.pouch_type != "shrink_sleeve":
+        raise HTTPException(422, "Only shrink sleeve jobs go on a container")
+    if body.container and store.get_version(session, "container", body.container) is None:
+        raise HTTPException(422, f"No container {body.container!r} in the index")
+    if job.status == "RUNNING":
+        raise HTTPException(409, "The job is running (pause or cancel it first)")
+    inputs = dict(job.inputs or {})
+    if body.container:
+        inputs["container"] = body.container
+    else:
+        inputs.pop("container", None)
+    if body.style is not None:
+        inputs["container_style"] = body.style.model_dump(exclude_none=True)
+    step = "build_geometry"
+    if body.front_center_pct is not None:
+        inputs["keyline_overrides"] = {**(inputs.get("keyline_overrides") or {}), "sleeve_front_center_pct": round(body.front_center_pct, 1)}
+        step = "resolve_keyline"
+    job.inputs, job.status, job.control, job.updated_at = inputs, "QUEUED", None, utcnow()
+    _event(session, job, f"Container set to {body.container or 'automatic'}"
+           + (f", front at {body.front_center_pct:g} % of the print" if body.front_center_pct is not None else "")
+           + (f", look {inputs['container_style'] or 'the container’s own'}" if body.style is not None else ""), user)
+    session.commit()
+    queue.enqueue(job.id, step)
+    return _summary(job)
 
 
 @router.post("/jobs/{job_id}/pause")

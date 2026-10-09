@@ -99,6 +99,9 @@ class SpecTable(BaseModel):
     butterfly_notch: Bool
     finish: FinishField = Field(description="From Remarks or Value Additions; null if not stated")
     raw_remarks: Str = Field(description="Remarks text verbatim, line breaks as ' | '")
+    # Shrink sleeves: the flat tube's width ("LAY-FLAT 86.5 mm" / "CLOSE WIDTH 148.5 mm"), half the
+    # container's circumference (app.services.sleeve). Not in the pouch table.
+    sleeve_layflat_mm: Num = Num(value=None, confidence=0.0)
 
 
 class DimensionLabel(BaseModel):

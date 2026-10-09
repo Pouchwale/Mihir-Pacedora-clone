@@ -100,7 +100,33 @@ def bootstrap() -> int:
         if message:
             print(message)
         if session.scalar(select(func.count()).select_from(IndexEntry)):
-            print("Index already populated; seed not applied (use the admin UI or YAML import).")
+            # A populated index keeps every entry as it is (edits included); entries the seed ships that it
+            # does not have yet (a new kind, pouch type or workflow of a release) are added.
+            plan = store.plan_import(session, SEED.read_text(encoding="utf-8"))
+            catalog = ("pouch_catalog", "default")
+            plan.updated = []
+            current = store.get_version(session, *catalog)
+            if current is not None and catalog in plan.data:
+                # the catalog keeps its own forms / styles / sealing types; the seed's new ones are added
+                merged = {k: list(v) for k, v in current.data.items()}
+                for part in ("forms", "styles", "sealing_types"):
+                    have = {i["key"] for i in merged.get(part, [])}
+                    merged[part] = merged.get(part, []) + [i for i in plan.data[catalog].get(part, []) if i["key"] not in have]
+                if merged != current.data:
+                    plan.data[catalog] = merged
+                    plan.updated = [catalog]
+            profile = ("pdf_profile", "default")
+            stored = store.get_version(session, *profile)
+            if stored is not None and stored.data.get("item_code_pattern") == r"FGPO\d+":
+                # shrink sleeves (FGSL) are items too; an index still on the pouch-only default learns them
+                plan.data[profile] = {**stored.data, "item_code_pattern": r"FG(?:PO|SL)\d+", "filename_code_pattern": r"^(FG(?:PO|SL)\d+)"}
+                plan.updated.append(profile)
+            if plan.created or plan.updated:
+                store.apply_import(session, plan, store.Author(None, "system"), "added by a release", action="seed")
+                session.commit()
+                print("Index: added " + ", ".join(f"{k}/{v}" for k, v in plan.created + plan.updated))
+            else:
+                print("Index already populated; seed not applied (use the admin UI or YAML import).")
             return 0
         plan = store.plan_import(session, SEED.read_text(encoding="utf-8"))
         store.apply_import(session, plan, store.Author(None, "system"), "initial seed", action="seed")

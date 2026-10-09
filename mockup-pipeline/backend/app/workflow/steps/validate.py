@@ -70,10 +70,15 @@ def run(ctx: StepContext) -> Output:
     report = validate(sheet, filename_code=profile.item_code_from_filename(ctx.job.file.filename),
                       trim_width_mm=tw, trim_height_mm=th,
                       item_code_pattern=profile.item_code_pattern, rules=rules, layout_problem=extracted.layout_problem,
-                      page_mode=extracted.mode == "page", roll_form=extracted.roll_form,
-                      required_fields=ctx.index.required_fields(), field_confidence=ctx.index.field_confidence(),
-                      standard_sizes=ctx.index.all("standard_size"))  # type: ignore[arg-type]
+                      page_mode=extracted.mode == "page" and not extracted.sleeve, roll_form=extracted.roll_form or extracted.sleeve,
+                      # (a shrink sleeve has no pouch table: the pouch fields and standard sizes do not apply)
+                      required_fields=None if extracted.sleeve else ctx.index.required_fields(), field_confidence=ctx.index.field_confidence(),
+                      standard_sizes=None if extracted.sleeve else ctx.index.all("standard_size"))  # type: ignore[arg-type]
     acknowledged = list(ctx.inputs.get("acknowledged") or [])
+    if extracted.sleeve:
+        # a shrink sleeve is its size and its item: the pouch table's fields and the dieline segments do not apply
+        report = ValidationReport(issues=[i for i in report.issues if i.field.split(".")[-1] in SLEEVE_FIELDS],
+                                  bleed_used=report.bleed_used, bleed_source=report.bleed_source)
     issues = [
         Issue(**{**i.model_dump(), "severity": "warning", "message": i.message + " (accepted by operator)"})
         if f"{i.code}@{i.field}" in acknowledged else i
@@ -86,6 +91,9 @@ def run(ctx: StepContext) -> Output:
         review = [i for i in issues if i.severity == "review"]
         raise spec_review(extracted, sheet, issues, f"{len(review)} spec value(s) need checking: " + ", ".join(sorted({i.field for i in review}))[:300])
     return Output(sheet=sheet, report=report, corrected_fields=applied, acknowledged=acknowledged)
+
+
+SLEEVE_FIELDS = {"pouch_height_mm", "pouch_open_width_mm", "pouch_closed_width_mm", "item_no"}
 
 
 def spec_review(extracted: extract_impl.ExtractSpecsOutput, sheet: SpecSheet, issues: list[Issue], message: str, code: str = "spec_review") -> NeedsReview:

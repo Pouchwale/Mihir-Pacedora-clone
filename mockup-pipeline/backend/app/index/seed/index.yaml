@@ -108,6 +108,7 @@ pouch_catalog:
     forms:
       - {key: pouch, name: Pouch, description: Pre-made pouches}
       - {key: roll, name: Roll, description: Printed laminate rolls formed on the customer's machine}
+      - {key: sleeve, name: Shrink sleeve, description: Printed tubes shrunk onto a can, tin, bottle or jar}
     styles:
       - {key: stand_up, name: Stand-up, form: pouch}
       - {key: flat, name: Flat, form: pouch}
@@ -115,6 +116,7 @@ pouch_catalog:
       - {key: box, name: Box / flat bottom, form: pouch}
       - {key: special, name: Special shapes, form: pouch}
       - {key: roll_stock, name: Roll stock, form: roll}
+      - {key: shrink_sleeve, name: Shrink sleeve, form: sleeve}
     sealing_types:
       - {key: stand_up_bottom_gusset, name: Stand-up with bottom gusset, style: stand_up, printed: [Stand-up, Standy, Stand-up+Zipper]}
       - {key: three_side_seal, name: Three side seal, style: flat, printed: [3 Side Seal, Three Side Seal]}
@@ -125,6 +127,7 @@ pouch_catalog:
       - {key: spout, name: Spout, style: special, printed: [Spout]}
       - {key: shaped, name: Shaped die-cut, style: special, printed: [Shaped]}
       - {key: roll, name: Roll (no seal), style: roll_stock, printed: [NA]}
+      - {key: shrink_sleeve, name: Shrink sleeve (seamed tube), style: shrink_sleeve, printed: [Shrink Sleeve, Sleeve]}
 
 x-keyline-common: &common
   bleed_left_mm:  {default: 4, min: 0, max: 20, from_measured: "measured.bleed_left_mm", description: "Bleed trimmed off the left of the artwork"}
@@ -287,7 +290,27 @@ keyline_template:
       roll_outer_diameter_mm: {default: 300, min: 50, max: 1200}
       roll_core_diameter_mm: {default: 76, min: 25, max: 300}
 
+  shrink_sleeve:
+    name: Shrink sleeve (seamed tube on a container)
+    fields:
+      <<: *common
+      sleeve_layflat_mm: {default: 100, min: 10, max: 400, from_spec: "spec.sleeve_layflat_mm", description: "Flat tube width = half the container's circumference ('LAY-FLAT' / 'CLOSE WIDTH' on the sheet)"}
+      sleeve_front_center_pct: {default: 50, min: 0, max: 100, description: "Where the main panel's centre lies across the printed width; that point faces the front (turned on the job page)"}
+
 pouch_type:
+  shrink_sleeve:
+    name: Shrink sleeve
+    description: A printed sleeve shrunk onto a can, tin, bottle or jar (FGSL sheets)
+    form: sleeve
+    style: shrink_sleeve
+    sealing_type: shrink_sleeve
+    geometry_template: shrink_sleeve
+    priority: 5
+    match_rules:
+      - all: [{field: spec.pouch_or_roll_form, op: contains, value: sleeve}]
+    required_panels: [sleeve]
+    keyline_template: shrink_sleeve
+
   roll_stock:
     name: Roll stock
     form: roll
@@ -717,4 +740,248 @@ workflow:
       - {id: e9, source: artwork, target: render}
       - {id: e10, source: render, target: end}
 
+  # Phase 4: pouch or shrink sleeve first, then the default pouch tree. The workflow every upload uses.
+  phase4:
+    name: Phase 4 - pouches and shrink sleeves
+    description: 'Every upload: shrink sleeves (FGSL sheets or chosen at upload) go onto a can, tin, bottle or jar; pouches and rolls follow the default pouch tree.'
+    nodes:
+    - {id: start, type: start}
+    - {id: prepare, type: prepare, label: Prepare PDF}
+    - {id: d_product, type: decision, question: 'Pouch or shrink sleeve?'}
+    - {id: set_sleeve, type: set_pouch_type, pouch_type: shrink_sleeve, label: Shrink sleeve}
+    - {id: d_form, type: decision, question: 'Pouch or roll?'}
+    - {id: set_roll, type: set_pouch_type, pouch_type: roll_stock}
+    - id: fetch_core
+      type: fetch
+      label: Core pouch fields
+      fields:
+      - {key: sealing_type, required: true}
+      - {key: gusset_type, required: true}
+      - {key: pouch_closed_width_mm, required: true}
+      - {key: pouch_height_mm, required: true}
+      - {key: gusset_full_width_mm, required: false}
+    - {id: d_seal, type: decision, question: 'Which sealing type?'}
+    - {id: set_standup, type: set_pouch_type, pouch_type: stand_up_bottom_gusset}
+    - {id: set_3ss, type: set_pouch_type, pouch_type: three_side_seal}
+    - {id: set_css, type: set_pouch_type, pouch_type: center_seal_side_gusset}
+    - {id: set_pillow, type: set_pouch_type, pouch_type: center_seal_pillow}
+    - {id: set_box, type: set_pouch_type, pouch_type: flat_bottom_box_pouch}
+    - {id: set_quad, type: set_pouch_type, pouch_type: quad_seal}
+    - {id: set_spout, type: set_pouch_type, pouch_type: spout_pouch}
+    - {id: set_shaped, type: set_pouch_type, pouch_type: shaped_diecut}
+    - {id: set_auto, type: set_pouch_type, label: By match rules, pouch_type: null}
+    - {id: validate, type: validate}
+    - {id: keyline, type: resolve_keyline}
+    - {id: panels, type: link_panels}
+    - {id: build, type: build_3d}
+    - {id: artwork, type: artwork}
+    - {id: render, type: render}
+    - {id: end, type: end}
+    edges:
+    - {id: e1, source: start, target: prepare}
+    - id: p1
+      source: d_product
+      target: set_sleeve
+      label: Shrink sleeve
+      order: 1
+      when:
+      - all:
+        - {field: spec.pouch_or_roll_form, op: contains, value: sleeve}
+    - {id: p2, source: d_product, target: d_form, label: Pouch / roll, otherwise: true}
+    - {id: p3, source: set_sleeve, target: validate}
+    - {id: e2, source: prepare, target: d_product}
+    - id: e3
+      source: d_form
+      target: set_roll
+      label: Roll form
+      order: 1
+      when:
+      - all:
+        - {field: spec.pouch_or_roll_form, op: contains, value: roll}
+      - all:
+        - {field: job.roll_form, op: is_true}
+    - {id: e4, source: d_form, target: fetch_core, otherwise: true}
+    - {id: e5, source: fetch_core, target: d_seal}
+    - id: e6
+      source: d_seal
+      target: set_spout
+      label: Spout
+      order: 1
+      when:
+      - all:
+        - {field: spec.sealing_type, op: contains, value: spout}
+      - all:
+        - {field: spec.raw_remarks, op: contains, value: spout}
+    - id: e7
+      source: d_seal
+      target: set_shaped
+      label: Shaped
+      order: 2
+      when:
+      - all:
+        - {field: spec.sealing_type, op: contains, value: shaped}
+      - all:
+        - field: spec.raw_remarks
+          op: contains
+          value: [shaped, die cut, diecut]
+    - id: e8
+      source: d_seal
+      target: set_box
+      label: Flat bottom / box
+      order: 3
+      when:
+      - all:
+        - field: spec.sealing_type
+          op: in
+          value: [flat bottom, box pouch, 8 side seal]
+    - id: e9
+      source: d_seal
+      target: set_quad
+      label: Quad seal
+      order: 4
+      when:
+      - all:
+        - field: spec.sealing_type
+          op: in
+          value: [quad seal, 4 side seal]
+    - id: e10
+      source: d_seal
+      target: set_css
+      label: Centre seal + side gussets
+      order: 5
+      when:
+      - all:
+        - field: spec.sealing_type
+          op: in
+          value: [center seal, centre seal, back seal]
+        - {field: spec.gusset_type, op: eq, value: Side}
+      - all:
+        - {field: spec.sealing_type, op: eq, value: side gusset}
+    - id: e11
+      source: d_seal
+      target: set_pillow
+      label: Pillow
+      order: 6
+      when:
+      - all:
+        - field: spec.sealing_type
+          op: in
+          value: [center seal, centre seal, back seal, pillow]
+        - field: spec.gusset_type
+          op: not_in
+          value: [Side, Bottom, 'Yes']
+    - id: e12
+      source: d_seal
+      target: set_standup
+      label: Stand-up + bottom gusset
+      order: 7
+      when:
+      - all:
+        - {field: spec.sealing_type, op: contains, value: stand}
+        - field: spec.gusset_type
+          op: in
+          value: [Bottom, 'Yes']
+    - id: e13
+      source: d_seal
+      target: set_3ss
+      label: Three side seal
+      order: 8
+      when:
+      - all:
+        - field: spec.sealing_type
+          op: in
+          value: [3 side seal, three side seal]
+      - all:
+        - field: spec.sealing_type
+          op: in
+          value: [flat, flat pouch]
+        - field: spec.gusset_type
+          op: in
+          value: [None, 'No']
+    - {id: e14, source: d_seal, target: set_auto, otherwise: true}
+    - {id: e15, source: set_roll, target: validate}
+    - {id: e16, source: set_spout, target: validate}
+    - {id: e17, source: set_shaped, target: validate}
+    - {id: e18, source: set_box, target: validate}
+    - {id: e19, source: set_quad, target: validate}
+    - {id: e20, source: set_css, target: validate}
+    - {id: e21, source: set_pillow, target: validate}
+    - {id: e22, source: set_standup, target: validate}
+    - {id: e23, source: set_3ss, target: validate}
+    - {id: e24, source: set_auto, target: validate}
+    - {id: e25, source: validate, target: keyline}
+    - {id: e26, source: keyline, target: panels}
+    - {id: e27, source: panels, target: build}
+    - {id: e28, source: build, target: artwork}
+    - {id: e29, source: artwork, target: render}
+    - {id: e30, source: render, target: end}
 
+# Shrink sleeve containers (app.index.schemas.Container): sized from each sleeve; chosen at upload, on
+# the job page, or by these words (lowest priority first), else the default one.
+container:
+  bottle:
+    name: Bottle
+    shape: bottle
+    description: Clear PET bottle with shoulder, neck and cap, a 500 ml water bottle's proportions by default (water, oil, soda, PET drinks, syrups)
+    priority: 10
+    match_words: ['\bpet\b', 'bottle', '\boil\b', 'goli', 'water', '\d+\s*(ltr|litre|liter)\b', '\b\d+\s*l\b', 'suspension', 'syrup', 'shampoo', 'inhaler']
+    sleeve_from: 0.05
+    sleeve_to: 0.62
+    min_height_ratio: 3.3
+    neck_ratio: 0.4
+    body_color: "#e6f2f8"
+    cap_color: "#1f5fae"
+    material: clear
+  ghee_pot:
+    name: Ghee pot
+    shape: pot
+    description: Ghee matka - a bulging body under a wide ribbed screw lid
+    priority: 15
+    match_words: ['ghee']
+    sleeve_from: 0.06
+    sleeve_to: 0.72
+    min_height_ratio: 0.85
+    lid: true
+    neck_ratio: 0.8
+    body_color: "#f7f6f2"
+    cap_color: "#f2c200"
+    material: plastic
+  jar:
+    name: Jar
+    shape: jar
+    description: Short wide jar with a screw lid (pickles, spices, honey)
+    priority: 20
+    match_words: ['\bjar\b', 'pickle', 'honey']
+    sleeve_from: 0.06
+    sleeve_to: 0.8
+    min_height_ratio: 0.7
+    lid: true
+    neck_ratio: 0.9
+    body_color: "#f2f1ee"
+    cap_color: "#b8902f"
+    material: plastic
+  drink_can:
+    name: Drink can
+    shape: can
+    description: Aluminium beverage can (slim or standard, by the sleeve's size) with a pull-tab end
+    priority: 30
+    match_words: ['\d+\s*ml\b', 'drink', 'cola', 'soda', 'juice', 'lemonade', 'energy', 'spray']
+    sleeve_from: 0.07
+    sleeve_to: 0.95
+    min_height_ratio: 1.6
+    body_color: "#cfd3d8"
+    cap_color: "#c4c8ce"
+    material: metal
+  tin:
+    name: Tin / food can
+    shape: tin
+    description: Round metal tin with rolled rims and a ring-pull easy-open end (powders, spices, food)
+    priority: 40
+    default: true
+    match_words: ['\d+\s*(g|gm|gms|kg)\b', 'powder', '\btin\b', 'can pack', 'masala']
+    sleeve_from: 0.03
+    sleeve_to: 0.97
+    min_height_ratio: 0.6
+    body_color: "#c9ccd1"
+    cap_color: "#d9dce1"
+    material: metal

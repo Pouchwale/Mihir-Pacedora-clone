@@ -33,13 +33,40 @@ def _xml_fields(ctx: StepContext) -> dict[str, str]:
     return {}
 
 
+def sleeve_fields(ctx: StepContext, pdf, xml: dict[str, str]) -> dict[str, str] | None:
+    """A shrink sleeve job (chosen at upload, or an FGSL sheet / sleeve wording when left on Auto): its spec
+    fields from the sheet's text, the file name's size when the text is outlined, the XML over both."""
+    from app.services import sleeve
+
+    product = ctx.inputs.get("product") or "auto"
+    if product == "pouch":
+        return None
+    text = sleeve.page_text(pdf)
+    if product != "sleeve" and not sleeve.is_sleeve(ctx.job.file.filename, text):
+        return None
+    fields = sleeve.read(text)
+    if "pouch_height_mm" not in fields and (size := sleeve.size_from_filename(ctx.job.file.filename)):
+        fields["pouch_height_mm"] = f"{size[0]:g}"
+        fields["pouch_closed_width_mm"] = fields["pouch_open_width_mm"] = f"{size[1]:g}"
+    if "pouch_height_mm" not in fields:
+        # nothing says the size (outlined text, no size in the name): the drawn artwork's own size
+        fields["pouch_height_mm"] = fields["pouch_closed_width_mm"] = fields["pouch_open_width_mm"] = "0"
+    return {**fields, **{k: v for k, v in xml.items() if v}}
+
+
 def run(ctx: StepContext) -> Output:
     f = ctx.job.file
     trim = ctx.output("trim_artwork", trim_impl.TrimArtworkOutput)
-    inp = impl.ExtractSpecsInput(pdf_path=ctx.local_file(f), filename=f.filename, key_prefix=ctx.prefix,
+    pdf = ctx.local_file(f)
+    xml = ctx.inputs.get("xml_fields") or _xml_fields(ctx)
+    sleeve = sleeve_fields(ctx, pdf, xml)
+    if sleeve is not None:
+        ctx.log("Shrink sleeve: size from the sheet" + (" and the item master XML" if xml else ""), "audit", {k: sleeve.get(k) for k in (
+            "pouch_height_mm", "pouch_open_width_mm", "sleeve_layflat_mm")})
+    inp = impl.ExtractSpecsInput(pdf_path=pdf, filename=f.filename, key_prefix=ctx.prefix,
                                  trim_width_mm=trim.trim_width_mm, trim_height_mm=trim.trim_height_mm,
                                  sheet_image_key=trim.bleed_key, corrections=ctx.inputs.get("spec_corrections") or {},
-                                 xml_fields=ctx.inputs.get("xml_fields") or _xml_fields(ctx))
+                                 xml_fields=sleeve if sleeve is not None else xml, sleeve=sleeve is not None)
     out = impl.run(inp, ctx.index.pdf_profile(), ctx.index.validation_rules(), ctx.storage, ctx.settings)
     t = out.sheet.spec_table
     ctx.job.client_name = t.client_name.value

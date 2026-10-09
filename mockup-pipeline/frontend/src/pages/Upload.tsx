@@ -18,6 +18,11 @@ export default function Upload() {
   const [result, setResult] = useState<UploadResult | null>(null);
   const [workflows, setWorkflows] = useState<WorkflowOut[]>([]);
   const [workflow, setWorkflow] = useState("");
+  // what the designs are, and for shrink sleeves what they go on (index kind "container")
+  const [product, setProduct] = useState<"auto" | "pouch" | "sleeve">("auto");
+  const [container, setContainer] = useState("");
+  const [containers, setContainers] = useState<{ key: string; name: string }[]>([]);
+  useEffect(() => { api.get<{ key: string; name: string }[]>("/api/index/container").then(setContainers).catch(() => undefined); }, []);
   const input = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   useEffect(() => { api.get<WorkflowOut[]>("/api/workflows").then((w) => setWorkflows(w.filter((x) => x.published && !x.archived))).catch(() => undefined); }, []);
@@ -39,6 +44,8 @@ export default function Upload() {
     const form = new FormData();
     files.forEach((f) => form.append("files", f));
     if (workflow) form.append("workflow", workflow);
+    form.append("product", product);
+    if (product !== "pouch" && container) form.append("container", container);
     try {
       const res = await fetch("/api/uploads", { method: "POST", body: form, headers: { "X-Requested-With": "fetch" }, credentials: "same-origin" });
       const body = await res.json();
@@ -58,8 +65,25 @@ export default function Upload() {
       <div className="page-head">
         <div>
           <h1>Upload</h1>
-          <div className="muted">ArtPro+ approval PDFs, several at once or as a ZIP. Each front PDF becomes a job; back, gusset and side PDFs are linked to it by the codes in its Remarks. Add an SAP Item Master XML export and each item's specs are taken from it.</div>
+          <div className="muted">Approval PDFs for pouches or shrink sleeves, several at once or as a ZIP. Each front PDF or sleeve becomes a job; back, gusset and side PDFs are linked to it by the codes in its Remarks. Add an SAP Item Master XML export and each item's specs are taken from it.</div>
         </div>
+      </div>
+      <div className="card row upload-kind" style={{ marginBottom: 14 }}>
+        <label className="field" title="Shrink sleeves are found by their FGSL code or sleeve wording when left on Auto-detect">What are these designs?
+          <select value={product} onChange={(e) => setProduct(e.target.value as typeof product)} aria-label="Product">
+            <option value="auto">Auto-detect (pouch or shrink sleeve)</option>
+            <option value="pouch">Pouches / rolls</option>
+            <option value="sleeve">Shrink sleeves</option>
+          </select>
+        </label>
+        {product !== "pouch" && (
+          <label className="field" title="What a shrink sleeve is shrunk onto; Automatic picks it from the item name (ml drinks: can, oil / PET: bottle, ghee: jar, powders: tin)">Shrink sleeves go on
+            <select value={container} onChange={(e) => setContainer(e.target.value)} aria-label="Container">
+              <option value="">Automatic (from the item name)</option>
+              {containers.map((c) => <option key={c.key} value={c.key}>{c.name}</option>)}
+            </select>
+          </label>
+        )}
       </div>
       <div className={`dropzone ${over ? "over" : ""}`} onDragOver={(e) => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)} onDrop={drop}
         onClick={() => input.current?.click()} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && input.current?.click()}>
@@ -91,7 +115,8 @@ export default function Upload() {
             {workflows.length > 1 && (
               <label className="row small muted">Workflow
                 <select value={workflow} onChange={(e) => setWorkflow(e.target.value)}>
-                  {workflows.map((w) => <option key={w.key} value={w.key === "default" ? "" : w.key}>{w.name} (v{w.published!.version})</option>)}
+                  <option value="">Standard (pouches + sleeves)</option>
+                  {workflows.map((w) => <option key={w.key} value={w.key}>{w.name} (v{w.published!.version})</option>)}
                 </select>
               </label>
             )}

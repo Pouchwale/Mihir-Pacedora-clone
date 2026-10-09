@@ -101,6 +101,8 @@ def validate(
                 blank = value.value in (None, "", [], 0.0)
                 if name == "gusset_full_width_mm" and blank and t.gusset_type.value in (None, GussetType.none):
                     continue  # no gusset: a blank ("-") gusset width is the right answer, not a weak read
+                if name == "sleeve_layflat_mm" and blank:
+                    continue  # only shrink sleeves have a lay-flat width; a pouch table has none
                 add("low_confidence", prefix + name, f"Confidence {value.confidence:.2f} < {threshold}",
                     "warning" if (prefix and roll_form) or (page_mode and blank) else "review")
 

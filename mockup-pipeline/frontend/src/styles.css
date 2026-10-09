@@ -202,10 +202,11 @@ pre.diff .del { color: var(--bad); }
 }
 
 /* workflow canvas (React Flow) */
-.wf-layout { display: grid; grid-template-columns: 190px minmax(0, 1fr) 360px; gap: 12px; align-items: start; }
+.wf-layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 12px; align-items: start; }
 .wf-job { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 12px; align-items: start; }
-@media (max-width: 1200px) { .wf-layout { grid-template-columns: 1fr; } .wf-job { grid-template-columns: 1fr; } }
+@media (max-width: 1200px) { .wf-layout { grid-template-columns: 1fr; } .wf-job { grid-template-columns: 1fr; } .wf-side { position: static; max-height: none; } }
 .wf-canvas { width: 100%; background: var(--bg); }
+.wf-canvas.wf-full { position: fixed; inset: 0; z-index: 1000; height: 100vh; height: 100dvh; }
 .wf-canvas .react-flow__attribution { display: none; }
 .wf-canvas .react-flow__minimap { background: var(--panel); }
 .wf-canvas .react-flow__controls button { background: var(--panel); border-bottom: 1px solid var(--border); color: var(--text); fill: var(--text); }
@@ -231,10 +232,13 @@ pre.diff .del { color: var(--bad); }
 .type-start, .type-end { --nt: #4b5563; } .type-prepare, .type-validate, .type-resolve_keyline, .type-link_panels, .type-build_3d, .type-artwork, .type-render { --nt: var(--accent); }
 .type-decision { --nt: #d98c00; } .type-fetch { --nt: #7c3aed; } .type-set_pouch_type { --nt: #0f8b8d; } .type-review { --nt: #d6336c; } .type-sub_workflow { --nt: #3f51b5; }
 .wf-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: var(--nt, var(--muted)); margin-right: 8px; }
-.wf-palette { padding: 12px; display: flex; flex-direction: column; gap: 4px; position: sticky; top: 12px; }
+/* the node library: a wrapping toolbar across the top, so the canvas keeps the width (a sticky side column covered it on narrow screens) */
+.wf-palette { grid-column: 1 / -1; padding: 10px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.wf-palette > h2 { margin: 0 6px 0 0; font-size: 15px; }
+.wf-palette > .muted { flex-basis: 100%; margin: 0 !important; order: 1; }
 .wf-palette-item { text-align: left; display: flex; align-items: center; padding: 5px 8px; font-size: 12.5px; }
 .wf-side { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; }
-.wf-name { font: inherit; font-size: 20px; font-weight: 600; border: 1px solid transparent; background: transparent; padding: 2px 6px; min-width: 260px; }
+.wf-name { font: inherit; font-size: 20px; font-weight: 600; border: 1px solid transparent; background: transparent; padding: 2px 6px; min-width: 260px; field-sizing: content; max-width: 100%; }
 .wf-name:hover, .wf-name:focus { border-color: var(--border); background: var(--panel); }
 .wf-desc { width: 100%; margin-bottom: 10px; }
 .wf-path { margin: 0; padding-left: 18px; } .wf-path li { margin: 2px 0; } .wf-path .wf-dot { margin: 0 4px 0 0; }

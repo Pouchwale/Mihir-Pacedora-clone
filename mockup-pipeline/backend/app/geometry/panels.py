@@ -13,6 +13,9 @@ def panel_sizes(template: str, base: str | None, spec: dict, keyline: dict) -> d
     if template in ("spout_pouch", "shaped_diecut") and base == "auto":
         shape = "stand_up_bottom_gusset" if str(spec.get("gusset_type") or "").lower() == "bottom" else "three_side_seal"
 
+    if template == "shrink_sleeve":
+        # One printed panel: the flat sleeve, printed width (circumference + seam) x sleeve height.
+        return {"sleeve": (float(spec.get("pouch_open_width_mm") or w), h)}
     sizes: dict[str, tuple[float, float]] = {"front": (w, h), "back": (w, h)}
     if template == "roll_stock":
         # The printed repeat (along the roll) x the web: what the roll and the unwound web carry.

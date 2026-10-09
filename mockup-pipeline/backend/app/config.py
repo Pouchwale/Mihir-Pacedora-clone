@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # No person in the loop: every review stop is answered automatically (app.workflow.auto_review)
     # and the job runs on to its 3D mockup. False brings back the review forms.
     auto_review: bool = True
+    # The workflow a job runs when its upload named none: Phase 4 (pouches and shrink sleeves); "default"
+    # when that one is not published.
+    default_workflow: str = "phase4"
     work_dir: Path = Path("./.work")
     # The users' own folder, kept apart from the code: a readable copy of every PDF / XML / picture
     # they upload (uploads/<date>/<email>/) and the permanent logs (logs/activity, logs/server), one

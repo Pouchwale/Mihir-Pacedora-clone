@@ -32,6 +32,24 @@ def choose_preset(ctx: StepContext, client: ClientSettings | None, item: ItemOve
     return key, presets[key]
 
 
+def with_sleeve(ctx: StepContext, geometry: geo.GeometrySpec, spec: dict, keyline: dict, panels: dict) -> geo.GeometrySpec:
+    """The container the sleeve goes on (the job's choice, else the item name's words, else the default),
+    sized from the sleeve; the model is that container, as wide as it and as tall."""
+    from app.geometry import sleeve as sleeve_geo
+
+    printed_w, height = panels["sleeve"].expected_mm
+    text = " ".join(str(v) for v in (spec.get("item_name"), ctx.job.file.filename) if v)
+    s = sleeve_geo.build(ctx.index.all("container"), ctx.inputs.get("container"), text, printed_w, height,  # type: ignore[arg-type]
+                         float(keyline.get("sleeve_layflat_mm") or 0), float(keyline.get("sleeve_front_center_pct") or 50),
+                         ctx.inputs.get("container_style"))
+    ctx.log(f"Shrink sleeve on a {s.name.lower()} ({'chosen for the job' if s.chosen_by == 'job' else 'by the item name' if s.chosen_by == 'words' else 'the default'}): "
+            f"diameter {s.diameter_mm:g} mm x {s.container_height_mm:g} mm, sleeve {height:g} mm tall, seam {s.overlap_mm:g} mm", "audit")
+    dims = [geo.Dimension(label="Diameter", value_mm=s.diameter_mm, kind="width"), geo.Dimension(label="Height", value_mm=s.container_height_mm, kind="height"),
+            geo.Dimension(label="Sleeve height", value_mm=height, kind="other"), geo.Dimension(label="Lay-flat", value_mm=s.layflat_mm, kind="other")]
+    return geometry.model_copy(update={"sleeve": s.model_dump(), "width_mm": s.diameter_mm, "height_mm": s.container_height_mm, "dimensions": dims,
+                                       "shape": s.shape})
+
+
 def run(ctx: StepContext) -> Output:
     sheet = ctx.output("validate", ValidateOutput).sheet
     type_key = ctx.output("match_pouch_type", MatchOutput).pouch_type
@@ -66,6 +84,8 @@ def run(ctx: StepContext) -> Output:
         preset = preset.model_copy(update=changes)
         ctx.log("Scene adjusted by the operator: " + ", ".join(f"{k}={v if not hasattr(v, 'type') else v.type}" for k, v in changes.items()), "audit")
     geometry = geo.build(pouch, spec, keyline, {r: p.expected_mm for r, p in panels.items()}, materials, preset, preset_key)
+    if pouch.geometry_template == "shrink_sleeve":
+        geometry = with_sleeve(ctx, geometry, spec, keyline, panels)
     if adj.windows:
         geometry.window.shapes = [w.model_dump(mode="json") for w in adj.windows]
         ctx.log(f"{len(adj.windows)} clear window(s) marked by the operator", "audit")

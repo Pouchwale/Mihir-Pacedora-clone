@@ -15,6 +15,14 @@ export interface Preset {
   naming_pattern: string;
 }
 
+/** A shrink sleeve and the container it is shrunk onto (app/geometry/sleeve.py). */
+export interface Sleeve {
+  container: string; name: string; shape: "can" | "tin" | "bottle" | "jar" | "pot"; chosen_by: "job" | "words" | "default";
+  diameter_mm: number; container_height_mm: number; sleeve_height_mm: number; printed_width_mm: number;
+  layflat_mm: number; circumference_mm: number; overlap_mm: number; sleeve_from: number; sleeve_to: number;
+  front_center_pct: number; lid: boolean; neck_ratio: number; body_color: string; cap_color: string; material: "metal" | "plastic" | "glass" | "clear";
+}
+
 export interface GeometrySpec {
   version: number;
   template: string;
@@ -35,6 +43,7 @@ export interface GeometrySpec {
   spout: { position: string; diameter_mm: number; cap_diameter_mm: number; cap_height_mm: number } | null;
   valve?: { panel: "front" | "back"; x_mm: number; y_from_top_mm: number; diameter_mm: number } | null;
   roll: { repeat_mm: number; web_width_mm: number; outer_diameter_mm: number; core_diameter_mm: number } | null;
+  sleeve?: Sleeve | null;
   body_bulge_percent: number;
   fill_level_percent: number;
   outline_svg: string | null;

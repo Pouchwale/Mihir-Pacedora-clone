@@ -270,12 +270,15 @@ def run(ctx: StepContext) -> Output:
             face_window = None  # the window lies on the other face of the blank
         marks: list = []
         ruled = 0
+        # A sleeve is never painted over after rendering: its guide, fold, dimension and frame lines are
+        # taken out of the PDF before it is rendered (link_panels, sleeve.without_guides), and guessing
+        # lines from pixels smeared real print (badges, nutrition tables, QR codes) under a blur.
         if role in ("front", "back") and trim.mode != "layers":
             # (a layered file draws its dieline on a technical layer the render already leaves out)
             img, ruled = drop_drawn_rules(img, w, geo.seals.top, geo.seals.bottom)
             if ruled:
                 ctx.log(f"{role}: {ruled} dieline / seal line(s) drawn in the artwork removed", "audit")
-        if role != "roll" and not profile.include_eyemarks:
+        if role not in ("roll", "sleeve") and not profile.include_eyemarks:
             # (sides and gussets carry eyemarks too: FGPO7030's black squares in the gussets' bottom corners)
             img, marks = drop_eyemarks(img, w, geo.seals.side, geo.seals.top, geo.seals.bottom)
             if marks:
@@ -285,6 +288,8 @@ def run(ctx: StepContext) -> Output:
             window = window_rect(img, w)
             if window is not None and not window_named(ctx, pdf, trim):
                 window = None  # an unprinted white area is a window only where the designer says "Window"
+        if role == "sleeve":
+            window = sleeve_clear_edges(img)
         raw = img
         img, changed = baked(role, img, w) if role != "roll" else (img, False)
         # a flat blank's two faces are cut from one render: each keeps its own file (sharing the blank's,
@@ -311,7 +316,7 @@ def run(ctx: StepContext) -> Output:
                 masks["spot"] = ctx.storage.put_bytes(f"{base}_spot.png", _png(spot), "image/png")
         if window is not None:
             masks["window"] = ctx.storage.put_bytes(f"{base}_window.png", _png(window), "image/png")
-            ctx.log(f"{role}: the unprinted area marked \"Window\" is clear film", "audit")
+            ctx.log(f"{role}: " + ("the unprinted bands at its edges are clear film" if role == "sleeve" else "the unprinted area marked \"Window\" is clear film"), "audit")
         web_key = ctx.storage.put_bytes(f"{base}_web.webp", _jpeg(img, WEB_MAX), "image/webp")
         svg = panel_svg(role, geo, img)
         prev = ctx.storage.put_bytes(f"{base}_keyline.svg", svg.encode(), "image/svg+xml")
@@ -438,6 +443,33 @@ def split_blank(blank: Image.Image, open_w: float, w: float) -> tuple[Image.Imag
 
 
 WINDOW_ALPHA = 34  # alpha of clear film in a window mask (the 3D viewer's operator windows use the same)
+
+
+def sleeve_clear_edges(img: Image.Image) -> Image.Image | None:
+    """A shrink sleeve's unprinted bands along its edges (FGSL3991: 1.4 mm top and bottom inside the cut
+    size, with the fold ticks; FGSL4089 labels them "Transparent Area"): clear film, not white paper.
+    A band is the run of rows (columns) from an edge that are at least 97 % paper-white, so a fold tick
+    stays in it. Returns an alpha mask (255 film, WINDOW_ALPHA in the bands) or None."""
+    white = np.asarray(img.convert("RGB")).min(axis=2) >= 245
+    h, w = white.shape
+    mask = np.full((h, w), 255, np.uint8)
+
+    def band(share: np.ndarray) -> int:
+        # a cut-edge hairline a pixel or two thick may run along the very edge (FGSL3970): the band
+        # starts within the first few rows and takes that hairline with it
+        full = share >= 0.97
+        lead = next((i for i in range(min(4, len(full))) if full[i]), None)
+        if lead is None:
+            return 0
+        rest = full[lead:]
+        return lead + (len(rest) if rest.all() else int(np.argmin(rest)))
+
+    rows, cols = white.mean(axis=1), white.mean(axis=0)
+    top, bottom, left, right = band(rows), band(rows[::-1]), band(cols), band(cols[::-1])
+    if top + bottom >= h or left + right >= w or not (top or bottom or left or right):
+        return None  # a blank sleeve, or no band
+    mask[:top], mask[h - bottom:], mask[:, :left], mask[:, w - right:] = WINDOW_ALPHA, WINDOW_ALPHA, WINDOW_ALPHA, WINDOW_ALPHA
+    return Image.fromarray(mask, "L")
 
 
 def window_rect(img: Image.Image, width_mm: float) -> Image.Image | None:
@@ -608,11 +640,17 @@ def drop_drawn_rules(img: Image.Image, width_mm: float, top: float, bottom: floa
 
     def rules(cover: np.ndarray, allowed: np.ndarray) -> list[tuple[int, int]]:
         flags, runs, start = (cover >= RULE_COVER) & allowed, [], None
+        gap, n = thin + 2, len(cover)
         for i, f in enumerate([*flags, False]):
             if f and start is None:
                 start = i
             elif not f and start is not None:
-                if i - start <= thin:
+                # a hairline stands on light ground both sides (a small window beside it: a dimension's
+                # ticks may run close by, FGSL4099); on a dark design (FGSL4047) a thin strip between two
+                # lines of text is dark across too, and is not a rule
+                left = cover[max(0, start - gap - thin):max(1, start - gap + 1)]
+                right = cover[min(n - 1, i - 1 + gap):min(n, i + gap + thin)]
+                if i - start <= thin and left.mean() < 0.5 and right.mean() < 0.5:
                     runs.append((start, i))
                 start = None
         return runs

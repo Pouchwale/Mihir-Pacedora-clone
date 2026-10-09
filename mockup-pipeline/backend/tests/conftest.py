@@ -15,6 +15,9 @@ os.environ["VISION_FALLBACK"] = "none"
 os.environ["TEXT_READER"] = "ocr"
 # The tests drive the review forms themselves; app.workflow.auto_review has its own tests.
 os.environ["AUTO_REVIEW"] = "false"
+# The pouch tests walk the default graph; Phase 4 (pouches + sleeves) has its own tests.
+os.environ.setdefault("DEFAULT_WORKFLOW", "default")
+os.environ["PUBLIC_URL"] = ""  # (tests never start the ngrok tunnel)
 
 from app.config import get_settings  # noqa: E402
 from app.specs.schema import Extraction  # noqa: E402

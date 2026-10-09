@@ -127,7 +127,13 @@ def run(inp: TrimArtworkInput, profile: PdfProfile, storage: Storage) -> TrimArt
         if sheet.mode == "layers":
             layers = sheet.texture_layers(profile)
             require_layers(facts, layers)
-            changed = write_layer_copy(inp.pdf_path, prepared, layers, trim, suppress=suppress_artwork, strip=annotation or None)
+            # (technical ink drawn on an artwork layer is stripped, not just switched off: switched off it
+            # still knocks out the print under it, and the white hairlines it left were blurred over later,
+            # smearing text across FGSL4089's nutrition table)
+            changed = write_layer_copy(inp.pdf_path, prepared, layers, trim, suppress=suppress_artwork,
+                                       strip=(annotation | set(sheet.inks.technical)) or None)
+            if sheet.inks.technical:
+                changed.append("strip:" + "+".join(sorted(sheet.inks.technical)))
         else:
             # Technical ink and varnish are painted on top of the artwork: remove them from the page
             # (a "no ink" tint would still knock out white). White underlay prints below: no ink.
@@ -142,9 +148,12 @@ def run(inp: TrimArtworkInput, profile: PdfProfile, storage: Storage) -> TrimArt
             # hairlines (FGPO4004). Fill where the red was from the artwork around it.
             marks = pdftoppm_png(red_only, Path(tmp) / "annotation.png", profile.texture_dpi, icc, exact_size=True).resize(image.size)
             mask = np.asarray(marks.convert("L")) < 245
-            if mask.any():
-                image = safety.mask_out(image, mask, radius=4)
-        if sheet.mode == "separation" and sheet.inks.technical:
+            # only where the removal really left paper white (a knockout): elsewhere the print under the
+            # red is intact, and filling it smeared FGSL3991's nutrition panel in grey bars
+            knock = mask & (np.asarray(image.convert("RGB")).min(axis=2) >= 245)
+            if knock.any():
+                image = safety.mask_out(image, safety.dilate(knock, 3) & mask, radius=4)
+        if sheet.inks.technical:  # (layered files too: stripping a fold line uncovers the knockout under it, FGSL4089)
             # Removing the technical ink can leave the dieline behind in two ways: knocked out of the
             # artwork as paper-white hairlines (FGPO6787), or flattened into the artwork's own raster
             # tiles (FGPO6786: images in DeviceN Black/Y/M/C + "Dimensions and text"), which no paint
@@ -157,7 +166,8 @@ def run(inp: TrimArtworkInput, profile: PdfProfile, storage: Storage) -> TrimArt
                 # hairlines only: technical paint wider than ~1.2 mm is not a dieline over the art
                 thin = safety.thin_parts(drawn, 15)
                 if thin.any() and flattened_images(inp.pdf_path, sheet.inks.technical):
-                    image = safety.mask_out(image, thin, radius=4)
+                    # (bridged straight across, not blurred: the print a mark crossed carries on sharp)
+                    image = safety.bridge(image, safety.dilate(thin, 3))
                 elif thin.any():
                     # knockouts only: paper white under a mark with coloured artwork around it
                     rgb = np.asarray(image.convert("RGB"))
@@ -167,11 +177,11 @@ def run(inp: TrimArtworkInput, profile: PdfProfile, storage: Storage) -> TrimArt
                     free = ~drawn
                     white_near = safety._box_sum(white & free, 15) / np.maximum(safety._box_sum(free, 15), 1)
                     candidate = thin & white & (white_near < 0.15)
-                    if candidate.any():  # (none on most sheets: the fill, seconds on a whole sheet, is skipped)
-                        filled = np.asarray(safety.mask_out(image, thin & safety.dilate(candidate, 61), radius=4))
-                        knock = candidate & (filled.min(axis=2) < 235)
-                        near = safety.dilate(knock, 5)
-                        image = Image.fromarray(np.where(near[..., None], filled, rgb))
+                    if candidate.any():  # (none on most sheets: the fill is skipped)
+                        # the knocked-out gap along the line (with its anti-aliased edges), bridged straight
+                        # across from the print either side: text it cut through carries on sharp
+                        gap = safety.dilate(thin & white & safety.dilate(candidate, 61), 3) & thin
+                        image = safety.bridge(image, gap)
 
     key = f"{inp.key_prefix}/{_name(item, 'sheet' if sheet.mode == 'separation' else inp.panel, 'bleed')}"
     storage.put_bytes(key, _png_bytes(image), "image/png")
@@ -287,14 +297,9 @@ def finish(
     stray_artwork = int(colour.sum()) if colour.any() and max(colour.sum(axis=0).max(), colour.sum(axis=1).max()) < run else 0
     if stray_artwork:
         colour[:] = False
-    colour_n = int(colour.sum())
-    if colour_n < check.min_pixels or trimmed.mode != "layers":
-        # Files without layers: the dieline is removed from the page's content streams by construction,
-        # and the technical ink's preview colour may well be an artwork colour (FGPO7138's is the
-        # design's PANTONE 293 C blue), so a colour match there is artwork, not a stray keyline.
-        colour[:] = False
-        colour_n = 0
-    sep_full = None if trimmed.mode != "layers" else safety.separation_mask(
+    # (a render that stripped the technical ink left nothing of it to mask: masking would only blur print)
+    stripped = any(str(c).startswith("strip:") for c in trimmed.suppressed_colour_spaces or [])
+    sep_full = None if trimmed.mode != "layers" or stripped else safety.separation_mask(
         pdf_path, trimmed.layers_rendered, Box(*trimmed.trim_box_pt), technical, SAFETY_SCAN_DPI)
     if sep_full is not None:
         sep = cut_bleed(sep_full, trimmed.trim_width_mm, trimmed.trim_height_mm, bleed).resize(image.size, Image.NEAREST)
@@ -302,12 +307,25 @@ def finish(
     else:
         separation = np.zeros_like(colour)
     sep_n = int(separation.sum())
+    # The colour match only fills in round real technical ink (its anti-aliased edges, a mark drawn in
+    # the ink's look-alike next to it). With none on the rendered layers, that colour is the design's
+    # own: FGSL4074's blue drips, badge figures and ruled boxes were wiped as "keylines".
+    matched = int(colour.sum())
+    colour &= safety.dilate(separation, 2 * run + 1) if sep_n else False
+    colour_n = int(colour.sum())
+    stray_artwork += matched - colour_n
+    if colour_n < check.min_pixels or trimmed.mode != "layers":
+        # Files without layers: the dieline is removed from the page's content streams by construction,
+        # and the technical ink's preview colour may well be an artwork colour (FGPO7138's is the
+        # design's PANTONE 293 C blue), so a colour match there is artwork, not a stray keyline.
+        colour[:] = False
+        colour_n = 0
     mask = colour | separation
 
     issues: list[Issue] = []
     if stray_artwork >= check.min_pixels and trimmed.mode == "layers":
         issues.append(Issue(code="keyline_colour_artwork", field=f"artwork.{trimmed.panel}", severity="warning",
-                            message=f"{stray_artwork} px of the artwork are close to the keyline colour but form no straight line: kept as artwork"))
+                            message=f"{stray_artwork} px of the artwork are close to the keyline colour but are no keyline (no straight line, no technical ink there): kept as artwork"))
     preview_key = None
     if mask.any():
         preview_key = f"{key_prefix}/{_name(trimmed.item_code, trimmed.panel, 'technical_marks')}"

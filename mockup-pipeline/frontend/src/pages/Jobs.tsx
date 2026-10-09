@@ -17,7 +17,8 @@ const STATUSES = ["QUEUED", "RUNNING", "NEEDS_REVIEW", "PAUSED", "FAILED", "DONE
 export const POUCH_STYLE: Record<string, string> = {
   stand_up_bottom_gusset: "Stand-up (bottom gusset)", spout_pouch: "Spout pouch", three_side_seal: "Three-side seal",
   center_seal_pillow: "Centre seal (pillow)", center_seal_side_gusset: "Centre seal + side gussets", quad_seal: "Quad seal",
-  flat_bottom_box_pouch: "Flat bottom / box", roll_stock: "Roll stock", shaped_diecut: "Shaped die-cut", none: "Not typed yet",
+  flat_bottom_box_pouch: "Flat bottom / box", roll_stock: "Roll stock", shaped_diecut: "Shaped die-cut", shrink_sleeve: "Shrink sleeve",
+  none: "Not typed yet",
 };
 export const pouchStyle = (key: string | null | undefined) => (key ? POUCH_STYLE[key] ?? key.replace(/_/g, " ") : "type pending");
 const LABEL: Record<string, string> = { QUEUED: "Queued", RUNNING: "Running", NEEDS_REVIEW: "Needs review", PAUSED: "Paused", FAILED: "Failed", DONE: "Done", CANCELLED: "Cancelled" };

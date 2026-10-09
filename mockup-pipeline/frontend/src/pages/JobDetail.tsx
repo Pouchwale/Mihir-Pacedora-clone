@@ -6,10 +6,11 @@ import AdjustPanel, { type Uploaded } from "../components/AdjustPanel";
 import KeylineWorkspace from "../components/KeylineWorkspace";
 import RaiseError from "../components/RaiseError";
 import ReviewPanel from "../components/ReviewPanel";
+import SleeveControls from "../components/SleeveControls";
 import Viewer from "../components/Viewer";
 import WorkflowCanvas, { nodeTitle } from "../components/WorkflowCanvas";
 import { draftFrom, type Draft } from "../three/draft";
-import type { SceneData, SceneFile } from "../three/types";
+import type { SceneData, SceneFile, Sleeve } from "../three/types";
 import { formatTime, parseTime } from "../util";
 import { JobControls, STATUS_BADGE } from "./Jobs";
 import { NodeRun } from "./WorkflowEditor";
@@ -33,6 +34,7 @@ export default function JobDetail() {
   const [data, setData] = useState<Dict | null>(null);
   const [scene, setScene] = useState<SceneData | null>(null);
   const [tab, setTab] = useState<Tab>("keyline_workspace");
+  const [sleevePatch, setSleevePatch] = useState<Partial<Sleeve> | null>(null); // the sleeve changed on the page (turned, moved, recoloured), before it is applied
   const [msg, setMsg] = useState("");
   const [preset, setPreset] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -70,6 +72,12 @@ export default function JobDetail() {
   const dirty = !!draft && JSON.stringify(draft) !== savedDraft;
   // one scene object per (scene, uploads) pair: the viewer rebuilds its stage when the scene identity changes
   const liveScene = useMemo<SceneData | null>(() => (scene ? { ...scene, files: { ...(scene.files ?? {}), ...uploaded } } : null), [scene, uploaded]);
+  // a shrink sleeve turned on the page shows at once; Apply saves it
+  const viewScene = useMemo<SceneData | null>(() => (liveScene && sleevePatch && liveScene.geometry.sleeve
+    ? { ...liveScene, geometry: { ...liveScene.geometry, sleeve: { ...liveScene.geometry.sleeve, ...sleevePatch } } } : liveScene),
+  [liveScene, sleevePatch]);
+  const sleeveJob = data?.job?.pouch_type === "shrink_sleeve";
+  useEffect(() => { if (sleeveJob && tab === "keyline_workspace") setTab("results"); }, [sleeveJob]); // (no pouch dieline to edit)
   const uploadArtwork = async (file: File): Promise<Uploaded> => {
     const up = await api.upload<Uploaded>(`/api/jobs/${jobId}/artwork`, { file });
     setUploaded((prev) => ({ ...prev, [String(up.file_id)]: { filename: up.filename, kind: up.kind, preview_url: up.preview_url } }));
@@ -82,6 +90,7 @@ export default function JobDetail() {
   const job = data.job;
   const out: Dict = data.outputs;
   const running = ["QUEUED", "RUNNING"].includes(job.status);
+  const isSleeve = sleeveJob;
 
   const act = async (fn: () => Promise<unknown>, ok: string) => {
     setMsg("");
@@ -167,7 +176,7 @@ export default function JobDetail() {
       {job.status === "NEEDS_REVIEW" && data.review && <ReviewPanel jobId={jobId} review={data.review} onDone={() => act(async () => undefined, "Submitted; the job continues.")} />}
 
       <div className="tabs" style={{ marginTop: 14 }}>
-        {(["keyline_workspace", "results", "workflow", "specs", "keyline", "steps", "log"] as Tab[]).map((t) => (
+        {(["keyline_workspace", "results", "workflow", "specs", "keyline", "steps", "log"] as Tab[]).filter((t) => !(isSleeve && t === "keyline_workspace")).map((t) => (
           <button key={t} className={tab === t ? "on" : ""} onClick={() => setTab(t)}>
             {{
               keyline_workspace: "📐 Keyline & Dieline Studio",
@@ -203,8 +212,12 @@ export default function JobDetail() {
         <div className="stack">
           {liveScene ? (
             <div className="viewer-layout">
-              <div className="card"><Viewer scene={liveScene} draft={draft} name={job.item_code} onWindows={draft ? (windows) => setDraft({ ...draft, windows }) : undefined} /></div>
-              {draft && !running && (
+              <div className="card"><Viewer scene={viewScene!} draft={isSleeve ? null : draft} name={job.item_code} onWindows={draft && !isSleeve ? (windows) => setDraft({ ...draft, windows }) : undefined} /></div>
+              {isSleeve && liveScene.geometry.sleeve && (
+                <SleeveControls jobId={jobId} sleeve={liveScene.geometry.sleeve} running={running} onPreview={setSleevePatch}
+                  onDone={(m) => act(async () => undefined, m)} />
+              )}
+              {draft && !running && !isSleeve && (
                 <AdjustPanel scene={liveScene} job={data} draft={draft} dirty={dirty} busy={adjusting} isAdmin={can("edit_index")}
                   onChange={setDraft} onApply={applyDraft} onReset={resetDraft} onUpload={uploadArtwork} />
               )}

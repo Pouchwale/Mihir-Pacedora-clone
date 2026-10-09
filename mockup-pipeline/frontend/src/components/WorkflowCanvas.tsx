@@ -2,11 +2,11 @@
 // connected and deleted) and a job's live view (read-only, nodes coloured by the path the job took:
 // green passed, amber paused for review, red failed, blue running, grey not visited).
 import {
-  addEdge, applyEdgeChanges, applyNodeChanges, Background, Controls, Handle, MarkerType, Position, ReactFlow,
-  type Connection, type Edge, type EdgeChange, type Node, type NodeChange, type NodeProps, type NodeTypes, type Viewport,
+  addEdge, applyEdgeChanges, applyNodeChanges, Background, Controls, Handle, MarkerType, Panel, Position, ReactFlow,
+  type Connection, type Edge, type EdgeChange, type Node, type NodeChange, type NodeProps, type NodeTypes, type ReactFlowInstance, type Viewport,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { memo, useCallback, useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NodeType, PathRecord, WfEdge, WfGraph, WfNode } from "../api";
 
 export const NODE_LABELS: Record<NodeType, string> = {
@@ -80,6 +80,30 @@ interface Props {
 
 export default function WorkflowCanvas({ graph, onChange, path = [], currentNode, selectedNode, selectedEdge, onSelectNode, onSelectEdge, height = 560 }: Props) {
   const readOnly = !onChange;
+  // Full screen: a long flowchart needs the whole window to be read (the viewer's way: fill the window,
+  // and go truly full screen where the browser allows); the graph is fitted on the way in and out.
+  const box = useRef<HTMLDivElement>(null);
+  const rf = useRef<ReactFlowInstance<RfNode, Edge> | null>(null);
+  const [full, setFull] = useState(false);
+  const toggled = useRef(false);
+  useEffect(() => {
+    const t = toggled.current ? window.setTimeout(() => rf.current?.fitView({ padding: 0.06, maxZoom: 1 }), 80) : undefined;
+    toggled.current = true;
+    const onFull = () => { if (!document.fullscreenElement) setFull(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setFull(false); };
+    document.addEventListener("fullscreenchange", onFull);
+    if (full) window.addEventListener("keydown", onKey);
+    return () => { window.clearTimeout(t); document.removeEventListener("fullscreenchange", onFull); window.removeEventListener("keydown", onKey); };
+  }, [full]);
+  const toggleFull = () => {
+    if (full) {
+      setFull(false);
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => undefined);
+    } else {
+      setFull(true);
+      box.current?.requestFullscreen?.().catch(() => undefined);
+    }
+  };
   const records = useMemo(() => {
     const m = new Map<string, PathRecord>();
     for (const r of path) if (!r.parent) m.set(r.node, r); // this graph's own nodes (sub-workflow nodes have a parent); the latest record wins
@@ -163,8 +187,9 @@ export default function WorkflowCanvas({ graph, onChange, path = [], currentNode
   const wide = useMemo(() => Math.max(0, ...graph.nodes.map((n) => n.position.x)) > 1100, [graph.nodes]);
 
   return (
-    <div className="wf-canvas" style={{ height }}>
+    <div ref={box} className={`wf-canvas${full ? " wf-full" : ""}`} style={full ? undefined : { height }}>
       <ReactFlow
+        onInit={(i) => { rf.current = i; }}
         nodes={nodes} edges={edges} nodeTypes={nodeTypes}
         onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect}
         onNodeClick={(_, n) => { onSelectEdge?.(null); onSelectNode?.(n.id); }}
@@ -173,10 +198,12 @@ export default function WorkflowCanvas({ graph, onChange, path = [], currentNode
         nodesDraggable={!readOnly} nodesConnectable={!readOnly} elementsSelectable
         fitView={!wide} fitViewOptions={{ padding: 0.2, maxZoom: 1 }} defaultViewport={initial}
         minZoom={0.15} maxZoom={1.6} proOptions={{ hideAttribution: true }}
+        zoomOnScroll={false} preventScrolling={false} /* the wheel scrolls the page; zoom with ctrl+wheel, a pinch or the buttons */
         deleteKeyCode={readOnly ? null : ["Backspace", "Delete"]}
       >
         <Background gap={18} size={1} />
         <Controls showInteractive={false} />
+        <Panel position="top-right"><button className="small" onClick={toggleFull} title="Show the whole workflow (Esc leaves)">{full ? "✕ Exit full screen" : "⛶ Full screen"}</button></Panel>
       </ReactFlow>
     </div>
   );

@@ -57,6 +57,26 @@ def public_base() -> str | None:
     return None
 
 
+def keep_alive(every_s: float = 60) -> None:
+    """Keep the tunnel up while the server runs: started with the server (not only on the first share, so
+    links already sent work again after a restart of the PC) and started again whenever ngrok stops.
+    Only with a fixed PUBLIC_URL: a random ngrok address changes on every start, so old links would break."""
+    import threading
+
+    if not get_settings().public_url:
+        return
+
+    def loop() -> None:
+        while True:
+            try:
+                public_base()
+            except Exception:  # noqa: BLE001 - never let the keeper die; it tries again next round
+                pass
+            time.sleep(every_s)
+
+    threading.Thread(target=loop, name="ngrok-keeper", daemon=True).start()
+
+
 def through_tunnel(request: Request) -> bool:
     host = urlsplit("//" + (request.headers.get("host") or "")).hostname or ""
     own = urlsplit(get_settings().public_url).hostname

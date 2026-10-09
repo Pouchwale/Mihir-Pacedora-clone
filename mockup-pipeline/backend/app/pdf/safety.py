@@ -131,6 +131,30 @@ def thin_parts(mask: np.ndarray, k: int) -> np.ndarray:
     return mask & ~dilate(erode(mask, k), k + 2)
 
 
+def bridge(image: Image.Image, mask: np.ndarray, max_px: int = 24) -> Image.Image:
+    """Fill thin masked lines (a knocked-out fold or cut line) straight across, from the pixels just either
+    side, row by row for a line running down and column by column for one running across: text and edges
+    crossing the line carry on through it sharp, where a blur (mask_out) smeared them (FGSL4089's "% RDA").
+    Runs wider than `max_px` are left as they are."""
+    a = np.asarray(image.convert("RGB")).astype(np.float32)
+    todo = mask.copy()
+    for axis in (1, 0):  # across each row first (lines running down), then down each column
+        v = a if axis == 1 else a.transpose(1, 0, 2)
+        m = todo if axis == 1 else todo.T
+        n = m.shape[1]
+        for i in np.flatnonzero(m.any(axis=1)):
+            edges = np.flatnonzero(np.diff(np.r_[0, m[i].view(np.uint8), 0]))
+            for s, e in zip(edges[::2], edges[1::2]):
+                if e - s > max_px or s == 0 or e >= n:
+                    continue
+                left, right = v[i, s - 1], v[i, e]
+                t = (np.arange(s, e, dtype=np.float32) - (s - 1)) / (e - s + 1)
+                v[i, s:e] = left * (1 - t[:, None]) + right * t[:, None]
+                m[i, s:e] = False
+    out = Image.fromarray(a.clip(0, 255).astype(np.uint8), "RGB")
+    return out.convert(image.mode) if image.mode != "RGB" else out
+
+
 def mask_out(image: Image.Image, mask: np.ndarray, radius: int = 6) -> Image.Image:
     """Fill masked pixels from their unmasked neighbourhood (normalised blur). A mark too wide for
     the blur to reach its middle (a zipper track's dashes, FGPO3970) is filled from further out; what

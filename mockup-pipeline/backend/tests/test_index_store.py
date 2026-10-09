@@ -82,7 +82,7 @@ def test_add_new_pouch_type_without_code(seeded):
 def test_export_import_round_trip(seeded):
     text = store.export_yaml(seeded)
     plan = store.plan_import(seeded, text)
-    assert plan.created == [] and plan.updated == [] and len(plan.unchanged) == 75
+    assert plan.created == [] and plan.updated == [] and len(plan.unchanged) == 83
 
 
 def test_import_dry_run_then_apply(seeded):
@@ -116,4 +116,4 @@ def test_singletons_and_keys(seeded):
 
 def test_snapshot(seeded):
     snap = store.snapshot(seeded)
-    assert snap["keyline_template"]["stand_up_bottom_gusset"] == 1 and len(snap["pouch_type"]) == 9
+    assert snap["keyline_template"]["stand_up_bottom_gusset"] == 1 and len(snap["pouch_type"]) == 10

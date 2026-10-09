@@ -234,7 +234,7 @@ def apply_import(session: Session, plan: ImportPlan, author: Author, reason: str
         raise IndexError_(["a reason is required for every index change"])
     # Write in dependency order so reference checks pass entry by entry.
     order = ["field", "pouch_catalog", "keyline_template", "output_preset", "pdf_profile", "validation_rules", "material",
-             "pouch_type", "standard_size", "client", "item_override", "workflow"]
+             "container", "pouch_type", "standard_size", "client", "item_override", "workflow"]
     for kind in order:
         keys = [k for k in [*plan.created, *plan.updated] if k[0] == kind]
         if kind == "workflow":

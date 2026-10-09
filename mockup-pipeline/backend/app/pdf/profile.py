@@ -137,8 +137,8 @@ class PdfProfile(BaseModel):
     # A code whose label contains one of these words refers to another job (e.g. "Color match as per
     # old code : FGPO3728"); it is kept as a reference and is not a panel of this pouch.
     reference_code_words: list[str] = ["old", "reference", "ref", "previous", "same as", "as per", "similar", "match"]
-    item_code_pattern: str = r"FGPO\d+"
-    filename_code_pattern: str = r"^(FGPO\d+)"
+    item_code_pattern: str = r"FG(?:PO|SL)\d+"  # pouches FGPO, shrink sleeves FGSL
+    filename_code_pattern: str = r"^(FG(?:PO|SL)\d+)"
     expected_producer: str = "Enfocus PDF"
     expected_creator_prefix: str = "ArtPro+"
 

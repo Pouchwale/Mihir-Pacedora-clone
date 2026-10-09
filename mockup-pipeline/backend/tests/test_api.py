@@ -72,7 +72,7 @@ def test_write_needs_csrf_header_and_admin(client):
 def test_index_crud_and_history(client):
     login(client)
     kinds = {k["kind"]: k["count"] for k in client.get("/api/index/kinds").json()}
-    assert kinds["pouch_type"] == 9 and kinds["keyline_template"] == 9
+    assert kinds["pouch_type"] == 10 and kinds["keyline_template"] == 10
     entry = client.get("/api/index/output_preset/ecommerce").json()
     assert entry["version"] == 1 and "views:" in entry["yaml"]
     new_yaml = entry["yaml"].replace("width_px: 2000", "width_px: 2200")

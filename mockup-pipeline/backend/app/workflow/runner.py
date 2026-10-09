@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.errors import NeedsReview
+from app.config import get_settings
 from app.index import store
 from app.index.conditions import matches, spec_context
 from app.index.graph import NODE_LABELS, NODE_STEPS, Edge, Node, WorkflowGraph, linear_graph, summarize_edge
@@ -76,7 +77,9 @@ def load_graph(session: Session, job: Job) -> tuple[WorkflowGraph, str | None, i
     inputs = job.inputs or {}
     if job.kind == "test" and inputs.get("workflow_graph"):
         return WorkflowGraph.model_validate(inputs["workflow_graph"]), inputs.get("workflow_key") or "draft", None
-    key = job.workflow_key or "default"
+    key = job.workflow_key or get_settings().default_workflow
+    if not job.workflow_key and store.get_version(session, "workflow", key) is None:
+        key = "default"
     row = store.get_version(session, "workflow", key, job.workflow_version)
     if row is None or row.entry.archived and job.workflow_version is None:
         if key != "default":

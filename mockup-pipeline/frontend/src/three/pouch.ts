@@ -10,7 +10,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { bakedTexture } from "./bake";
 import spoutCapUrl from "./spout_cap.glb?url";
 import { cutMask, hasWindow, insideField, materialMaps, normalMap, outlineCanvas, paintWindows, PX_PER_MM } from "./surface";
-import type { GeometrySpec, SceneTexture } from "./types";
+import type { GeometrySpec, SceneTexture, Sleeve } from "./types";
 
 export interface BuildOptions {
   filled: boolean;
@@ -897,9 +897,340 @@ async function boxGroup(g: GeometrySpec, textures: Record<string, SceneTexture>,
 }
 
 /** Build the pouch for a job's geometry spec. The returned group stands on y = 0. */
+// ---------------------------------------------------------------- shrink sleeve on a container
+/** Radius of the turned container at height y (mm, base at 0): its body outline, without lid or cap. */
+function containerRadius(s: Sleeve, y: number): number {
+  const R = s.diameter_mm / 2, H = s.container_height_mm, t = y / H;
+  const ease = (a: number, b: number, x: number) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  switch (s.shape) {
+    case "can": // a drawn can: domed-in base, straight wall, the neck tapering to the lid seam
+      return R * (0.78 + 0.22 * ease(0, 0.07, t)) * (1 - 0.15 * ease(0.9, 0.975, t));
+    case "bottle": // body, a round shoulder into the neck (the cap sits on the neck)
+      return R * (1 - (1 - s.neck_ratio) * ease(0.56, 0.84, t));
+    case "jar": // a wide body with a short shoulder under the lid
+      return R * (1 - (1 - s.neck_ratio) * ease(0.84, 0.88, t));
+    case "pot": { // a ghee matka: narrower base, swelling to its widest at about 40 %, drawn in under the lid
+      const u = Math.min(1, t / 0.76);
+      return R * (s.neck_ratio + (1 - s.neck_ratio) * Math.pow(Math.sin(Math.PI * Math.min(1, u / 0.98)), 0.75));
+    }
+    default: // tin: a straight wall between its rolled rims (the rims are added proud of it)
+      return R;
+  }
+}
+
+/** How high the body outline goes (a bottle's cap and a jar's / pot's lid sit above it). Sleeve.BODY_TOP on the server. */
+function bodyTop(s: Sleeve): number {
+  const H = s.container_height_mm;
+  return H * ({ bottle: 0.9, jar: 0.88, pot: 0.76 } as Record<string, number>)[s.shape] || H;
+}
+
+/** Shading baked into a sphere picture (a matcap): metal and plastic still look like themselves under
+ *  "exact" lighting, which has no lights at all (the artwork there must stay the flat print colour). */
+const matcaps = new Map<string, THREE.Texture>();
+function matcap(kind: "metal" | "plastic"): THREE.Texture {
+  if (!matcaps.has(kind)) {
+    const c = document.createElement("canvas");
+    c.width = c.height = 256;
+    const ctx = c.getContext("2d")!;
+    const g = ctx.createRadialGradient(100, 82, 4, 128, 128, 132);
+    const stops: [number, string][] = kind === "metal"
+      ? [[0, "#ffffff"], [0.18, "#f1f3f5"], [0.45, "#b9bec5"], [0.7, "#e4e7ea"], [0.86, "#8d939b"], [1, "#4d535b"]] // a bright sky, a dark horizon band
+      : [[0, "#ffffff"], [0.3, "#f2f2f2"], [0.75, "#d0d0d0"], [1, "#9a9a9a"]];
+    for (const [o, col] of stops) g.addColorStop(o, col);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 256, 256);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    matcaps.set(kind, t);
+    cachedTextures.add(t); // shared: never disposed with a model
+  }
+  return matcaps.get(kind)!;
+}
+
+/** What a container's metal and gloss reflect: a dark product-photography studio with an overhead softbox and
+ *  two strip lights at the sides (polished metal shows what it reflects: the viewer's bright white studio
+ *  made can ends look flat grey; these bands of light and dark are what make them look rich). */
+let studio: THREE.Texture | null = null;
+function studioReflections(): THREE.Texture {
+  if (studio) return studio;
+  const c = document.createElement("canvas");
+  c.width = 1024;
+  c.height = 512;
+  const ctx = c.getContext("2d")!;
+  const sky = ctx.createLinearGradient(0, 0, 0, 512);
+  for (const [o, col] of [[0, "#e4e8ed"], [0.22, "#b4bac2"], [0.42, "#5d636b"], [0.52, "#2e3238"], [0.75, "#1b1d22"], [1, "#101114"]] as [number, string][]) sky.addColorStop(o, col);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, 1024, 512);
+  const box = (x: number, y: number, w: number, h: number, a: number) => {
+    const gr = ctx.createLinearGradient(x, 0, x + w, 0);
+    gr.addColorStop(0, `rgba(255,255,255,0)`);
+    gr.addColorStop(0.2, `rgba(255,255,255,${a})`);
+    gr.addColorStop(0.8, `rgba(255,255,255,${a})`);
+    gr.addColorStop(1, `rgba(255,255,255,0)`);
+    ctx.fillStyle = gr;
+    ctx.fillRect(x, y, w, h);
+  };
+  box(0, 0, 1024, 26, 1); // the overhead softbox (the top rows of the map are straight up)
+  box(260, 26, 504, 70, 1);
+  box(120, 120, 70, 240, 0.95); // strip lights left and right
+  box(834, 120, 70, 240, 0.95);
+  box(490, 150, 44, 200, 0.55); // a faint rim strip behind
+  studio = new THREE.CanvasTexture(c);
+  studio.mapping = THREE.EquirectangularReflectionMapping;
+  studio.colorSpace = THREE.SRGBColorSpace;
+  cachedTextures.add(studio);
+  return studio;
+}
+
+function containerMaterial(g: GeometrySpec, color: string, kind: string): THREE.MeshBasicMaterial | THREE.MeshPhysicalMaterial | THREE.MeshMatcapMaterial {
+  if (unlit(g)) return kind === "clear" || kind === "glass"
+    ? new THREE.MeshBasicMaterial({ color, toneMapped: false, transparent: true, opacity: 0.3 })
+    : new THREE.MeshMatcapMaterial({ color, matcap: matcap(kind === "metal" ? "metal" : "plastic"), toneMapped: false });
+  const envMap = studioReflections();
+  if (kind === "metal") return new THREE.MeshPhysicalMaterial({ color, metalness: 1, roughness: 0.18, clearcoat: 0.5, clearcoatRoughness: 0.1, envMap, envMapIntensity: 1.35 });
+  if (kind === "glass") return new THREE.MeshPhysicalMaterial({ color, roughness: 0.05, transmission: 0.9, thickness: 2, ior: 1.5, envMap, envMapIntensity: 1.1 });
+  if (kind === "clear") // clear PET: a water bottle
+    return new THREE.MeshPhysicalMaterial({ color, roughness: 0.03, transmission: 0.96, thickness: 1.2, ior: 1.45, clearcoat: 1, transparent: true, side: THREE.DoubleSide,
+      envMap, envMapIntensity: 1.2 });
+  return new THREE.MeshPhysicalMaterial({ color, roughness: 0.28, clearcoat: 0.7, clearcoatRoughness: 0.1, envMap, envMapIntensity: 0.9 });
+}
+
+/** A turned shape from (radius, y) points, base to top. */
+function lathe(points: [number, number][], segments = 160): THREE.LatheGeometry {
+  return new THREE.LatheGeometry(points.map(([r, y]) => new THREE.Vector2(Math.max(0.001, r), y)), segments);
+}
+
+/** A turned shape with fine vertical ribs pressed into its side between heights `from` and `to` (a screw
+ *  cap's or a lid's knurling): `ribs` round it, each `depth` mm proud. */
+function knurled(points: [number, number][], from: number, to: number, ribs: number, depth: number): THREE.LatheGeometry {
+  const geo = lathe(points, Math.max(240, ribs * 4));
+  const pos = geo.getAttribute("position") as THREE.BufferAttribute;
+  for (let k = 0; k < pos.count; k++) {
+    const y = pos.getY(k);
+    if (y < from || y > to) continue;
+    const x = pos.getX(k), z = pos.getZ(k), r = Math.hypot(x, z);
+    if (r < 1e-3) continue;
+    const f = 1 + (depth * Math.max(0, Math.cos(Math.atan2(x, z) * ribs))) / r;
+    pos.setXYZ(k, x * f, y, z * f);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** Spun metal: the fine concentric turning rings of a can end catch the light round it (what makes a real
+ *  end look rich rather than flat grey). A ring texture as bump and roughness, mapped by distance from the
+ *  axis so the rings run evenly from the centre to the rim. */
+const spinTexture = (() => {
+  let t: THREE.Texture | null = null;
+  return () => {
+    if (t) return t;
+    const c = document.createElement("canvas");
+    c.width = 4;
+    c.height = 1024;
+    const ctx = c.getContext("2d")!;
+    let v = 128;
+    for (let y = 0; y < 1024; y++) {
+      v = Math.max(70, Math.min(190, v + (Math.random() - 0.5) * 70));
+      ctx.fillStyle = `rgb(${v | 0},${v | 0},${v | 0})`;
+      ctx.fillRect(0, y, 4, 1);
+    }
+    t = new THREE.CanvasTexture(c);
+    t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(1, 1.2);
+    cachedTextures.add(t);
+    return t;
+  };
+})();
+
+function spun(mesh: THREE.Mesh, rMax: number): THREE.Mesh {
+  const geo = mesh.geometry as THREE.BufferGeometry;
+  const pos = geo.getAttribute("position") as THREE.BufferAttribute, uv = geo.getAttribute("uv") as THREE.BufferAttribute;
+  for (let k = 0; k < pos.count; k++) uv.setXY(k, 0.5, Math.hypot(pos.getX(k), pos.getZ(k)) / rMax);
+  uv.needsUpdate = true;
+  const m = mesh.material;
+  if (m instanceof THREE.MeshPhysicalMaterial) {
+    const tex = spinTexture();
+    mesh.material = Object.assign(m.clone(), { bumpMap: tex, bumpScale: 0.22, roughnessMap: tex, roughness: 0.3, metalness: 1, clearcoat: 0.6, clearcoatRoughness: 0.06 });
+  }
+  return mesh;
+}
+
+/** A flat part lying on a can end: a shape drawn in (x, -z), raised `depth` mm from height y. */
+function onEnd(shape: THREE.Shape, depth: number, y: number, mat: THREE.Material): THREE.Mesh {
+  const m = new THREE.Mesh(new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: true, bevelThickness: 0.12, bevelSize: 0.12, bevelSegments: 2, curveSegments: 24 }), mat);
+  m.rotation.x = -Math.PI / 2;
+  m.position.y = y;
+  return m;
+}
+
+/** A tin's / drink can's easy-open end: the double seam, the recessed panel, the scored opening at the
+ *  front, the pull tab over it and its rivet in the middle. */
+/** A food / powder tin's ends (Pacdora's round tin): a bright rolled rim proud of the wall top and bottom;
+ *  the top a flat panel just below its rim, with two expansion rings, the score round its edge and a ring
+ *  pull lying on it (a full-aperture easy-open end). */
+function tinEnds(r: number, H: number, mat: THREE.Material): THREE.Object3D[] {
+  const P = H - 3;
+  const rim = (y: number) => {
+    const m = new THREE.Mesh(new THREE.TorusGeometry(r + 0.35, 1.6, 20, 200), mat);
+    m.rotation.x = Math.PI / 2;
+    m.position.y = y;
+    return m;
+  };
+  // the panel with three rounded expansion beads pressed up into it (the light runs round them)
+  const prof: [number, number][] = [[0, P]];
+  for (let i = 1; i <= 220; i++) {
+    const x = (0.88 * r * i) / 220;
+    const bump = [0.36, 0.56, 0.76].reduce((acc, c) => acc + 1.3 * Math.exp(-(((x - c * r) / (0.042 * r)) ** 2)), 0);
+    prof.push([x, P + bump]);
+  }
+  // (drawn from the rim in: a profile running outwards faces down, and the end showed its back)
+  const panel = new THREE.Mesh(lathe(([...prof, [r - 1.3, P + 0.15], [r - 0.9, H - 0.8], [r + 0.2, H]] as [number, number][]).reverse()), mat);
+  const bright = mat instanceof THREE.MeshPhysicalMaterial ? Object.assign(mat.clone(), { roughness: 0.12, clearcoat: 0.7 }) : mat;
+  const score = new THREE.Mesh(new THREE.TorusGeometry(0.9 * r, 0.35, 8, 200), mat);
+  score.rotation.x = Math.PI / 2;
+  score.position.y = P + 0.15;
+  // the ring pull: a flat ring towards the middle, its lever riveted near the front edge (+z)
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.16 * r, 0.9, 12, 64), bright);
+  ring.rotation.x = Math.PI / 2;
+  ring.scale.set(1, 1.35, 0.6);
+  ring.position.set(0, P + 1, 0.42 * r);
+  const lever = new THREE.Shape();
+  const lw = 0.07 * r;
+  lever.moveTo(-lw, -0.84 * r).lineTo(lw, -0.84 * r).lineTo(lw * 1.4, -0.6 * r).lineTo(-lw * 1.4, -0.6 * r).closePath();
+  const rivet = new THREE.Mesh(new THREE.CylinderGeometry(0.035 * r, 0.045 * r, 1.2, 20), bright);
+  rivet.position.set(0, P + 1, 0.78 * r);
+  const bead = new THREE.Mesh(new THREE.TorusGeometry(r + 0.15, 0.55, 12, 200), mat); // the seam's step under the rim
+  bead.rotation.x = Math.PI / 2;
+  bead.position.y = H - 3.6;
+  return [rim(H - 1.6), rim(1.6), bead, spun(panel, r), score, ring, onEnd(lever, 0.45, P + 0.35, bright), rivet];
+}
+
+function canEnd(r: number, H: number, mat: THREE.Material): THREE.Object3D[] {
+  // one turned profile, centre to rim: the panel 5 mm down, the countersink groove round it, the chuck wall
+  // up to the double seam (a rolled lip proud of the neck), and the seam's outside down onto the neck
+  const P = H - 5;
+  const end = new THREE.Mesh(lathe(([[0, P], [0.76 * r, P], [0.8 * r, P - 0.35], [0.84 * r, P - 1.1], [0.88 * r, P - 0.45], [r - 1.7, P + 0.3],
+    [r - 1.35, H - 0.7], [r - 0.75, H + 0.3], [r + 0.15, H + 0.25], [r + 0.55, H - 0.9], [r + 0.45, H - 2.7], [r - 0.2, H - 3.3]] as [number, number][]).reverse()), mat); // (rim in: faces up)
+  // the score: a raised teardrop ring between the rivet and the rim, at the front (+z)
+  const ring = new THREE.Shape().absellipse(0, -0.5 * r, 0.24 * r, 0.3 * r, 0, Math.PI * 2, false, 0);
+  ring.holes.push(new THREE.Path().absellipse(0, -0.5 * r, 0.24 * r - 1.3, 0.3 * r - 1.3, 0, Math.PI * 2, false, 0));
+  // the tab: its nose on the opening, the finger ring towards the back
+  const w = 0.17 * r, nose = -0.42 * r, tail = 0.46 * r;
+  const tab = new THREE.Shape();
+  tab.moveTo(-w, nose + w).quadraticCurveTo(-w, nose, 0, nose).quadraticCurveTo(w, nose, w, nose + w)
+    .lineTo(w, tail - w).quadraticCurveTo(w, tail, 0, tail).quadraticCurveTo(-w, tail, -w, tail - w).closePath();
+  tab.holes.push(new THREE.Path().absellipse(0, 0.25 * r, 0.6 * w, 0.1 * r, 0, Math.PI * 2, false, 0));
+  // the tab is pressed from brighter stock than the end
+  const bright = mat instanceof THREE.MeshPhysicalMaterial ? Object.assign(mat.clone(), { roughness: 0.14, clearcoat: 0.6 }) : mat;
+  const rivet = new THREE.Mesh(new THREE.CylinderGeometry(0.055 * r, 0.07 * r, 1.2, 24), bright);
+  rivet.position.y = P + 0.9;
+  return [spun(end, r), onEnd(ring, 0.8, P, bright), onEnd(tab, 0.6, P + 0.45, bright), rivet];
+}
+
+async function sleeveGroup(g: GeometrySpec, textures: Record<string, SceneTexture>): Promise<THREE.Group> {
+  const s = g.sleeve!;
+  const grp = new THREE.Group();
+  const H = s.container_height_mm, R = s.diameter_mm / 2, top = bodyTop(s);
+  const metal = s.shape === "tin" || s.shape === "can";
+  // the container body: a tin / can stands on a narrow ring with its base domed in (the wall's footer
+  // curves into it); other containers have a slightly domed base
+  const dome = Math.min(9, 0.07 * H);
+  const outline: [number, number][] = s.shape === "can"
+    ? [[0, dome], [0.5 * R, 0.75 * dome], [0.66 * R, 1.2], [0.71 * R, 0], [0.75 * R, 0.25]]
+    : s.shape === "tin" ? [[0, 2.6], [R - 1.2, 2.6], [R, 0.4]] : [[0, 1.2]];
+  for (let i = metal ? 1 : 0; i <= 120; i++) { const y = (top * i) / 120; outline.push([containerRadius(s, y), y]); }
+  // (a tin's / can's body closes below its recessed end, or its top would hide the tab / ring pull)
+  if (metal) outline.push([containerRadius(s, top) - 1.6, top - 3.4], [0, top - 6.5]);
+  else outline.push([0, top]);
+  const bodyMat = containerMaterial(g, s.body_color, s.material);
+  bodyMat.name = "film"; // (measured as the model)
+  grp.add(new THREE.Mesh(lathe(outline), bodyMat));
+  if (s.material === "clear") {
+    // water inside a clear bottle, to its shoulder
+    const fill = outline.filter(([, y]) => y <= 0.62 * H).map(([r, y]) => [r * 0.95, y] as [number, number]);
+    const water = containerMaterial(g, "#cfe8f5", "clear");
+    grp.add(new THREE.Mesh(lathe([...fill, [0, fill[fill.length - 1][1]]]), water));
+  }
+  const cap = containerMaterial(g, s.cap_color, s.shape === "can" || s.shape === "tin" ? "metal" : "plastic");
+  if (s.shape === "tin") {
+    grp.add(...tinEnds(R, H, cap));
+  } else if (s.shape === "can") {
+    grp.add(...canEnd(containerRadius(s, H), H, cap));
+  } else if (s.shape === "pot") {
+    // the wide screw lid (a ghee pot's, Pacdora's plastic jars): fine vertical knurling round its side,
+    // a rounded top edge and a slightly domed top; a shadow line where it meets the pot
+    const rt = containerRadius(s, top), rl = R * 0.9, lidH = H - top;
+    const ribFrom = top + 0.14 * lidH, ribTo = H - 0.22 * lidH;
+    grp.add(new THREE.Mesh(knurled([[0, top - 1.5], [rt + 0.6, top - 1.5], [rl, top + 0.06 * lidH], [rl, ribFrom], [rl, ribTo], [rl - 0.8, H - 0.08 * lidH],
+      [rl - 3, H - 0.3], [0.5 * rl, H + 0.4], [0, H + 0.6]], ribFrom, ribTo, 120, 0.55), cap));
+    const gap = containerMaterial(g, "#3a3a3a", "plastic");
+    const shadow = new THREE.Mesh(new THREE.TorusGeometry(rt + 0.4, 0.45, 8, 160), gap);
+    shadow.rotation.x = Math.PI / 2;
+    shadow.position.y = top - 1.2;
+    grp.add(shadow);
+  } else if (s.shape === "bottle") {
+    // a PET bottle's top: the neck's support flange, the tamper-evident band left on the neck, and the screw
+    // cap above it, finely knurled with a rounded top edge
+    const rn = containerRadius(s, top), rc = rn * 1.18, capH = H - top;
+    grp.add(new THREE.Mesh(lathe([[rn - 0.2, top - 2.2], [rn + 2.6, top - 1.9], [rn + 2.9, top - 1.2], [rn + 2.6, top - 0.5], [rn - 0.2, top - 0.3]], 160), bodyMat));
+    const band0 = top + 0.15 * capH, band1 = top + 0.3 * capH, cap0 = band1 + 0.6;
+    grp.add(new THREE.Mesh(knurled([[rn, top], [rc - 0.3, band0 - 0.4], [rc, band0], [rc, band1], [rc - 0.4, band1 + 0.2], [rn, band1 + 0.2]],
+      band0, band1, 60, 0.25), cap));
+    grp.add(new THREE.Mesh(knurled([[rn, cap0], [rc, cap0], [rc, cap0 + 0.5], [rc, H - 1.6], [rc - 0.5, H - 0.4], [rc - 1.6, H], [0.5 * rc, H - 0.2], [0, H - 0.2]],
+      cap0 + 0.8, H - 1.8, 96, 0.4), cap));
+  } else {
+    // a jar's lid above the body
+    const r = R * 0.97;
+    grp.add(new THREE.Mesh(lathe([[0, top - 0.5], [r, top - 0.5], [r, H - 1.2], [r - 1.2, H], [0, H]], 96), cap));
+  }
+  // the sleeve: the container's own outline over the band it covers, a hair outside it (it is shrunk on)
+  const y0 = s.sleeve_from * H, y1 = Math.min(s.sleeve_to * H, top);
+  const band: [number, number][] = [];
+  for (let i = 0; i <= 96; i++) { const y = y0 + ((y1 - y0) * i) / 96; band.push([containerRadius(s, y) + 0.25, y]); }
+  const geo = lathe(band);
+  // v follows the film's length along the outline (a bottle's shoulder takes its share of the print)
+  const lengths = [0];
+  for (let i = 1; i < band.length; i++) lengths.push(lengths[i - 1] + Math.hypot(band[i][0] - band[i - 1][0], band[i][1] - band[i - 1][1]));
+  const uv = geo.getAttribute("uv") as THREE.BufferAttribute;
+  for (let k = 0; k < uv.count; k++) uv.setY(k, lengths[k % band.length] / lengths[lengths.length - 1]);
+  uv.needsUpdate = true;
+  const tex = textures.sleeve ?? Object.values(textures)[0];
+  const map = (await loadTexture(tex.url)).clone();
+  map.needsUpdate = true;
+  map.wrapS = THREE.RepeatWrapping;
+  // once round = the circumference; the seam overlap (half from each edge of the print) is left out at
+  // the back. The lathe's own seam (u = 0) is turned to the back, so u = 0.5 faces the front and the
+  // print's main-panel centre (front_center_pct) sits there with no cut through it.
+  const around = Math.min(1, s.circumference_mm / s.printed_width_mm);
+  map.repeat.set(around, 1);
+  map.offset.set(s.front_center_pct / 100 - around / 2, 0);
+  // the unprinted bands at the sleeve's edges are clear film (texture step: masks.window), placed as the print
+  let alphaMap: THREE.Texture | null = null;
+  if (tex.masks.window) {
+    alphaMap = (await loadMask(tex.masks.window)).clone();
+    alphaMap.needsUpdate = true;
+    alphaMap.wrapS = THREE.RepeatWrapping;
+    alphaMap.repeat.copy(map.repeat);
+    alphaMap.offset.copy(map.offset);
+  }
+  const clear = alphaMap ? { alphaMap, transparent: true } : {};
+  const film = unlit(g)
+    ? new THREE.MeshBasicMaterial({ map, ...clear, side: THREE.DoubleSide, toneMapped: false })
+    // printed gloss film: a broad soft sheen; a hard clearcoat put a white glare stripe across the print
+    : new THREE.MeshPhysicalMaterial({ map, ...clear, roughness: 0.42, clearcoat: 0.3, clearcoatRoughness: 0.32, specularIntensity: 0.6,
+        envMapIntensity: 0.75, side: THREE.DoubleSide });
+  film.name = "film";
+  const sleeve = new THREE.Mesh(geo, film);
+  sleeve.name = "sleeve";
+  sleeve.rotation.y = Math.PI; // the seam at the back
+  grp.add(sleeve);
+  return grp;
+}
+
 export async function buildPouch(g: GeometrySpec, textures: Record<string, SceneTexture>, opts: BuildOptions): Promise<THREE.Group> {
   let grp: THREE.Group;
-  if (g.template === "roll_stock" && g.roll) grp = await rollGroup(g, textures, opts.filled);
+  if (g.template === "shrink_sleeve" && g.sleeve) grp = await sleeveGroup(g, textures);
+  else if (g.template === "roll_stock" && g.roll) grp = await rollGroup(g, textures, opts.filled);
   else if (["center_seal_side_gusset", "quad_seal", "flat_bottom_box_pouch"].includes(g.shape)) grp = await boxGroup(g, textures, opts.filled, g.shape);
   else grp = await flatLikeGroup(g, textures, opts.filled, g.shape);
   if (g.valve) {

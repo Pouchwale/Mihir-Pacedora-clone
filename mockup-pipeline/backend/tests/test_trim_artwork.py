@@ -179,6 +179,21 @@ def test_finish_sample(tmp_path):
 
 
 @needs_poppler
+def test_keyline_coloured_artwork_without_technical_ink_is_kept(tmp_path):
+    """FGSL4074: the keyline's look-alike blue is all over the design (drips, badge figures, ruled boxes).
+    With no technical ink on the rendered layers, none of it is a keyline: nothing is masked."""
+    out, storage = _run(tmp_path)
+    plain = trim_artwork.finish(out, SAMPLE, BLEED, 240, 312, "job", PdfProfile(), storage)
+    a = np.asarray(Image.open(storage.path(plain.finished_key)).convert("RGB")).reshape(-1, 3)
+    colours, counts = np.unique(a[(a.max(axis=1) - a.min(axis=1)) > 40], axis=0, return_counts=True)
+    r, g, b = colours[counts.argmax()]  # the design's commonest strong colour as "the keyline colour"
+    profile = PdfProfile()
+    profile.technical_colour.colour = f"#{r:02x}{g:02x}{b:02x}"
+    fin = trim_artwork.finish(out, SAMPLE, BLEED, 240, 312, "job2", profile, storage)
+    assert fin.technical_pixels == {"colour": 0, "separation": 0} and "technical_marks" not in [i.code for i in fin.issues]
+
+
+@needs_poppler
 def test_finish_wrong_size_needs_review(tmp_path):
     out, storage = _run(tmp_path)
     with pytest.raises(NeedsReview) as exc:
@@ -188,13 +203,13 @@ def test_finish_wrong_size_needs_review(tmp_path):
 
 @needs_poppler
 def test_marks_on_texture_layer_are_masked_and_flagged(tmp_path):
-    """Treat the dimension layer as artwork: its keylines must be found, masked and previewed."""
+    """Treat the dimension layer as artwork: its keylines are stripped from the PDF before rendering (not
+    blurred over afterwards, which smeared the print they crossed: FGSL4089), so none reach the texture."""
     profile = PdfProfile(artwork_layers=["Artwork", "Dimensions and text"])
     out, storage = _run(tmp_path, profile)
+    assert any(c.startswith("strip:") for c in out.suppressed_colour_spaces)
     fin = trim_artwork.finish(out, SAMPLE, BLEED, 240, 312, "job", profile, storage)
-    assert [i.code for i in fin.issues] == ["technical_marks"]
-    assert fin.technical_pixels["separation"] > 1000
-    assert fin.preview_key and storage.exists(fin.preview_key)
+    assert fin.issues == [] and fin.technical_pixels["separation"] == 0  # nothing left to mask or blur
     finished = np.asarray(Image.open(storage.path(fin.finished_key)))
     assert safety.colour_mask(Image.fromarray(finished), fin.technical_rgb, 6.0).sum() < 200
 
@@ -341,3 +356,38 @@ def test_dieline_drawn_in_the_artwork_is_removed():
     assert a[100 * k, 50 * k + 1] > 120 and a[int(3 * k), int(30.5 * k)] > 120  # fin line, pointer
     assert a[61 * k, 20 * k] < 40  # the stripe stays
     assert drop_drawn_rules(Image.new("RGB", (500, 700), (150, 200, 60)), 50, 10, 10)[1] == 0
+    # a dark design (FGSL4047): the thin dark strips between lines of light text are not rules
+    dark = Image.new("RGB", (100 * k, 150 * k), (25, 30, 40))
+    d = ImageDraw.Draw(dark)
+    for y in range(5, 145, 3):  # 2.7 mm text lines with 0.3 mm dark gaps
+        d.rectangle([5 * k, y * k, 45 * k, y * k + 26], fill=(240, 240, 240))  # (text leaves most of a line dark)
+    assert drop_drawn_rules(dark, 100, 75, 75)[1] == 0
+
+
+def test_knocked_out_line_is_bridged_sharp():
+    """A fold line knocked out of the print (FGSL4089) is filled straight across: a stroke it cut through
+    carries on at full strength (a blur left it grey and smeared), the colour round it is untouched."""
+    img = Image.new("RGB", (200, 100), (240, 140, 80))
+    d = ImageDraw.Draw(img)
+    d.rectangle([20, 40, 180, 46], fill=(20, 20, 20))  # a text stroke / table rule crossing the line
+    d.rectangle([99, 0, 101, 99], fill="white")  # the knocked-out fold line
+    mask = np.zeros((100, 200), bool)
+    mask[:, 99:102] = True
+    a = np.asarray(safety.bridge(img, mask)).astype(int)
+    assert a[43, 100].max() < 40 and abs(a[10, 100] - [240, 140, 80]).sum() < 6 and (a[:, 50] == np.asarray(img)[:, 50]).all()
+
+
+def test_sleeve_unprinted_edge_bands_are_clear():
+    """FGSL3991: a black print inset 1.4 mm in the cut size, a fold tick in the bottom band; white inside
+    the design (text) is ink, not film."""
+    from app.workflow.steps.texture import WINDOW_ALPHA, sleeve_clear_edges
+
+    img = Image.new("RGB", (1000, 600), "white")
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 15, 999, 584], fill=(20, 20, 20))  # the print; 15 px bands above and below
+    d.rectangle([400, 590, 402, 599], fill=(0, 0, 0))  # a fold tick in the bottom band
+    d.rectangle([300, 200, 700, 260], fill="white")  # white text in the design
+    d.line([0, 0, 999, 0], fill=(30, 30, 30))  # a cut-edge hairline along the very top
+    a = np.asarray(sleeve_clear_edges(img))
+    assert a[5, 500] == a[595, 401] == WINDOW_ALPHA and a[30, 500] == a[230, 500] == 255
+    assert sleeve_clear_edges(Image.new("RGB", (100, 60), (20, 20, 20))) is None

@@ -103,6 +103,7 @@ class GeometrySpec(BaseModel):
     spout: Spout | None
     valve: Valve | None = None
     roll: Roll | None
+    sleeve: Any = None  # app.geometry.sleeve.Sleeve: a shrink sleeve and the container it is shrunk onto
     body_bulge_percent: float
     fill_level_percent: float
     outline_svg: str | None

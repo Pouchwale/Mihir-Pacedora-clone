@@ -74,6 +74,7 @@ def create_app(resume_jobs: bool = True) -> FastAPI:
     async def lifespan(_: FastAPI):
         if resume_jobs:
             _resume_thread_jobs()
+            tunnel.keep_alive()  # share links work from start-up on, and again if ngrok stops
         yield
 
     app = FastAPI(title="Pouch mockup pipeline", docs_url="/api/docs", openapi_url="/api/openapi.json", lifespan=lifespan)

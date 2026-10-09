@@ -23,7 +23,7 @@ export default function Workflows() {
       <div className="page-head">
         <div>
           <h1>Workflows</h1>
-          <div className="muted">What happens to a job, as a flowchart: prepare, decide, fetch fields, set the pouch type, validate, build, render. Jobs run <b>default</b>; other workflows serve as sub-workflows or for tests.</div>
+          <div className="muted">What happens to a job, as a flowchart: prepare, decide, fetch fields, set the pouch type, validate, build, render. New uploads run <b>phase4</b> (pouches and shrink sleeves) unless another workflow is picked on the Upload page.</div>
         </div>
         {editable && (
           <div className="row">

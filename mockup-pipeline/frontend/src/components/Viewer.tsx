@@ -18,7 +18,7 @@ const VIEW_LABELS: Record<string, string> = {
 };
 // views turn the pouch (the camera stays put): a turn about the vertical, then a tilt toward the camera
 const VIEW_TURN: Record<string, { az: number; el: number }> = {
-  front: { az: 0, el: 0 }, back: { az: 180, el: 0 }, three_quarter_left: { az: 35, el: 0 }, three_quarter_right: { az: -35, el: 0 }, top_down: { az: 0, el: -55 }, // top tipped back: seen from above
+  front: { az: 0, el: 0 }, back: { az: 180, el: 0 }, three_quarter_left: { az: 35, el: 0 }, three_quarter_right: { az: -35, el: 0 }, top_down: { az: 0, el: 55 }, // top tipped towards you: seen from above (-55 tipped it away and showed the base)
 };
 
 type Look = "realistic" | "exact";
@@ -99,6 +99,9 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
   const [error, setError] = useState("");
   const firstBuild = useRef(true);
   const pendingView = useRef<string | null>(null);
+  // the view last framed by the viewer itself: framed again when the canvas changes size, until the
+  // user turns or zooms (a page whose layout settles after the model loads showed it tiny)
+  const autoView = useRef<string | null>(null);
   const gotoRef = useRef<(view: string) => void>(() => undefined);
   const setBackdrop = (b: Partial<Backdrop>) => setBackdropState((cur) => ({ ...cur, ...b }));
   const setFloor = (f: Partial<Floor>) => setFloorState((cur) => ({ ...cur, ...f }));
@@ -110,6 +113,9 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
   const lighting: GeometrySpec["preset"]["lighting"] = look === "exact" ? "exact" : adjusted.geometry.preset.lighting === "exact" ? "studio_soft" : adjusted.geometry.preset.lighting;
   const effective = { ...adjusted, geometry: { ...adjusted.geometry, preset: { ...adjusted.geometry.preset, lighting } } };
   const draftKey = JSON.stringify(draft ?? null);
+  // the stage (renderer, camera, controls) lives as long as the job's artwork: a live edit (the sleeve
+  // moved or recoloured on the job page) only rebuilds the model, and the old one stays on screen meanwhile
+  const stageKey = Object.values(scene.textures ?? {}).map((t) => t.url).join("|");
 
   // stage lifetime
   useEffect(() => {
@@ -161,6 +167,7 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
     };
     const down = (e: PointerEvent) => {
       pointers.add(e.pointerId);
+      autoView.current = null;
       const t = toolRef.current.tool;
       if (t && e.button === 0 && pointers.size === 1) {
         const hit = stage.pick(ndc(e.clientX, e.clientY));
@@ -207,6 +214,7 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
       el.style.cursor = "";
     };
     el.addEventListener("pointerdown", down);
+    el.addEventListener("wheel", () => { autoView.current = null; }, { passive: true });
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", up);
@@ -223,6 +231,7 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
       stage.fitBackground();
       dirty = true;
       if (pendingView.current) gotoRef.current(pendingView.current); // the first view waited for a size
+      else if (autoView.current) gotoRef.current(autoView.current);
     };
     const ro = new ResizeObserver(resize);
     ro.observe(wrap.current!);
@@ -260,7 +269,7 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
       oc.dispose();
       stage.dispose();
     };
-  }, [scene]);
+  }, [stageKey]);
 
   // scene settings: lighting from the look, shadow, background and floor from the scene panel
   useEffect(() => {
@@ -289,7 +298,7 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
   // (re)build the model; draft edits are debounced so sliders stay smooth
   useEffect(() => {
     let cancelled = false;
-    const delay = firstBuild.current ? 0 : 250;
+    const delay = firstBuild.current ? 0 : 100;
     const timer = window.setTimeout(() => {
       setBusy(true);
       setError("");
@@ -326,6 +335,7 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
     if (!stage || !controls.current || !wrap.current) return;
     if (!wrap.current.clientWidth || !wrap.current.clientHeight) { pendingView.current = view; return; } // framed once it has a size
     pendingView.current = null;
+    autoView.current = view;
     const t = VIEW_TURN[view] ?? VIEW_TURN.front;
     stage.resetTurn();
     stage.spin(THREE.MathUtils.degToRad(t.az));

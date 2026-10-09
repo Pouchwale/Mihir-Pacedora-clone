@@ -21,10 +21,11 @@ def test_seed_has_all_pouch_types(seeded):
     index = store.load_all(seeded)
     assert set(index["pouch_type"]) == {
         "three_side_seal", "center_seal_pillow", "center_seal_side_gusset", "stand_up_bottom_gusset",
-        "flat_bottom_box_pouch", "quad_seal", "spout_pouch", "shaped_diecut", "roll_stock",
+        "flat_bottom_box_pouch", "quad_seal", "spout_pouch", "shaped_diecut", "roll_stock", "shrink_sleeve",
     }
     assert index["pouch_type"]["stand_up_bottom_gusset"].required_panels == ["front", "back", "gusset"]
     assert index["pouch_type"]["flat_bottom_box_pouch"].required_panels == ["front", "back", "side_left", "side_right", "bottom"]
+    assert index["pouch_type"]["shrink_sleeve"].required_panels == ["sleeve"] and set(index["container"]) == {"drink_can", "tin", "bottle", "jar", "ghee_pot"}
 
 
 def test_sample_matches_stand_up(seeded, sample_sheet):

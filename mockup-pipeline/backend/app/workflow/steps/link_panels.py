@@ -31,6 +31,7 @@ from app.geometry.panels import panel_sizes
 from app.geometry.sheet_layout import SheetLayout
 from app.index.schemas import PouchType
 from app.models import UploadedFile
+from app.services import sleeve as sleeve_impl
 from app.pdf.layers import Box
 from app.steps import extract_specs as extract_impl
 from app.steps import trim_artwork as trim_impl
@@ -194,6 +195,28 @@ def run(ctx: StepContext) -> Output:
     extracted = ctx.output("extract_specs", extract_impl.ExtractSpecsOutput)
     panels: dict[str, Panel] = {}
     swapped: dict[str, str] = {}
+    if pouch.geometry_template == "shrink_sleeve":
+        # A sleeve sheet: the printed sleeve is one rectangle on it (extract_specs found it); nothing to link.
+        box = Box(*(extracted.front_box_pt or front_trim.trim_box_pt))
+        source = front_trim
+        pdf = ctx.local_file(ctx.job.file)
+        guides, frames = sleeve_impl.guide_lines(pdf, box), sleeve_impl.guide_frames(pdf, box)
+        if guides or frames:
+            # the sheet's fold / overlap / dimension guides run over the print: render the sheet again
+            # without them, so what they crossed comes out whole (not painted over afterwards)
+            import tempfile
+            from pathlib import Path
+
+            with tempfile.TemporaryDirectory() as tmp:
+                clean = sleeve_impl.without_guides(pdf, guides, Path(tmp) / "sheet.pdf", frames)
+                source = trim_impl.run(trim_impl.TrimArtworkInput(pdf_path=clean, filename=ctx.job.file.filename, panel="sleeve_sheet",
+                                                                  key_prefix=ctx.prefix), ctx.index.pdf_profile(), ctx.storage)
+            ctx.log(f"sleeve: {len(guides)} guide line(s) and {len(frames)} frame(s) taken out of the sheet before rendering", "audit")
+        crop = trim_impl.crop_panel(source, "sleeve", box, ctx.storage)
+        panels["sleeve"] = Panel(role="sleeve", source="sheet", expected_mm=sizes["sleeve"], file_id=ctx.job.file_id, item_code=ctx.job.item_code,
+                                 filename=ctx.job.file.filename, trim=crop, bleed=Sides.uniform(0), bleed_source="sheet")
+        ctx.log(f"sleeve: printed area {box.width_mm:.1f} x {box.height_mm:.1f} mm on the sheet", "audit")
+        return Output(panels=panels, required=["sleeve"], confirmed_codes={})
     if pouch.geometry_template == "roll_stock":
         # Roll form: the job's PDF is one print repeat; the sachet's front and back are cut from it in
         # the texture step, so no other panel PDF is needed.

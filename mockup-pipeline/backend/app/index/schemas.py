@@ -18,7 +18,7 @@ KEY_PATTERN = r"^[a-z0-9][a-z0-9_\-]{0,119}$"
 # Built-in parametric geometry templates (Phase 4 implements each in three.js).
 GeometryTemplate = Literal[
     "three_side_seal", "center_seal_pillow", "center_seal_side_gusset", "stand_up_bottom_gusset",
-    "flat_bottom_box_pouch", "quad_seal", "spout_pouch", "shaped_diecut", "roll_stock",
+    "flat_bottom_box_pouch", "quad_seal", "spout_pouch", "shaped_diecut", "roll_stock", "shrink_sleeve",
 ]
 PanelRole = str  # front, back, gusset, side_left, side_right, bottom, top, ...
 
@@ -65,6 +65,38 @@ class PouchType(BaseModel):
                 raise ValueError("thumbnail must be a data:image/... URL")
             if len(self.thumbnail) > 96 * 1024:
                 raise ValueError("thumbnail is larger than 96 kB; use a smaller picture")
+        return self
+
+
+# ---------------------------------------------------------------- containers (shrink sleeves)
+class Container(BaseModel):
+    """What a shrink sleeve is shrunk onto: a turned shape sized from the sleeve (its diameter from the
+    lay-flat width, its height from the sleeve's height and the share of it the sleeve covers). Chosen at
+    upload, on the job page, or automatically: the lowest-priority container whose words appear in the
+    item name or file name, else the default one."""
+
+    name: str
+    shape: Literal["can", "tin", "bottle", "jar", "pot"]  # pot: a ghee matka, bulging body under a wide ribbed lid
+    description: str = ""
+    priority: int = Field(100, description="Lower is tried first when choosing automatically")
+    default: bool = Field(False, description="Used when no container's words match")
+    match_words: list[str] = Field([], description="Regular expressions (case-insensitive) on the item name / file name")
+    sleeve_from: float = Field(0.05, ge=0, le=0.9, description="Sleeve bottom edge, share of the container height from its base")
+    sleeve_to: float = Field(0.95, ge=0.1, le=1, description="Sleeve top edge, share of the container height")
+    min_height_ratio: float = Field(0.5, ge=0, le=6, description="The container is at least this many diameters tall "
+                                    "(a label band on an oil bottle does not make a squat bottle)")
+    lid: bool = Field(False, description="A separate lid on top (tins, jars)")
+    neck_ratio: float = Field(0.4, gt=0, le=1, description="Bottle / jar neck radius as a share of the body radius")
+    body_color: str = Field("#c9ccd1", pattern=r"^#[0-9a-fA-F]{6}$")
+    cap_color: str = Field("#d9dce1", pattern=r"^#[0-9a-fA-F]{6}$")
+    material: Literal["metal", "plastic", "glass", "clear"] = "metal"  # clear: transparent PET (a water bottle)
+
+    @model_validator(mode="after")
+    def _band(self) -> "Container":
+        if self.sleeve_to <= self.sleeve_from:
+            raise ValueError("sleeve_to must be above sleeve_from")
+        for w in self.match_words:
+            re.compile(w)
         return self
 
 
@@ -341,13 +373,14 @@ KINDS: dict[str, type[BaseModel]] = {
     "item_override": ItemOverride,
     "validation_rules": ValidationRules,
     "workflow": WorkflowGraph,
+    "container": Container,
 }
 SINGLETONS = {"pdf_profile", "validation_rules", "pouch_catalog"}  # only key "default"
 KIND_LABELS = {
     "field": "Field dictionary", "pouch_catalog": "Pouch catalog", "pouch_type": "Pouch types",
     "keyline_template": "Keyline templates", "standard_size": "Size rules", "pdf_profile": "PDF profile & panels",
     "material": "Materials", "output_preset": "Output presets", "client": "Clients", "item_override": "Item overrides",
-    "validation_rules": "Validation rules", "workflow": "Workflows",
+    "validation_rules": "Validation rules", "workflow": "Workflows", "container": "Sleeve containers",
 }
 # Kinds with their own editor page rather than the generic entry page.
 KIND_PAGES = {"workflow": "/workflows"}

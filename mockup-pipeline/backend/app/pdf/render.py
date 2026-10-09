@@ -32,13 +32,23 @@ def _mupdf_render(pdf: Path, dpi: int) -> Image.Image:
 
     pymupdf.TOOLS.set_icc(True)
     doc = pymupdf.open(pdf)
+    aa = pymupdf.TOOLS.show_aa_level()
     try:
         page = doc[0]
         box = page.rect  # (the CropBox, in page space: MuPDF renders exactly that)
         w, h = max(1, round(box.width / 72 * dpi)), max(1, round(box.height / 72 * dpi))
-        pix = page.get_pixmap(matrix=pymupdf.Matrix(w / box.width, h / box.height), colorspace=pymupdf.csRGB, alpha=False)
+        # Supersampled without anti-aliasing: shapes laid edge to edge are each anti-aliased on their own
+        # otherwise, and the paper shows through where they meet (a pale hairline seam down FGSL4089's
+        # stripes). Rendered sharp at up to 3x and scaled down, they meet whole and the edges are smooth.
+        ss = max(1, min(3, int((60e6 / (w * h)) ** 0.5)))
+        if ss > 1:
+            pymupdf.TOOLS.set_graphics_min_line_width(1.0)  # (a hairline stays a line, not dropped pixels)
+            pymupdf.TOOLS.set_aa_level(0)
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(ss * w / box.width, ss * h / box.height), colorspace=pymupdf.csRGB, alpha=False)
         image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples_mv, "raw", "RGB", pix.stride)
     finally:
+        pymupdf.TOOLS.set_aa_level(aa["graphics"])
+        pymupdf.TOOLS.set_graphics_min_line_width(aa["graphics_min_line_width"])
         doc.close()
     return image if image.size == (w, h) else image.resize((w, h), Image.LANCZOS)
 

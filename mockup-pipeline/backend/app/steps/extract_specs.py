@@ -38,7 +38,7 @@ from app.pdf.render import pdftoppm_png
 from app.pdf import sheet as sheet_impl
 from app.pdf.sheet import Sheet, analyse, non_technical_copy, technical_copy
 from app.pdf.vector import corner_cut, corner_cut_at, dashed_lines, dieline, dieline_grids, horizontal_rules
-from app.specs.schema import CellRead, MeasuredKeyline, Num, NumList, SpecSheet
+from app.specs.schema import CellRead, MeasuredKeyline, Num, NumList, SpecSheet, Str
 from app.specs.validate import ValidationReport, ValidationRules, validate
 from app.storage import Storage
 
@@ -62,6 +62,8 @@ class ExtractSpecsInput(BaseModel):
     # The item's specs from the ERP (an SAP item-master XML, app.services.xml_spec_parser): {field: text}.
     # They win over what the table read gives; the PDF still gives everything else and the drawing.
     xml_fields: dict[str, str] = {}
+    # A shrink sleeve (app.services.sleeve): its size comes with xml_fields; the artwork is one rectangle.
+    sleeve: bool = False
 
 
 class ExtractSpecsOutput(BaseModel):
@@ -75,6 +77,7 @@ class ExtractSpecsOutput(BaseModel):
     mode: str = "layers"  # app.pdf.sheet mode
     repeats: int = 1  # separation: dielines of this size on the sheet (print repeats)
     roll_form: bool = False  # the table says Roll Form: the dieline is one print repeat, not a pouch
+    sleeve: bool = False  # a shrink sleeve: front_box_pt is the printed sleeve (printed width x height)
     text_source: str = "ocr"  # "pdf_text" when the table was read from the PDF's live text
     layout: SheetLayout = SheetLayout(kind="single")
     sheet_box_pt: tuple[float, float, float, float] | None = None  # the dieline's outer rectangle / TrimBox
@@ -624,6 +627,8 @@ def run(
     open_w = _spec_value(reads, inp.corrections, "pouch_open_width_mm")
     form = inp.corrections.get("spec_table.pouch_or_roll_form") or (reads["pouch_or_roll_form"].value if "pouch_or_roll_form" in reads else None)
     roll = "roll" in str(form or "").lower()
+    if inp.sleeve:
+        return _sleeve_out(inp, profile, rules, storage, sheet, reads, inks, renders, source, used_fallback, pending, tpl)
     labels = dimension_labels(inp.pdf_path, renders.dims, renders.dims_box, sheet.drawing_box(sheet.trim), profile)
     layout, front_box, problem, image = SheetLayout(kind="single"), None, None, None
     on_side = False
@@ -824,6 +829,59 @@ def run(
         name: CellRead(raw=r.raw, confidence=r.confidence, format_ok=r.format_ok, bbox_px=r.bbox, source=r.source, reason=r.reason)
         for name, r in reads.items()
     }
+    return out
+
+
+def _sleeve_out(inp: "ExtractSpecsInput", profile: PdfProfile, rules: ValidationRules, storage: Storage, sheet: Sheet, reads, inks,
+                renders: "Renders", source: str, used_fallback: list, pending, tpl) -> "ExtractSpecsOutput":
+    """A shrink sleeve: no pouch layout or keyline to measure. The printed sleeve is one rectangle on the
+    sheet (app.services.sleeve.artwork_box); its own size is the printed width x the sleeve height."""
+    from app.services import sleeve as sleeve_impl
+
+    if pending is not None:
+        try:
+            pending.result()
+        except Exception:  # noqa: BLE001 - the background read is only for previews here
+            pass
+    table = assemble.spec_table(reads, inks, tpl)
+    width, height = table.pouch_open_width_mm.value, table.pouch_height_mm.value
+    box = sleeve_impl.artwork_box(inp.pdf_path, sheet.trim, width, height)
+    exact = lambda v: Num(value=round(v, 3), confidence=0.99)  # noqa: E731
+    lay = sleeve_impl.layflat(box.width_mm, float(inp.xml_fields.get("sleeve_layflat_mm") or 0) or None)
+    text = lambda v: Str(value=v, confidence=1.0)  # noqa: E731
+    code = inp.xml_fields.get("item_no") or profile.item_code_from_filename(inp.filename)
+    table = table.model_copy(update={"pouch_open_width_mm": exact(box.width_mm), "pouch_closed_width_mm": exact(box.width_mm),
+                                     "pouch_height_mm": exact(box.height_mm), "sleeve_layflat_mm": exact(lay),
+                                     # (not the pouch table's options: set as read, never parsed against them)
+                                     "pouch_or_roll_form": text("Shrink Sleeve"), "sealing_type": text("Shrink Sleeve"),
+                                     **({"item_no": text(code)} if code and not table.item_no.value else {}),
+                                     **({"item_name": text(inp.xml_fields["item_name"])} if inp.xml_fields.get("item_name") and not table.item_name.value else {})})
+    zero = Num(value=0.0, confidence=0.99)
+    measured = MeasuredKeyline.model_validate({
+        **{n: {"value": None, "confidence": 0.0} for n, f in MeasuredKeyline.model_fields.items() if f.annotation is Num},
+        **{n: {"value": [], "confidence": 0.0} for n, f in MeasuredKeyline.model_fields.items() if f.annotation is NumList},
+        "zipper_line_drawn": {"value": False, "confidence": 0.99},
+    }).model_copy(update={"overall_width_mm": exact(box.width_mm), "overall_height_mm": exact(box.height_mm),
+                          "bleed_left_mm": zero, "bleed_right_mm": zero, "bleed_top_mm": zero, "bleed_bottom_mm": zero})
+    remarks = table.raw_remarks.value or ""
+    sheet_out = SpecSheet(spec_table=table, measured_keyline=measured, linked_codes={}, linked_code_confidence={},
+                          reference_codes=profile.parse_reference_codes(remarks))
+    spec_key = f"{inp.key_prefix}/spec_table.png"
+    if renders.spec is not None:
+        storage.put_bytes(spec_key, _png(renders.spec), "image/png")
+    dims_key = storage.put_bytes(f"{inp.key_prefix}/dimensions.png", _png(renders.dims), "image/png")
+    out = ExtractSpecsOutput(
+        sheet=sheet_out, report=ValidationReport(issues=[], bleed_used={}, bleed_source="default"), cells={},
+        fallback_fields=used_fallback, spec_image_key=spec_key, dimension_image_key=dims_key,
+        tesseract_version=_tesseract_version(profile, source), mode=sheet.mode, repeats=1, roll_form=False, sleeve=True,
+        text_source=source, layout=SheetLayout(kind="single", message="shrink sleeve"),
+        sheet_box_pt=sheet.trim.as_tuple(), front_box_pt=box.as_tuple(),
+    )
+    out.report = validate(sheet_out, filename_code=profile.item_code_from_filename(inp.filename), trim_width_mm=box.width_mm,
+                          trim_height_mm=box.height_mm, item_code_pattern=profile.item_code_pattern, rules=rules, page_mode=False,
+                          roll_form=True)  # (one printed area, as a roll repeat: no pouch seal / gusset checks)
+    out.cells = {name: CellRead(raw=r.raw, confidence=r.confidence, format_ok=r.format_ok, bbox_px=r.bbox, source=r.source, reason=r.reason)
+                 for name, r in reads.items()}
     return out
 
 
