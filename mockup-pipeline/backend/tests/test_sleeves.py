@@ -57,6 +57,39 @@ def test_sheet_guides_are_taken_out_before_rendering(tmp_path):
         assert lines and all(i[1].y == i[2].y == 20 for i in lines)  # the crop mark stays (closed: there and back)
 
 
+def test_proof_note_leader_is_taken_out_artwork_stays(tmp_path):
+    """FGPO5262: a proof note's leader, a thin filled sliver from the blank margin onto the print (outlined
+    with the note's lettering in one path), goes; a thin line inside the print and artwork bleeding 3 mm past
+    the edge stay."""
+    import pymupdf
+
+    from app.pdf.layers import Box
+
+    src, out = tmp_path / "sheet.pdf", tmp_path / "clean.pdf"
+    mm = 72 / 25.4
+    doc = pymupdf.open()
+    page = doc.new_page(width=400, height=300)
+    page.draw_rect(pymupdf.Rect(100, 50, 380, 250), color=None, fill=(0.2, 0.4, 0.3))  # the print
+    shape = page.new_shape()  # the note's lettering (a block in the margin) and its leader, filled as one path
+    shape.draw_rect(pymupdf.Rect(10, 140, 40, 160))
+    shape.draw_rect(pymupdf.Rect(40, 149.5, 160, 150.5))
+    shape.finish(color=None, fill=(0, 0, 0))
+    shape.commit()
+    page.draw_rect(pymupdf.Rect(200, 200, 300, 201), color=None, fill=(1, 1, 1))  # a thin rule in the design
+    page.draw_rect(pymupdf.Rect(100 - 3 * mm, 100, 140, 101), color=None, fill=(1, 1, 0))  # artwork bleeding 3 mm
+    doc.save(src)
+    box = Box(100, 50, 380, 250)  # (page 300 high: the same either way up)
+    assert sleeve.has_callout_leaders(src, box)
+    sleeve.without_guides(src, [], out, crossing=box)
+    assert not sleeve.has_callout_leaders(out, box)
+    with pymupdf.open(out) as clean:
+        rects = [it[1] for d in clean[0].get_drawings() for it in d["items"] if it[0] == "re"]
+        assert any(abs(r.x0 - 200) < 1 and abs(r.y0 - 200) < 1 for r in rects)  # the thin rule in the design
+        assert any(r.x0 < 100 and r.x1 > 130 for r in rects)  # the bleeding artwork
+        assert any(abs(r.x0 - 10) < 1 for r in rects)  # the note's lettering (outside the print, harmless)
+        assert not any(r.x0 < 50 and r.x1 > 150 for r in rects)  # the leader
+
+
 def _upload(c, path, **form):
     with open(path, "rb") as fh:
         r = c.post("/api/uploads", files={"files": (path.name, fh, "application/pdf")}, data={"workflow": "phase4", **form}, headers=H)

@@ -364,6 +364,38 @@ def test_dieline_drawn_in_the_artwork_is_removed():
     assert drop_drawn_rules(dark, 100, 75, 75)[1] == 0
 
 
+@needs_poppler
+def test_annotation_red_note_goes_red_on_the_print_stays(tmp_path):
+    """FGPO5686: a proof note in annotation red (C0 M100 Y100 K0) on the blank sheet is removed; the same
+    red drawn on the printed artwork (its "100" icon) is the design's and stays."""
+    import pymupdf
+
+    from app.storage import LocalStorage
+
+    pdf = tmp_path / "FGPO9999_Front.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=400, height=300)
+    page.draw_rect(pymupdf.Rect(150, 50, 380, 280), color=None, fill=(0.9, 0.85, 0.7))  # the print (cream)
+    page.draw_rect(pymupdf.Rect(240, 140, 280, 180), color=None, fill=(0.4, 0.3, 0.2))  # some artwork
+    doc.save(pdf)
+    # the reds, in CMYK 0 100 100 0 as proofs paint them: a thin note on the blank margin, a thin icon on the print
+    data = pdf.read_bytes()
+    reds = b"q 0 1 1 0 k 20 150 100 2 re f 20 160 100 2 re f 170 200 30 2 re f 170 206 30 2 re f Q\n"
+    doc = pymupdf.open(pdf)
+    p = doc[0]
+    xref = p.get_contents()[0]
+    doc.update_stream(xref, doc.xref_stream(xref) + b"\n" + reds)
+    doc.save(tmp_path / "s.pdf")
+    st = LocalStorage(tmp_path / "store")
+    out = trim_artwork.run(trim_artwork.TrimArtworkInput(pdf_path=tmp_path / "s.pdf", filename=pdf.name, panel="front", key_prefix="j"), PdfProfile(), st)
+    a = np.asarray(Image.open(st.path(out.bleed_key)).convert("RGB")).astype(int)
+    k = a.shape[1] / 400
+    at = lambda x, y: a[int((300 - y) * k), int(x * k)]  # noqa: E731 - PDF points (y up) to pixels
+    assert at(60, 151).min() > 230  # the note on the margin: gone
+    r, g, b = at(185, 201)
+    assert r > 150 and g < 100 and b < 100  # the icon on the print: still red
+
+
 def test_knocked_out_line_is_bridged_sharp():
     """A fold line knocked out of the print (FGSL4089) is filled straight across: a stroke it cut through
     carries on at full strength (a blur left it grey and smeared), the colour round it is untouched."""

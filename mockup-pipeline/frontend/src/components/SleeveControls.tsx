@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import type { Sleeve } from "../three/types";
 
-const BODY_TOP: Record<string, number> = { bottle: 0.9, jar: 0.88, pot: 0.76 }; // a sleeve moved up stops under the cap / lid
+const BODY_TOP: Record<string, number> = { bottle: 0.9, jar: 0.88, pot: 0.8 }; // a sleeve moved up stops under the cap / lid
 const MATERIALS: [Sleeve["material"], string][] = [["metal", "Metal"], ["plastic", "Plastic (opaque)"], ["clear", "Clear PET"], ["glass", "Glass"]];
 
 type Look = Pick<Sleeve, "front_center_pct" | "sleeve_from" | "cap_color" | "body_color" | "material" | "container_height_mm">;

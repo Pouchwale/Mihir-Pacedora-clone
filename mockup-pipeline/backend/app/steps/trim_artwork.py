@@ -124,13 +124,20 @@ def run(inp: TrimArtworkInput, profile: PdfProfile, storage: Storage) -> TrimArt
                 annotation = set()
         strip_artwork = {*sheet.inks.technical, *annotation}
         prepared = Path(tmp) / "artwork.pdf"
+        # the proof notes' leader lines that run in from the margin onto the print (FGPO5262's "Text Color
+        # Change Into White"): taken out of the page before it is rendered
+        from app.services import sleeve as sleeve_impl
+
+        src = inp.pdf_path
+        if sleeve_impl.has_callout_leaders(inp.pdf_path, trim):
+            src = sleeve_impl.without_guides(inp.pdf_path, [], Path(tmp) / "no_callouts.pdf", crossing=trim)
         if sheet.mode == "layers":
             layers = sheet.texture_layers(profile)
             require_layers(facts, layers)
             # (technical ink drawn on an artwork layer is stripped, not just switched off: switched off it
             # still knocks out the print under it, and the white hairlines it left were blurred over later,
             # smearing text across FGSL4089's nutrition table)
-            changed = write_layer_copy(inp.pdf_path, prepared, layers, trim, suppress=suppress_artwork,
+            changed = write_layer_copy(src, prepared, layers, trim, suppress=suppress_artwork,
                                        strip=(annotation | set(sheet.inks.technical)) or None)
             if sheet.inks.technical:
                 changed.append("strip:" + "+".join(sorted(sheet.inks.technical)))
@@ -138,7 +145,7 @@ def run(inp: TrimArtworkInput, profile: PdfProfile, storage: Storage) -> TrimArt
             # Technical ink and varnish are painted on top of the artwork: remove them from the page
             # (a "no ink" tint would still knock out white). White underlay prints below: no ink.
             layers = []
-            base = non_technical_copy(inp.pdf_path, prepared, sheet.inks.technical) if sheet.inks.technical else inp.pdf_path
+            base = non_technical_copy(src, prepared, sheet.inks.technical) if sheet.inks.technical else src
             changed = write_layer_copy(base, prepared, None, trim, suppress=suppress_artwork, strip=annotation or None)
             if sheet.inks.technical:
                 changed.append("strip:" + "+".join(sorted(sheet.inks.technical)))
@@ -148,6 +155,18 @@ def run(inp: TrimArtworkInput, profile: PdfProfile, storage: Storage) -> TrimArt
             # hairlines (FGPO4004). Fill where the red was from the artwork around it.
             marks = pdftoppm_png(red_only, Path(tmp) / "annotation.png", profile.texture_dpi, icc, exact_size=True).resize(image.size)
             mask = np.asarray(marks.convert("L")) < 245
+            # A proof note sits on the blank sheet; the same red with print all round it is the design's own
+            # (FGPO5686's red "100" icon in "The 100% Promise!", erased with the note). Red on print goes
+            # back, laid over the artwork as printed (multiplied: on white it is exactly the red).
+            paper = np.asarray(image.convert("RGB")).min(axis=2) >= 245
+            ring = safety.dilate(mask, 25) & ~safety.dilate(mask, 5)
+            on_paper = safety._box_sum(paper & ring, 41) / np.maximum(safety._box_sum(ring, 41), 1)
+            design = safety.dilate(mask & (on_paper < 0.5), 3)
+            if design.any():
+                red = np.asarray(marks.convert("RGB")).astype(np.float32) / 255
+                art = np.asarray(image.convert("RGB")).astype(np.float32)
+                image = Image.fromarray(np.where(design[..., None], art * red, art).clip(0, 255).astype(np.uint8))
+                mask &= ~design
             # only where the removal really left paper white (a knockout): elsewhere the print under the
             # red is intact, and filling it smeared FGSL3991's nutrition panel in grey bars
             knock = mask & (np.asarray(image.convert("RGB")).min(axis=2) >= 245)
@@ -165,6 +184,11 @@ def run(inp: TrimArtworkInput, profile: PdfProfile, storage: Storage) -> TrimArt
                 drawn = np.asarray(marks.resize(image.size)) < 200
                 # hairlines only: technical paint wider than ~1.2 mm is not a dieline over the art
                 thin = safety.thin_parts(drawn, 15)
+                # a line stands on its own; thin slivers inside a large painted area are not lines (FGPO5262's
+                # green brush shape uses a colour holding the technical ink at 0 %: the gaps between the white
+                # letters set in it read as "marks", the letters as knockouts, and were smeared)
+                big = 2 * round(image.width / trim.width_mm * 6) + 1  # ~12 mm window
+                thin &= safety._box_sum(drawn, big) < 0.5 * big * big
                 if thin.any() and flattened_images(inp.pdf_path, sheet.inks.technical):
                     # (bridged straight across, not blurred: the print a mark crossed carries on sharp)
                     image = safety.bridge(image, safety.dilate(thin, 3))
@@ -174,13 +198,21 @@ def run(inp: TrimArtworkInput, profile: PdfProfile, storage: Storage) -> TrimArt
                     # (colour on both sides: paper white beside the line too is the artwork's own white,
                     # e.g. a QR code's margin under a seal line, which a fill would smear)
                     white = rgb.min(axis=2) >= 250
-                    free = ~drawn
+                    # (the marks are rendered apart from the artwork and can land a pixel off it: a gap lying
+                    # just beside its mark stayed white, FGPO5686's dashed seal lines over the cream)
+                    on_mark = safety.dilate(thin, 5)
+                    free = ~safety.dilate(drawn, 5)
                     white_near = safety._box_sum(white & free, 15) / np.maximum(safety._box_sum(free, 15), 1)
-                    candidate = thin & white & (white_near < 0.15)
+                    # a knockout leaves its mark white nearly all along (dashes, a zipper's zig-zag, a fold
+                    # line); where a mark only crosses white text, most of the mark round it lies on colour
+                    # (FGPO5262's "Direction For Use:" was taken for a knockout and smeared)
+                    k = 2 * round(image.width / trim.width_mm) + 1  # ~2 mm along the mark
+                    white_on_mark = safety._box_sum(thin & safety.dilate(white, 5), k) / np.maximum(safety._box_sum(thin, k), 1)
+                    candidate = on_mark & white & (white_near < 0.15) & (white_on_mark >= 0.6)
                     if candidate.any():  # (none on most sheets: the fill is skipped)
                         # the knocked-out gap along the line (with its anti-aliased edges), bridged straight
                         # across from the print either side: text it cut through carries on sharp
-                        gap = safety.dilate(thin & white & safety.dilate(candidate, 61), 3) & thin
+                        gap = safety.dilate(candidate, 3) & on_mark
                         image = safety.bridge(image, gap)
 
     key = f"{inp.key_prefix}/{_name(item, 'sheet' if sheet.mode == 'separation' else inp.panel, 'bleed')}"

@@ -145,9 +145,11 @@ def bridge(image: Image.Image, mask: np.ndarray, max_px: int = 24) -> Image.Imag
         for i in np.flatnonzero(m.any(axis=1)):
             edges = np.flatnonzero(np.diff(np.r_[0, m[i].view(np.uint8), 0]))
             for s, e in zip(edges[::2], edges[1::2]):
-                if e - s > max_px or s == 0 or e >= n:
+                if e - s > max_px or (s == 0 and e >= n):
                     continue
-                left, right = v[i, s - 1], v[i, e]
+                # (a line on the very edge of the print, a cut or side-seal line, has print on one side only)
+                left = v[i, s - 1] if s > 0 else v[i, e]
+                right = v[i, e] if e < n else v[i, s - 1]
                 t = (np.arange(s, e, dtype=np.float32) - (s - 1)) / (e - s + 1)
                 v[i, s:e] = left * (1 - t[:, None]) + right * t[:, None]
                 m[i, s:e] = False

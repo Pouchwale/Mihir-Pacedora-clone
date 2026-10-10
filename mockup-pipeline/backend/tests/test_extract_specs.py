@@ -320,3 +320,26 @@ def test_illustrator_front_extraction(tmp_path):
     assert m.width_segments_mm.value == [10, 140, 10] and m.height_segments_mm.value == [10, 12, 13, 195, 10]
     assert m.zipper_line_drawn.value and m.zipper_y_mm == pytest.approx([28.0], abs=1.0)
     assert not out.report.needs_review, [i for i in out.report.issues if i.severity == "review"]
+
+
+def test_layered_sheet_table_below_the_drawing_is_found(tmp_path):
+    """FGPO5343: a portrait layered sheet holds its spec table below the drawing, not to its left; the
+    left strip is a sliver, and reading it left every spec blank (and the job to a guess)."""
+    from types import SimpleNamespace
+
+    import pymupdf
+
+    from app.steps.extract_specs import _spec_box
+
+    pdf = tmp_path / "sheet.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page(width=1000, height=1800)  # page y down: the drawing at the top, the table under it
+    for i, line in enumerate(["Pouch height: 200mm", "Pouch Closed width: 155mm", "Sealing Type: Centre seal", "Pouch/Roll Form: Pouch Form"]):
+        page.insert_text((80, 1100 + 30 * i), line, fontsize=14)
+    doc.save(pdf)
+    facts = read_facts(pdf)
+    trim = Box(60, 1000, 940, 1700)  # PDF y up: the drawing in the top part of the page
+    sheet = SimpleNamespace(mode="layers", facts=facts, trim=trim)
+    box = _spec_box(sheet, PdfProfile(), trim, pdf)
+    assert box.y1 <= trim.y0 and box.width_mm > 300  # below the drawing, the page's width
+    assert _spec_box(sheet, PdfProfile(), trim).x1 <= trim.x0  # (no PDF to count words in: the left strip, as before)

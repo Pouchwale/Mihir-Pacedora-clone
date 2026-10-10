@@ -129,8 +129,12 @@ def _dims_box(sheet: Sheet, profile: PdfProfile) -> Box:
 def _spec_box(sheet: Sheet, profile: PdfProfile, dims: Box, pdf_path: Path | None = None, non_technical: Path | None = None) -> Box:
     m, t = sheet.facts.media_box, sheet.trim
     if sheet.mode == "layers":
+        # (the table is left of the drawing on landscape sheets, below it on portrait ones (FGPO5343):
+        # the side holding the most live text, the left one when nothing can be counted)
         margin = profile.dimension_margin_mm / PT_TO_MM
-        return Box(m.x0, m.y0, max(m.x0 + 1, t.x0 - margin), m.y1)
+        dims = Box(t.x0 - margin, t.y0 - margin, t.x1 + margin, t.y1 + margin)
+        if pdf_path is None:
+            return Box(m.x0, m.y0, max(m.x0 + 1, dims.x0), m.y1)
     if sheet.mode == "page":
         return m  # plain artwork: a table, if any, could be anywhere
     # The table is beside the drawing: left, right, above or below it. The strip that holds it is

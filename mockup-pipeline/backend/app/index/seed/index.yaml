@@ -935,16 +935,16 @@ container:
   ghee_pot:
     name: Ghee pot
     shape: pot
-    description: Ghee matka - a bulging body under a wide ribbed screw lid
+    description: Ghee jar (measured from a 3D model) - rounded base, straight belly, round shoulder, smooth wide lid
     priority: 15
     match_words: ['ghee']
-    sleeve_from: 0.06
-    sleeve_to: 0.72
-    min_height_ratio: 0.85
+    sleeve_from: 0.04
+    sleeve_to: 0.78
+    min_height_ratio: 1.08
     lid: true
-    neck_ratio: 0.8
+    neck_ratio: 0.86
     body_color: "#f7f6f2"
-    cap_color: "#f2c200"
+    cap_color: "#f5c800"
     material: plastic
   jar:
     name: Jar

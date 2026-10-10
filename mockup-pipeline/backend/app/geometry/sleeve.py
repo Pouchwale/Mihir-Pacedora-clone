@@ -50,7 +50,7 @@ def pick_container(containers: dict[str, Container], chosen: str | None, text: s
 
 # How high each shape's body goes (a share of the container height): a cap or lid sits above it, and a
 # sleeve moved up stops there. (The 3D model's bodyTop in pouch.ts draws the same.)
-BODY_TOP = {"bottle": 0.9, "jar": 0.88, "pot": 0.76}
+BODY_TOP = {"bottle": 0.9, "jar": 0.88, "pot": 0.8}
 
 
 def build(containers: dict[str, Container], chosen: str | None, text: str, printed_width: float, height: float,

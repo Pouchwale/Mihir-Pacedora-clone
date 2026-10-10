@@ -909,9 +909,14 @@ function containerRadius(s: Sleeve, y: number): number {
       return R * (1 - (1 - s.neck_ratio) * ease(0.56, 0.84, t));
     case "jar": // a wide body with a short shoulder under the lid
       return R * (1 - (1 - s.neck_ratio) * ease(0.84, 0.88, t));
-    case "pot": { // a ghee matka: narrower base, swelling to its widest at about 40 %, drawn in under the lid
-      const u = Math.min(1, t / 0.76);
-      return R * (s.neck_ratio + (1 - s.neck_ratio) * Math.pow(Math.sin(Math.PI * Math.min(1, u / 0.98)), 0.75));
+    case "pot": { // a ghee jar, measured from its 3D model (Tripo "Gowardhan ghee jar"): the base rounding
+      // out from 86 % to the full width by a third of the height, a straight belly, then a round shoulder
+      // in to the neck (neck_ratio) at the body's top, 80 % of the jar's height; the lid sits above
+      const u = Math.min(1, t / 0.8), n = s.neck_ratio;
+      if (u < 0.4) { const k = u / 0.4; return R * (0.86 + 0.14 * Math.sin((k * Math.PI) / 2) ** 0.7); }
+      if (u < 0.86) return R;
+      const k = (u - 0.86) / 0.14; // shoulder: a quarter round from the belly into the neck
+      return R * (n + (1 - n) * Math.sqrt(Math.max(0, 1 - k * k)));
     }
     default: // tin: a straight wall between its rolled rims (the rims are added proud of it)
       return R;
@@ -921,7 +926,7 @@ function containerRadius(s: Sleeve, y: number): number {
 /** How high the body outline goes (a bottle's cap and a jar's / pot's lid sit above it). Sleeve.BODY_TOP on the server. */
 function bodyTop(s: Sleeve): number {
   const H = s.container_height_mm;
-  return H * ({ bottle: 0.9, jar: 0.88, pot: 0.76 } as Record<string, number>)[s.shape] || H;
+  return H * ({ bottle: 0.9, jar: 0.88, pot: 0.8 } as Record<string, number>)[s.shape] || H;
 }
 
 /** Shading baked into a sphere picture (a matcap): metal and plastic still look like themselves under
@@ -935,7 +940,7 @@ function matcap(kind: "metal" | "plastic"): THREE.Texture {
     const g = ctx.createRadialGradient(100, 82, 4, 128, 128, 132);
     const stops: [number, string][] = kind === "metal"
       ? [[0, "#ffffff"], [0.18, "#f1f3f5"], [0.45, "#b9bec5"], [0.7, "#e4e7ea"], [0.86, "#8d939b"], [1, "#4d535b"]] // a bright sky, a dark horizon band
-      : [[0, "#ffffff"], [0.3, "#f2f2f2"], [0.75, "#d0d0d0"], [1, "#9a9a9a"]];
+      : [[0, "#ffffff"], [0.4, "#fbfbfb"], [0.78, "#e8e8e8"], [1, "#c6c6c6"]]; // (plastic keeps its true colour: darker edges turned yellow olive)
     for (const [o, col] of stops) g.addColorStop(o, col);
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, 256, 256);
@@ -992,7 +997,9 @@ function containerMaterial(g: GeometrySpec, color: string, kind: string): THREE.
   if (kind === "clear") // clear PET: a water bottle
     return new THREE.MeshPhysicalMaterial({ color, roughness: 0.03, transmission: 0.96, thickness: 1.2, ior: 1.45, clearcoat: 1, transparent: true, side: THREE.DoubleSide,
       envMap, envMapIntensity: 1.2 });
-  return new THREE.MeshPhysicalMaterial({ color, roughness: 0.28, clearcoat: 0.7, clearcoatRoughness: 0.1, envMap, envMapIntensity: 0.9 });
+  // moulded PP / HDPE: lit by the scene's own soft studio (the dark metal studio turned a yellow lid
+  // olive), a satin surface under a light gloss, no glow (a glow flattened the shading into a cartoon)
+  return new THREE.MeshPhysicalMaterial({ color, roughness: 0.38, clearcoat: 0.35, clearcoatRoughness: 0.25, specularIntensity: 0.5 });
 }
 
 /** A turned shape from (radius, y) points, base to top. */
@@ -1002,16 +1009,41 @@ function lathe(points: [number, number][], segments = 160): THREE.LatheGeometry 
 
 /** A turned shape with fine vertical ribs pressed into its side between heights `from` and `to` (a screw
  *  cap's or a lid's knurling): `ribs` round it, each `depth` mm proud. */
-function knurled(points: [number, number][], from: number, to: number, ribs: number, depth: number): THREE.LatheGeometry {
-  const geo = lathe(points, Math.max(240, ribs * 4));
+function knurled(points: [number, number][], from: number, to: number, ribs: number, depth: number, broad = false): THREE.LatheGeometry {
+  // the profile needs points all along the ribbed band (with only its two ends there, the ribs faded to
+  // nothing at both and were never drawn): each segment is cut into steps of 0.4 mm
+  const dense: [number, number][] = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    const [r0, y0] = points[i - 1], [r1, y1] = points[i];
+    const steps = Math.max(1, Math.min(200, Math.ceil(Math.hypot(r1 - r0, y1 - y0) / 0.4)));
+    for (let k = 1; k <= steps; k++) dense.push([r0 + ((r1 - r0) * k) / steps, y0 + ((y1 - y0) * k) / steps]);
+  }
+  points = dense;
+  const geo = lathe(points, Math.max(240, ribs * 16));
   const pos = geo.getAttribute("position") as THREE.BufferAttribute;
   for (let k = 0; k < pos.count; k++) {
     const y = pos.getY(k);
     if (y < from || y > to) continue;
     const x = pos.getX(k), z = pos.getZ(k), r = Math.hypot(x, z);
     if (r < 1e-3) continue;
-    const f = 1 + (depth * Math.max(0, Math.cos(Math.atan2(x, z) * ribs))) / r;
+    const c = Math.cos(Math.atan2(x, z) * ribs);
+    // fine ribs: sharp ridges; broad flutes (a ghee lid's): rounded lobes with narrow grooves between
+    const ease = Math.min(1, (y - from) / 2, (to - y) / 2); // flutes fade in and out at their ends
+    const f = 1 + (depth * ease * (broad ? Math.sqrt((1 + c) / 2) : Math.max(0, c))) / r;
     pos.setXYZ(k, x * f, y, z * f);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** Soft vertical facets round a turned shape (a ghee pot's moulded panels): its radius pressed in a little
+ *  between `n` flat-ish panels. */
+function faceted(geo: THREE.LatheGeometry, n: number, amount: number): THREE.LatheGeometry {
+  const pos = geo.getAttribute("position") as THREE.BufferAttribute;
+  for (let k = 0; k < pos.count; k++) {
+    const x = pos.getX(k), z = pos.getZ(k);
+    const f = 1 - (amount * (1 - Math.cos(Math.atan2(x, z) * n))) / 2; // smooth panels: no creases between them
+    pos.setXYZ(k, x * f, pos.getY(k), z * f);
   }
   geo.computeVertexNormals();
   return geo;
@@ -1144,7 +1176,7 @@ async function sleeveGroup(g: GeometrySpec, textures: Record<string, SceneTextur
   else outline.push([0, top]);
   const bodyMat = containerMaterial(g, s.body_color, s.material);
   bodyMat.name = "film"; // (measured as the model)
-  grp.add(new THREE.Mesh(lathe(outline), bodyMat));
+  grp.add(new THREE.Mesh(s.shape === "pot" ? faceted(lathe(outline), 12, 0) : lathe(outline), bodyMat));
   if (s.material === "clear") {
     // water inside a clear bottle, to its shoulder
     const fill = outline.filter(([, y]) => y <= 0.62 * H).map(([r, y]) => [r * 0.95, y] as [number, number]);
@@ -1157,12 +1189,17 @@ async function sleeveGroup(g: GeometrySpec, textures: Record<string, SceneTextur
   } else if (s.shape === "can") {
     grp.add(...canEnd(containerRadius(s, H), H, cap));
   } else if (s.shape === "pot") {
-    // the wide screw lid (a ghee pot's, Pacdora's plastic jars): fine vertical knurling round its side,
-    // a rounded top edge and a slightly domed top; a shadow line where it meets the pot
-    const rt = containerRadius(s, top), rl = R * 0.9, lidH = H - top;
-    const ribFrom = top + 0.14 * lidH, ribTo = H - 0.22 * lidH;
-    grp.add(new THREE.Mesh(knurled([[0, top - 1.5], [rt + 0.6, top - 1.5], [rl, top + 0.06 * lidH], [rl, ribFrom], [rl, ribTo], [rl - 0.8, H - 0.08 * lidH],
-      [rl - 3, H - 0.3], [0.5 * rl, H + 0.4], [0, H + 0.6]], ribFrom, ribTo, 120, 0.55), cap));
+    // the jar's lid, as measured: a band at its foot the neck's width (6 % of the jar's height), then the
+    // smooth lid at 89 % of the body's width, straight-sided with a well rounded top edge and a flat top
+    const rt = containerRadius(s, top), lidH = H - top;
+    const rl = R * 0.89, bandTop = top + 0.3 * lidH, er = Math.min(0.12 * lidH, 4); // edge radius
+    const band = containerMaterial(g, s.cap_color, "plastic");
+    if ("color" in band) band.color.multiplyScalar(0.85);
+    grp.add(new THREE.Mesh(lathe([[rt - 0.5, top - 1.2], [rt + 0.3, top - 0.6], [rt + 0.3, bandTop], [rt - 0.2, bandTop]], 160), band));
+    const lid: [number, number][] = [[rt - 0.2, bandTop], [rl - 0.6, bandTop], [rl, bandTop + 0.8], [rl, H - er]];
+    for (let i = 1; i <= 12; i++) { const a = (i / 12) * (Math.PI / 2); lid.push([rl - er + er * Math.cos(a), H - er + er * Math.sin(a)]); }
+    lid.push([0.6 * rl, H + 0.2], [0, H + 0.3]);
+    grp.add(new THREE.Mesh(lathe(lid, 200), cap));
     const gap = containerMaterial(g, "#3a3a3a", "plastic");
     const shadow = new THREE.Mesh(new THREE.TorusGeometry(rt + 0.4, 0.45, 8, 160), gap);
     shadow.rotation.x = Math.PI / 2;
@@ -1187,7 +1224,7 @@ async function sleeveGroup(g: GeometrySpec, textures: Record<string, SceneTextur
   const y0 = s.sleeve_from * H, y1 = Math.min(s.sleeve_to * H, top);
   const band: [number, number][] = [];
   for (let i = 0; i <= 96; i++) { const y = y0 + ((y1 - y0) * i) / 96; band.push([containerRadius(s, y) + 0.25, y]); }
-  const geo = lathe(band);
+  const geo = s.shape === "pot" ? faceted(lathe(band), 12, 0) : lathe(band); // (shrunk onto the pot's soft facets)
   // v follows the film's length along the outline (a bottle's shoulder takes its share of the print)
   const lengths = [0];
   for (let i = 1; i < band.length; i++) lengths.push(lengths[i - 1] + Math.hypot(band[i][0] - band[i - 1][0], band[i][1] - band[i - 1][1]));

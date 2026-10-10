@@ -114,6 +114,34 @@ def guide_lines(pdf: Path, box) -> list[tuple[bool, float, float]]:
     return out
 
 
+def has_callout_leaders(pdf: Path, box) -> bool:
+    """Whether a proof note's leader runs in from the sheet's margin onto the print (`box`, PDF points, y up):
+    a thin straight piece reaching over 6 mm out past it and into it (FGPO5262's "Text Color Change Into
+    White"). No artwork starts outside the print beyond its bleed. without_guides(crossing=box) removes them."""
+    import pymupdf
+
+    mm = 72 / 25.4
+    with pymupdf.open(pdf) as doc:
+        page = doc[0]
+        inv = ~page.transformation_matrix
+        for d in page.get_drawings():
+            for it in d.get("items") or []:
+                if it[0] == "l":
+                    a, b = it[1] * inv, it[2] * inv
+                elif it[0] == "re":
+                    r = (it[1] * inv).normalize()
+                    a, b = r.top_left, r.bottom_right
+                else:
+                    continue
+                x0, x1, y0, y1 = min(a.x, b.x), max(a.x, b.x), min(a.y, b.y), max(a.y, b.y)
+                if min(x1 - x0, y1 - y0) > 1.5 * mm:
+                    continue
+                out_far = x0 < box.x0 - 6 * mm or x1 > box.x1 + 6 * mm or y0 < box.y0 - 6 * mm or y1 > box.y1 + 6 * mm
+                if out_far and x1 > box.x0 + mm and x0 < box.x1 - mm and y1 > box.y0 + mm and y0 < box.y1 - mm:
+                    return True
+    return False
+
+
 def guide_frames(pdf: Path, box) -> list[tuple[float, float, float, float]]:
     """The sheet's technical frames over the sleeve: thin stroke-only rectangles (cyan cut frame, magenta
     fold / panel frame, FGSL4042's round its front panel) spanning nearly all its height or width, which
@@ -140,12 +168,16 @@ def guide_frames(pdf: Path, box) -> list[tuple[float, float, float, float]]:
 STATE_OPS = {b"w", b"J", b"j", b"M", b"d", b"ri", b"i", b"gs", b"CS", b"cs", b"SC", b"SCN", b"sc", b"scn", b"G", b"g", b"RG", b"rg", b"K", b"k"}
 
 
-def without_guides(pdf: Path, guides: list, out: Path, frames: list | tuple = ()) -> Path:
+def without_guides(pdf: Path, guides: list, out: Path, frames: list | tuple = (), crossing=None) -> Path:
     """A copy of the sheet with its guide lines taken out (guide_lines), so the sleeve renders as printed:
     text and pictures a fold line ran over come out whole. The drawing operators are edited: a stroked
     two-point sub-path (m, l) lying on a guide is dropped, wherever it is drawn (the page or a form it
     uses; FGSL4021 strokes its fold lines among other marks in one path, so a redaction box never covers
-    the path whole, and one that merely touches takes the shapes it crosses too). Nothing else changes."""
+    the path whole, and one that merely touches takes the shapes it crosses too). Nothing else changes.
+
+    `crossing` (the print's box, PDF points y up): also drops callout leaders, any painted sub-path (stroked
+    or filled) thinner than 1.5 mm that reaches over 6 mm out past the box (beyond any bleed) and into it
+    (FGPO5262's leader, outlined and filled together with its note's lettering)."""
     from pypdf import PdfWriter
     from pypdf.generic import ContentStream, NameObject
 
@@ -155,6 +187,29 @@ def without_guides(pdf: Path, guides: list, out: Path, frames: list | tuple = ()
             if abs(p[a] - pos) < 0.6 and abs(q[a] - pos) < 0.6 and abs(min(p[b], q[b]) - lo) < 0.6 and abs(max(p[b], q[b]) - hi) < 0.6:
                 return True
         return False
+
+    MM = 72 / 25.4
+
+    def crosses(m: list[float], sub: list) -> bool:
+        if crossing is None:
+            return False
+        pts = []
+        for operands, op in sub:
+            v = [float(x) for x in operands]
+            if op == b"re":
+                pts += [apply(m, v[0], v[1]), apply(m, v[0] + v[2], v[1] + v[3])]
+            else:
+                pts += [apply(m, v[k], v[k + 1]) for k in range(0, len(v) - 1, 2)]
+        if not pts:
+            return False
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+        if min(x1 - x0, y1 - y0) > 1.5 * MM:
+            return False
+        b = crossing
+        out_far = x0 < b.x0 - 6 * MM or x1 > b.x1 + 6 * MM or y0 < b.y0 - 6 * MM or y1 > b.y1 + 6 * MM
+        reaches_in = x1 > b.x0 + MM and x0 < b.x1 - MM and y1 > b.y0 + MM and y0 < b.y1 - MM
+        return out_far and reaches_in
 
     def on_frame(m: list[float], x: float, y: float, w: float, h: float) -> bool:
         (ax, ay), (bx, by) = apply(m, x, y), apply(m, x + w, y + h)
@@ -197,7 +252,8 @@ def without_guides(pdf: Path, guides: list, out: Path, frames: list | tuple = ()
                 path.append((operands, op))
                 continue
             if path:
-                if op in (b"S", b"s"):
+                if op in (b"S", b"s") or (crossing is not None and op in (b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*")):
+                    stroke_only = op in (b"S", b"s")
                     keep, i = [], 0
                     while i < len(path):  # sub-paths: each m or re starts one
                         j = i + 1
@@ -205,9 +261,11 @@ def without_guides(pdf: Path, guides: list, out: Path, frames: list | tuple = ()
                             j += 1
                         sub = path[i:j]
                         line = [o for o in sub if o[1] != b"h"]  # (closing a two-point path draws the same line)
-                        if len(line) == 1 and line[0][1] == b"re" and on_frame(ctm, *map(float, line[0][0])):
+                        if crosses(ctm, line):
                             removed += 1
-                        elif (len(line) == 2 and line[0][1] == b"m" and line[1][1] == b"l"
+                        elif stroke_only and len(line) == 1 and line[0][1] == b"re" and on_frame(ctm, *map(float, line[0][0])):
+                            removed += 1
+                        elif (stroke_only and len(line) == 2 and line[0][1] == b"m" and line[1][1] == b"l"
                                 and on_guide(apply(ctm, *map(float, line[0][0])), apply(ctm, *map(float, line[1][0])))):
                             removed += 1
                         else:
