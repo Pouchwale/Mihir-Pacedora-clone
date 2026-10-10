@@ -20,11 +20,16 @@ def make_engine(url: str) -> Engine:
         path = url.split("///", 1)[-1]
         if path and path != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-        engine = create_engine(url, connect_args={"check_same_thread": False})
+        # timeout: a writer waits for another's lock instead of failing the job ("database is locked" took
+        # down FGPO6989 while eleven reruns wrote at once; sqlite3's default wait is 5 s)
+        engine = create_engine(url, connect_args={"check_same_thread": False, "timeout": 60})
 
         @event.listens_for(engine, "connect")
         def _fk_on(dbapi_conn, _):  # SQLite ignores foreign keys unless asked
             dbapi_conn.execute("PRAGMA foreign_keys=ON")
+            if not url.endswith(":memory:"):
+                dbapi_conn.execute("PRAGMA journal_mode=WAL")  # readers no longer block the writer (nor it them)
+                dbapi_conn.execute("PRAGMA busy_timeout=60000")
 
         return engine
     return create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5)

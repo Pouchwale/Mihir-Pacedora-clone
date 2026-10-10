@@ -63,11 +63,9 @@ export default function SharePage() {
         backdropFilter: "blur(12px)", position: "sticky", top: 0, zIndex: 100,
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ width: 32, height: 32, borderRadius: 8, background: "linear-gradient(135deg,#3b82f6,#8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 800, color: "#fff" }}>
-            3D
-          </div>
+          <img src="/gp3-mark.png" alt="Gujarat Print Pack" style={{ width: 32, height: 32, borderRadius: 8, objectFit: "cover" }} />
           <div>
-            <div style={{ color: "#fff", fontWeight: 700, fontSize: 15 }}>{job?.item_code || "3D Pouch Mockup"}</div>
+            <div style={{ color: "#fff", fontWeight: 700, fontSize: 15 }}>{job?.item_code || "GP3 Mockup"}</div>
             <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 11 }}>{job?.client_name ? `${job.client_name} · ` : ""}Interactive Preview</div>
           </div>
         </div>
@@ -108,7 +106,7 @@ export default function SharePage() {
       </main>
 
       <footer style={{ padding: "12px 24px", borderTop: "1px solid rgba(255,255,255,0.06)", textAlign: "center", color: "rgba(255,255,255,0.2)", fontSize: 11 }}>
-        Powered by Pouch Mockup Pipeline · Share links expire in 7 days
+        GP3 Mockup · Gujarat Print Pack Publications Pvt. Ltd. · Share links expire in 7 days
       </footer>
     </div>
   );

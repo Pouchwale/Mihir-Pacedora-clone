@@ -15,6 +15,7 @@ import {
 } from "../three/dieline";
 import { paintWindows } from "../three/surface";
 import type { GeometrySpec, Overlay, SceneData, SceneTexture, WindowShape } from "../three/types";
+import DesignPicker from "./DesignPicker";
 
 type Dict = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -124,7 +125,11 @@ export default function KeylineWorkspace(props: Props) {
 function Studio({ job, liveScene, draft, dirty, busy, running, isAdmin, onChange, onApply, onReset, onUpload, onSwitchTo3D }: Props & { liveScene: SceneData; draft: Draft }) {
   const kl: Dict = job.outputs?.resolve_keyline?.keyline?.fields ?? {};
   const itemCode: string = job.job?.item_code ?? "dieline";
-  const view = useMemo(() => applyDraft(liveScene, draft), [liveScene, draft]);
+  // a sheet with several designs: the dieline of the one picked (the draft's edits apply to each alike)
+  const designs = liveScene.designs ?? [];
+  const [design, setDesign] = useState(1);
+  const shownScene = useMemo(() => (designs.length > 1 ? { ...liveScene, textures: designs[Math.min(design, designs.length) - 1].textures } : liveScene), [liveScene, design]); // eslint-disable-line react-hooks/exhaustive-deps
+  const view = useMemo(() => applyDraft(shownScene, draft), [shownScene, draft]);
   const g: GeometrySpec = view.geometry;
   const textures = view.textures;
   const sheet = useMemo(() => layoutPanels(textures), [textures]);
@@ -618,7 +623,7 @@ function Studio({ job, liveScene, draft, dirty, busy, running, isAdmin, onChange
     setMsg("Preparing the dieline…");
     try {
       const { svg, w, h } = await exportSvg();
-      const stem = `${itemCode}_dieline${exportArt ? "" : "_keyline"}`;
+      const stem = `${itemCode}${designs.length > 1 ? `_design${design}` : ""}_dieline${exportArt ? "" : "_keyline"}`;
       if (kind === "svg") download(new Blob([svg], { type: "image/svg+xml" }), `${stem}.svg`);
       else if (kind === "png") {
         const dpi = 300, scale = Math.min(dpi / 25.4, 16000 / Math.max(w, h));
@@ -819,6 +824,7 @@ function Studio({ job, liveScene, draft, dirty, busy, running, isAdmin, onChange
           <b>Keyline & Dieline Studio</b>
           {dirty ? <span className="badge warn">preview · not applied</span> : <span className="badge ok">saved</span>}
           {msg && <span className="small muted">{msg}</span>}
+          <DesignPicker designs={designs} picked={[design]} onChange={(p) => setDesign(p[0])} />
         </div>
         <div className="kl-actions">
           <div className="seg-toggle">

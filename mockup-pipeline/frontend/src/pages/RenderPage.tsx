@@ -34,8 +34,9 @@ export default function RenderPage() {
     window.__render = {};
     (async () => {
       try {
-        const token = new URLSearchParams(window.location.search).get("token") ?? "";
-        const res = await fetch(`/api/jobs/${jobId}/scene?token=${encodeURIComponent(token)}`);
+        const qs = new URLSearchParams(window.location.search);
+        const token = qs.get("token") ?? "", design = qs.get("design");
+        const res = await fetch(`/api/jobs/${jobId}/scene?token=${encodeURIComponent(token)}` + (design ? `&design=${encodeURIComponent(design)}` : ""));
         if (!res.ok) throw new Error(`scene ${res.status}: ${await res.text()}`);
         const data = (await res.json()) as SceneData;
         const stage = new Stage(canvas.current!);

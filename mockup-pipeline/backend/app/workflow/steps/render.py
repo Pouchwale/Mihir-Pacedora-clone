@@ -3,6 +3,7 @@
 from pydantic import BaseModel
 
 from app.render import headless, tokens
+from app.workflow.steps.texture import Output as TextureOutput
 from app.workflow.context import StepContext
 from app.workflow.steps.build_geometry import Output as GeometryOutput
 
@@ -28,6 +29,13 @@ def run(ctx: StepContext) -> Output:
     )
     base = f"{ctx.prefix}/renders"
     views = {v: ctx.storage.put_bytes(f"{base}/{v}.png", data, "image/png") for v, data in result.views.items()} if "png" in preset.formats else {}
+    # the sheet's other designs (texture step: "front@2" ...): their views too, as "<view>_design<n>"
+    textures = ctx.output("texture", TextureOutput).textures
+    for n in sorted({int(k.split("@")[1]) for k in textures if "@" in k}) if "png" in preset.formats else []:
+        more = headless.render(ctx.job.id, token, [v for v in preset.views if v != "turntable"], preset.width_px, preset.height_px,
+                               transparent=preset.background.type == "transparent", want_glb=False, turntable=None, design=n)
+        views.update({f"{v}_design{n}": ctx.storage.put_bytes(f"{base}/{v}_design{n}.png", data, "image/png") for v, data in more.views.items()})
+        ctx.log(f"design {n}: rendered {len(more.views)} view(s)", "audit")
     glb_key = ctx.storage.put_bytes(f"{base}/model.glb", result.glb, "model/gltf-binary") if result.glb else None
     mp4_key = ctx.storage.put_bytes(f"{base}/turntable.mp4", result.mp4, "video/mp4") if result.mp4 else None
     problems = [c for c in result.console if c.startswith(("error", "pageerror"))]

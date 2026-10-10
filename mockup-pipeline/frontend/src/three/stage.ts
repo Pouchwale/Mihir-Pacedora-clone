@@ -68,6 +68,27 @@ function gradientTexture(colors: string[]): THREE.CanvasTexture {
   return t;
 }
 
+/** Bounding box of the model itself: the dimension lines hung on a pouch (`userData.ui`) are left out. */
+export function solidBox(obj: THREE.Object3D): THREE.Box3 {
+  const box = new THREE.Box3();
+  obj.updateMatrixWorld(true);
+  const walk = (o: THREE.Object3D) => {
+    if (o.userData.ui) return;
+    const mesh = o as THREE.Mesh;
+    if (mesh.isMesh) box.expandByObject(mesh, false);
+    o.children.forEach(walk);
+  };
+  walk(obj);
+  return box.isEmpty() ? box.setFromObject(obj) : box;
+}
+
+/** Show or hide everything marked `userData.ui` under an object (dimension lines on the pouches). */
+function uiVisible(obj: THREE.Object3D | null, on: boolean): THREE.Object3D[] {
+  const shown: THREE.Object3D[] = [];
+  obj?.traverse((o) => { if (o.userData.ui && o.visible !== on) { shown.push(o); o.visible = on; } });
+  return shown;
+}
+
 // moves: turns along when the pouch is turned (a panorama around it / a turntable under it); else it stays put
 export type Backdrop = { kind: "white" | "gradient" | "dark" | "none" | "color" | "image"; color: string; image: HTMLImageElement | null; moves: boolean };
 // float_mm: the pouch hovers this high above the floor
@@ -97,6 +118,9 @@ export class Stage {
   // A visible studio floor (viewer option): matte, seen from above only, so the pouch stays visible from below.
   private floor: THREE.Mesh;
   private target = new THREE.Object3D();
+  /** Several designs in one frame: the pouch picked to turn / move on its own, marked by a ring on the floor. */
+  selected: THREE.Object3D | null = null;
+  private marker = new THREE.Mesh(new THREE.RingGeometry(0.94, 1, 96), new THREE.MeshBasicMaterial({ color: "#b01f24", transparent: true, opacity: 0.85, depthWrite: false }));
   /** Ask an on-demand render loop for a new frame (the viewer sets this). */
   invalidate: () => void = () => {};
 
@@ -133,7 +157,98 @@ export class Stage {
     this.floor.receiveShadow = true;
     this.floor.visible = false;
     this.floor.renderOrder = -1; // (drawn first: it fades into the background behind everything)
-    this.scene.add(this.catcher, this.blob, this.floor);
+    this.marker.rotation.x = -Math.PI / 2;
+    this.marker.visible = false;
+    this.marker.renderOrder = 2;
+    this.scene.add(this.catcher, this.blob, this.floor, this.marker);
+  }
+
+  /** The pouches standing side by side (several designs in one frame); empty for a single pouch. */
+  parts(): THREE.Object3D[] {
+    return this.object?.userData.multi ? [...this.object.children] : [];
+  }
+
+  /** The pouch under a point of the canvas (-1..1 device coordinates), when several stand in the frame. */
+  partAt(ndc: { x: number; y: number }): THREE.Object3D | null {
+    const parts = this.parts();
+    if (!parts.length) return null;
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), this.camera);
+    const hit = ray.intersectObjects(parts, true)[0];
+    let o: THREE.Object3D | null = hit?.object ?? null;
+    while (o && o.parent !== this.object) o = o.parent;
+    return o;
+  }
+
+  /** Apply a world-space transform to one pouch (about its own centre for a turn). */
+  private moveWorld(part: THREE.Object3D, m: THREE.Matrix4) {
+    part.updateMatrixWorld(true);
+    const local = part.parent!.matrixWorld.clone().invert().multiply(m).multiply(part.matrixWorld);
+    local.decompose(part.position, part.quaternion, part.scale);
+    part.updateMatrixWorld(true);
+  }
+
+  /** How high one pouch hovers: its own height when it was given one, else the frame's. */
+  partFloat(part: THREE.Object3D): number {
+    return (part.userData.float as number | undefined) ?? this.lift;
+  }
+
+  /** One pouch hovers at its own height (mm); null: back to the frame's height. */
+  setPartFloat(part: THREE.Object3D, mm: number | null) {
+    if (mm === null) delete part.userData.float;
+    else part.userData.float = Math.max(0, mm);
+    this.settle(part);
+  }
+
+  /** Stand one pouch on the floor (its lowest point at its float height) after it was turned or moved. */
+  private settle(part: THREE.Object3D) {
+    const box = solidBox(part);
+    this.moveWorld(part, new THREE.Matrix4().makeTranslation(0, this.partFloat(part) - box.min.y, 0));
+  }
+
+  /** The middle of one pouch, in the world. */
+  partCenter(part: THREE.Object3D): THREE.Vector3 {
+    return solidBox(part).getCenter(new THREE.Vector3());
+  }
+
+  /** Turn one pouch about its own centre: `dx` about the true vertical (it stays standing), `dy` tips it
+   *  toward / away from the camera (radians). */
+  turnPart(part: THREE.Object3D, dx: number, dy: number) {
+    const m = this.camera.matrixWorld.elements;
+    const right = new THREE.Vector3(m[0], 0, m[2]).normalize();
+    const up = new THREE.Vector3(0, 1, 0);
+    const q = new THREE.Quaternion().setFromAxisAngle(up, dx).multiply(new THREE.Quaternion().setFromAxisAngle(right, dy));
+    const c = this.partCenter(part);
+    this.moveWorld(part, new THREE.Matrix4().makeTranslation(c.x, c.y, c.z).multiply(new THREE.Matrix4().makeRotationFromQuaternion(q)).multiply(new THREE.Matrix4().makeTranslation(-c.x, -c.y, -c.z)));
+    this.settle(part);
+  }
+
+  /** Slide one pouch over the floor: `dx` along the screen's left-right, `dz` toward / away from the camera (mm). */
+  movePart(part: THREE.Object3D, dx: number, dz: number) {
+    const m = this.camera.matrixWorld.elements;
+    const right = new THREE.Vector3(m[0], 0, m[2]).normalize();
+    const toward = new THREE.Vector3(m[8], 0, m[10]).normalize(); // the camera looks down -z: +z comes toward it
+    const t = right.multiplyScalar(dx).addScaledVector(toward, dz);
+    this.moveWorld(part, new THREE.Matrix4().makeTranslation(t.x, 0, t.z));
+  }
+
+  /** Millimetres on the floor per pixel at the selected pouch (or the frame's centre): moves follow the pointer. */
+  mmPerPixel(target: THREE.Vector3): number {
+    const el = this.renderer.domElement;
+    const dist = this.camera.position.distanceTo(target);
+    return (2 * dist * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2)) / Math.max(1, el.clientHeight);
+  }
+
+  /** The ring under the picked pouch follows it (moves, turns, the turntable). */
+  private placeMarker() {
+    const p = this.selected;
+    this.marker.visible = !!p && !!p.parent;
+    if (!p || !p.parent) return;
+    const box = solidBox(p);
+    const size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
+    const r = Math.max(size.x, size.z) * 0.62 + 6;
+    this.marker.scale.set(r, r, 1);
+    this.marker.position.set(c.x, 0.3, c.z); // on the floor, under a floating pouch too
   }
 
   /** Viewer options: the background (studio white, gradient, dark, a colour, a picture or none = transparent)
@@ -255,11 +370,17 @@ export class Stage {
   private rest() {
     const q = this.turnable.quaternion;
     const across = new THREE.Vector3(1, 0, 0).applyQuaternion(q);
-    this.blob.visible = this.shadowOn && new THREE.Vector3(0, 1, 0).applyQuaternion(q).y > 0.97;
+    // (several pouches each turned their own way: the cast shadow alone, no shared blob)
+    this.blob.visible = this.shadowOn && !this.object?.userData.multi && new THREE.Vector3(0, 1, 0).applyQuaternion(q).y > 0.97;
     this.blob.rotation.z = Math.atan2(-across.z, across.x);
     if (!this.object) return;
     this.turnable.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(this.object);
+    if (this.object.userData.multi) {
+      // several pouches: each stands (or floats at its own height) on the floor by itself
+      for (const p of this.parts()) this.settle(p);
+      return;
+    }
+    const box = solidBox(this.object);
     this.turnable.position.y += this.lift - box.min.y;
     this.turnable.updateMatrixWorld(true);
     // a floating pouch: the soft blob under it spreads and fades with the height
@@ -297,6 +418,7 @@ export class Stage {
   }
 
   setObject(obj: THREE.Object3D) {
+    this.selected = null;
     if (this.object) {
       this.inner.remove(this.object);
       disposeObject(this.object);
@@ -352,7 +474,8 @@ export class Stage {
   /** Place the camera for a named view (or an explicit azimuth/elevation) so the object fills the frame. */
   frame(view: string | { az: number; el: number }, aspect: number, margin = 1.08) {
     const v = typeof view === "string" ? VIEWS[view] ?? VIEWS.front : view;
-    const box = new THREE.Box3().setFromObject(this.object ?? this.scene);
+    const box = this.object ? solidBox(this.object) : new THREE.Box3().setFromObject(this.scene);
+    if (this.object?.userData.multi) box.expandByPoint(new THREE.Vector3(box.min.x, 0, box.min.z)); // floating pouches: the floor stays in view
     // a floating pouch: keep the floor under it in the picture, so the gap shows
     if (this.lift > 0 && this.object) box.expandByPoint(new THREE.Vector3((box.min.x + box.max.x) / 2, 0, (box.min.z + box.max.z) / 2));
     const center = box.getCenter(new THREE.Vector3());
@@ -394,6 +517,7 @@ export class Stage {
   }
 
   render() {
+    this.placeMarker();
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -401,6 +525,9 @@ export class Stage {
   snapshot(view: string | { az: number; el: number }, w: number, h: number, transparent = false): string {
     const overlayVisible = this.overlay.visible;
     this.overlay.visible = false;
+    const sel = this.selected;
+    this.selected = null;
+    const hidden = uiVisible(this.object, false);
     const bg = this.scene.background;
     if (transparent) {
       this.scene.background = null;
@@ -413,6 +540,8 @@ export class Stage {
     const url = this.renderer.domElement.toDataURL("image/png");
     this.scene.background = bg;
     this.overlay.visible = overlayVisible;
+    this.selected = sel;
+    hidden.forEach((o) => { o.visible = true; });
     return url;
   }
 
@@ -427,6 +556,9 @@ export class Stage {
     const bg = this.scene.background;
     const clear = this.renderer.getClearColor(new THREE.Color()), clearAlpha = this.renderer.getClearAlpha();
     this.overlay.visible = false;
+    const sel = this.selected;
+    this.selected = null; // (no selection ring in a picture)
+    const hidden = uiVisible(this.object, false);
     if (kind === "png") {
       this.scene.background = null;
       this.floor.visible = false;
@@ -454,6 +586,8 @@ export class Stage {
     this.floor.visible = floorVisible;
     this.renderer.setClearColor(clear, clearAlpha);
     this.overlay.visible = overlayVisible;
+    this.selected = sel;
+    hidden.forEach((o) => { o.visible = true; });
     this.render();
     return url;
   }
@@ -461,6 +595,9 @@ export class Stage {
   async exportGLB(): Promise<ArrayBuffer> {
     if (!this.object) throw new Error("nothing to export");
     const clone = this.object.clone(true);
+    const ui: THREE.Object3D[] = [];
+    clone.traverse((o) => { if (o.userData.ui) ui.push(o); });
+    ui.forEach((o) => o.removeFromParent());
     clone.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (mesh.isMesh) mesh.material = bakeForExport(mesh.material as THREE.MeshPhysicalMaterial);

@@ -59,6 +59,7 @@ def run(ctx: StepContext) -> Output:
     if renders.mp4_key:
         files.append(ExportFile(name=f"video/{name('turntable', 'mp4')}", key=renders.mp4_key, kind="video"))
     for role, tex in textures.items():
+        role = role.replace("@", "_design")  # (the sheet's other designs: front@2 -> front_design2)
         if tex.finished_key and tex.source in ("file", "image"):
             files.append(ExportFile(name=f"textures/{values['item_no']}_{role}_finished.png", key=tex.finished_key, kind="texture"))
         files.append(ExportFile(name=f"keyline/{values['item_no']}_{role}_keyline.svg", key=tex.preview_key, kind="keyline"))

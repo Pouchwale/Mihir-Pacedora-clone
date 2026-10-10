@@ -194,7 +194,15 @@ async def upload(
     if not registered and not xml_items:
         raise HTTPException(422, "No PDF found in the upload")
 
-    roots = [] if panels_only else [f for f in registered if is_job_root(f.filename)] or registered
+    roots = [] if panels_only else [f for f in registered if is_job_root(f.filename)]
+    relinked: list[int] = []
+    if not roots and not panels_only:
+        # Only panel PDFs (a gusset, a back) uploaded on their own: they belong to the pouch whose front
+        # is numbered just before them, which takes them in again. Made into jobs of their own they came
+        # out as fake pouches (FGPO7151 "Gusset" became a wide pink pouch; FGPO7150 kept a plain gusset).
+        relinked = _relink_panels(session, registered, user)
+        if not relinked:
+            roots = registered  # no pouch to attach them to: each PDF is its own job, as before
     jobs = []
     for f in roots:
         fields = xml_items.get((f.item_code or "").upper())
@@ -212,10 +220,10 @@ async def upload(
     activity.record("uploaded", user, request, batch=batch.id, files=[up.filename for up in files], jobs=[j.id for j in jobs])
     for job in jobs:
         queue.enqueue(job.id)
-    for job_id in resumed:
+    for job_id in [*resumed, *relinked]:
         queue.enqueue(job_id, "link_panels")
 
-    return UploadResult(batch_id=batch.id, jobs=[j.id for j in jobs], resumed=resumed,
+    return UploadResult(batch_id=batch.id, jobs=[j.id for j in jobs], resumed=[*resumed, *relinked],
                         files=[{"id": f.id, "filename": f.filename, "item_code": f.item_code, "sha256": f.sha256} for f in registered],
                         xml_specs=xml_items or None)
 
@@ -232,6 +240,30 @@ def drop_auto_answers(inputs: dict | None, from_step: str | None) -> dict:
     inputs["panel_choices"] = choices
     inputs.pop("auto_reviews", None)
     return inputs
+
+
+def _relink_panels(session: Session, files: list[UploadedFile], user: User) -> list[int]:
+    """Jobs of the pouches that lone panel PDFs belong to (the front numbered 1-2 before each panel's
+    code, FGPO7150 front + FGPO7151 gusset), queued again from link_panels to take them in."""
+    out: list[int] = []
+    for f in files:
+        m = re.fullmatch(r"([A-Za-z]+)(\d+)", f.item_code or "")
+        if not m:
+            continue
+        for back in (1, 2):
+            code = f"{m.group(1)}{int(m.group(2)) - back:0{len(m.group(2))}d}"
+            job = session.scalar(select(Job).join(UploadedFile, Job.file_id == UploadedFile.id)
+                                 .where(Job.item_code == code, Job.kind == "job", Job.status != "CANCELLED").order_by(Job.id.desc()))
+            if job is None or not is_job_root(job.file.filename):
+                continue
+            if job.id not in out and job.status != "RUNNING":
+                job.control = None
+                job.inputs = drop_auto_answers(job.inputs, "link_panels")
+                job.status, job.updated_at = "QUEUED", utcnow()
+                _event(session, job, f"Panel PDF {f.filename} uploaded for this pouch; linking its panels again", user, "info")
+                out.append(job.id)
+            break
+    return out
 
 
 def _resume_waiting(session: Session, codes: set[str], exclude: set[int]) -> list[int]:
@@ -293,7 +325,7 @@ def list_jobs(status: str | None = None, q: str | None = None, limit: int = 20, 
         base = base.where(Job.created_by_id == user)
     if q:
         like = f"%{q.strip()}%"
-        base = base.where((Job.item_code.ilike(like)) | (Job.client_name.ilike(like)))
+        base = base.where((Job.item_code.ilike(like)) | (Job.client_name.ilike(like)) | Job.file_id.in_(select(UploadedFile.id).where(UploadedFile.filename.ilike(like))))
     styled = base
     if pouch_type:
         styled = styled.where(Job.pouch_type.is_(None) if pouch_type == "none" else Job.pouch_type == pouch_type)
@@ -383,20 +415,36 @@ def scene(job_id: int, request: Request, session: Session = Depends(get_session)
     adj = job_adjustments(session, job)
     # Artwork placement adjustments travel as texture transforms: the viewer, the headless renders
     # and the GLB export (KHR_texture_transform) all apply the same numbers.
-    textures = {
+    every = {
         role: {"url": url(t["web_key"]), "width_mm": t["width_mm"], "height_mm": t["height_mm"], "color": t.get("color"),
                "clear": t.get("clear", False),
                "masks": {k: url(v) for k, v in (t.get("masks") or {}).items()},
-               "transform": adj.panels[role].transform() if role in adj.panels else None,
+               "transform": adj.panels[role.split("@")[0]].transform() if role.split("@")[0] in adj.panels else None,
                # the texture before overlays / colour correction were baked in: the job page edits on top of it
                "raw_url": url(t["raw_web_key"]) if t.get("raw_web_key") else None}
         for role, t in steps["texture"].output["textures"].items()
     }
+    # Other designs on the sheet ("front@2" ...): each a full set of textures, design 1's where it has none
+    textures = {k: v for k, v in every.items() if "@" not in k}
+    numbers = sorted({int(k.split("@")[1]) for k in every if "@" in k})
+    designs = [{"index": 1, "name": "Design 1", "textures": textures}] + [
+        {"index": n, "name": f"Design {n}", "textures": {**textures, **{k.split("@")[0]: v for k, v in every.items() if k.endswith(f"@{n}")}}}
+        for n in numbers]
+    want = request.query_params.get("design")
+    if want and want.isdigit() and 1 <= int(want) <= len(designs):
+        textures = designs[int(want) - 1]["textures"]
     # The uploads the adjustments refer to (panel pictures, logos): name and preview for the job page.
     ids = {p.file_id for p in adj.panels.values() if p.file_id} | {o.file_id for p in adj.panels.values() for o in p.overlays if o.file_id}
     files = {f.id: {"filename": f.filename, "kind": panel_art.kind_of(f.filename) or "pdf", "preview_url": f"/api/uploads/{f.id}/preview"}
              for f in session.scalars(select(UploadedFile).where(UploadedFile.id.in_(ids)))} if ids else {}
-    return {"job_id": job_id, "geometry": steps["build_geometry"].output["geometry"], "textures": textures, "adjust": adj.model_dump(), "files": files}
+    geometry = steps["build_geometry"].output["geometry"]
+    printed = [t for t in steps["texture"].output["textures"].values() if not t.get("color") and not t.get("clear")]
+    if geometry["preset"].get("lighting") == "exact" and printed and all(t.get("blank") for t in printed):
+        # nothing printed (a plain pouch, FGPO7530): "exact colours" is unlit, and white film on the white
+        # studio vanished from the renders; studio light shows the film itself (its metal, its sheen)
+        geometry = {**geometry, "preset": {**geometry["preset"], "lighting": "studio_soft"}}
+    return {"job_id": job_id, "geometry": geometry, "textures": textures, "adjust": adj.model_dump(), "files": files,
+            "designs": designs if len(designs) > 1 else []}
 
 
 class ArtworkOut(BaseModel):

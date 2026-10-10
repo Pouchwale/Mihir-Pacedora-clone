@@ -12,6 +12,7 @@ import { buildPouch, measure } from "../three/pouch";
 import { Stage, VIEWS, type Backdrop, type Floor } from "../three/stage";
 import type { GeometrySpec, SceneData, SceneTexture, WindowShape } from "../three/types";
 import { applyDraft, type Draft } from "../three/draft";
+import DesignPicker from "./DesignPicker";
 
 const VIEW_LABELS: Record<string, string> = {
   front: "Front", back: "Back", three_quarter_left: "¾ left", three_quarter_right: "¾ right", top_down: "Top",
@@ -68,6 +69,7 @@ const ICONS = {
   wand: "M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8 19 13M17.8 6.2 19 5M3 21l9-9M12.2 6.2 11 5",
   free: "M3 17c3-6 6-9 9-6s5 2 9-4",
   rect: "M4 4h16v16H4z",
+  move: "M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20",
   trash: "M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6",
 };
 
@@ -81,6 +83,18 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
   const [dims, setDims] = useState(false); // dimension lines: off until asked for
   const [look, setLook] = useState<Look>("realistic");
   const [shadow, setShadow] = useState(true);
+  const [picked, setPicked] = useState<number[]>([1]); // which of the sheet's designs stand in the frame (scene.designs)
+  const [showPouch, setShowPouch] = useState(true); // roll form: the formed pouch beside the roll
+  // several designs in one frame: the pouch picked to turn / move on its own (its design number), and
+  // whether a drag turns or slides it; each pouch's place is kept through rebuilds (draft edits)
+  const [selPart, setSelPart] = useState<number | null>(null);
+  const [mode, setMode] = useState<"turn" | "move">("turn");
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const poses = useRef<{ key: string; byDesign: Map<number, THREE.Matrix4> }>({ key: "", byDesign: new Map() });
+  // per pouch (several designs): its own dimension lines on / off and float height, over the frame's
+  const partOpts = useRef<Map<number, { dims?: boolean; float?: number }>>(new Map());
+  const [, rerender] = useState(0);
   const [backdrop, setBackdropState] = useState<Backdrop>({ kind: "white", color: "#e8edf5", image: null, moves: false });
   const [floor, setFloorState] = useState<Floor>({ kind: "studio", color: "#d9d4cc", image: null, tile_mm: 300, moves: false, float_mm: 0 });
   // the Window tool: what a press on the pouch does while it is on, and the shape being drawn (screen px)
@@ -98,6 +112,7 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const firstBuild = useRef(true);
+  const builtCount = useRef(1); // pouches in the frame last time: the frame is set again when it changes
   const pendingView = useRef<string | null>(null);
   // the view last framed by the viewer itself: framed again when the canvas changes size, until the
   // user turns or zooms (a page whose layout settles after the model loads showed it tiny)
@@ -107,11 +122,18 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
   const setFloor = (f: Partial<Floor>) => setFloorState((cur) => ({ ...cur, ...f }));
 
   // The scene as adjusted by the draft (or the job's saved adjustments when there is no draft).
-  const adjusted: { geometry: GeometrySpec; textures: Record<string, SceneTexture> } = applyDraft(scene, draft ?? null);
+  const designs = scene.designs ?? [];
+  const chosen = designs.length > 1 ? picked.filter((i) => i <= designs.length) : [1];
+  // one design's scene, adjusted by the draft (the draft's placement edits apply to every design alike)
+  const adjustedFor = (n: number): { geometry: GeometrySpec; textures: Record<string, SceneTexture> } =>
+    applyDraft(designs.length > 1 ? { ...scene, textures: designs[n - 1].textures } : scene, draft ?? null);
+  const adjusted = adjustedFor(chosen[0] ?? 1);
   // "Realistic": studio lighting on the film's own material (the preset's, or soft studio light when the
   // preset prints exact colours); "Exact colours": unlit, every pixel the print colour.
   const lighting: GeometrySpec["preset"]["lighting"] = look === "exact" ? "exact" : adjusted.geometry.preset.lighting === "exact" ? "studio_soft" : adjusted.geometry.preset.lighting;
-  const effective = { ...adjusted, geometry: { ...adjusted.geometry, preset: { ...adjusted.geometry.preset, lighting } } };
+  const withLight = (a: typeof adjusted) => ({ ...a, geometry: { ...a.geometry, preset: { ...a.geometry.preset, lighting } } });
+  const effective = withLight(adjusted);
+  const chosenKey = chosen.join(",");
   const draftKey = JSON.stringify(draft ?? null);
   // the stage (renderer, camera, controls) lives as long as the job's artwork: a live edit (the sleeve
   // moved or recoloured on the job page) only rebuilds the model, and the old one stays on screen meanwhile
@@ -146,6 +168,8 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
     };
     const local = (e: PointerEvent): [number, number] => { const r = el.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
     let drawing: { kind: Tool; pts: [number, number][]; screen: [number, number][]; face: string } | null = null;
+    let part: THREE.Object3D | null = null; // the pouch being dragged on its own
+    let sliding = false;
     const finish = () => {
       const d = drawing;
       drawing = null;
@@ -183,6 +207,15 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
       }
       if (e.button !== 0 || pointers.size > 1) { last = null; return; }
       try { el.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+      wrap.current?.focus({ preventScroll: true }); // the keys work on the viewer once it is clicked
+      // several pouches: a press on one picks it (the drag turns or slides it alone); elsewhere, the whole frame
+      if (stage.parts().length) {
+        part = stage.partAt(ndc(e.clientX, e.clientY));
+        stage.selected = part;
+        setSelPart(part ? (part.userData.design as number) : null);
+        sliding = !!part && (e.shiftKey || modeRef.current === "move");
+        dirty = true;
+      } else part = null;
       last = { x: e.clientX, y: e.clientY, t: performance.now() };
       vel = { x: 0, y: 0 };
       spinRef.current = false;
@@ -198,6 +231,16 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
         return;
       }
       if (!last || pointers.size > 1) return;
+      if (part) {
+        if (sliding) {
+          const mm = stage.mmPerPixel(stage.partCenter(part));
+          stage.movePart(part, (e.clientX - last.x) * mm, (e.clientY - last.y) * mm);
+        } else stage.turnPart(part, (e.clientX - last.x) * TURN_SPEED, (e.clientY - last.y) * TURN_SPEED);
+        keepPose.current(part);
+        last = { x: e.clientX, y: e.clientY, t: performance.now() };
+        dirty = true;
+        return;
+      }
       const dx = (e.clientX - last.x) * TURN_SPEED, dy = (e.clientY - last.y) * TURN_SPEED;
       const now = performance.now(), dt = Math.max(1, now - last.t);
       const cap = (v: number) => Math.max(-0.03, Math.min(0.03, v)); // radians per frame
@@ -209,7 +252,8 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
     const up = (e: PointerEvent) => {
       pointers.delete(e.pointerId);
       if (drawing) { finish(); return; }
-      if (last && performance.now() - last.t > 80) vel = { x: 0, y: 0 }; // held still before letting go
+      if (part || (last && performance.now() - last.t > 80)) vel = { x: 0, y: 0 }; // one pouch: no momentum; held still before letting go
+      part = null;
       last = null;
       el.style.cursor = "";
     };
@@ -285,15 +329,18 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
 
   // floating higher or lower: frame the pouch and the floor under it again (the turn stays)
   const firstFloat = useRef(true);
-  useEffect(() => {
-    if (firstFloat.current) { firstFloat.current = false; return; }
+  const reframe = () => {
     const stage = stageRef.current;
     if (!stage?.object || !controls.current || !wrap.current) return;
     const center = stage.frame({ az: 0, el: VIEWS.front.el + 8 }, wrap.current.clientWidth / wrap.current.clientHeight, 1.25);
     controls.current.target.copy(center as THREE.Vector3);
     controls.current.update();
     stage.invalidate();
-  }, [floor.float_mm]);
+  };
+  useEffect(() => {
+    if (firstFloat.current) { firstFloat.current = false; return; }
+    reframe();
+  }, [floor.float_mm]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // (re)build the model; draft edits are debounced so sliders stay smooth
   useEffect(() => {
@@ -302,16 +349,46 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
     const timer = window.setTimeout(() => {
       setBusy(true);
       setError("");
-      buildPouch(effective.geometry, effective.textures, { filled })
-        .then((obj) => {
+      // several designs: each built in full, standing side by side in one frame that turns as one
+      Promise.all(chosen.map((n) => { const e = n === chosen[0] ? effective : withLight(adjustedFor(n)); return buildPouch(e.geometry, e.textures, { filled, pouch: showPouch }); }))
+        .then((objs) => {
           if (cancelled || !stageRef.current) return;
           const stage = stageRef.current;
-          setSize(measure(obj)); // upright, before the operator's turn applies
+          let obj: THREE.Object3D = objs[0];
+          if (objs.length > 1) {
+            obj = new THREE.Group();
+            obj.userData.multi = true;
+            let x = 0;
+            if (poses.current.key !== chosenKey) { poses.current = { key: chosenKey, byDesign: new Map() }; partOpts.current = new Map(); } // another set: fresh places
+            objs.forEach((o, i) => {
+              const box = new THREE.Box3().setFromObject(o);
+              const w = box.max.x - box.min.x;
+              o.position.x = x - box.min.x;
+              x += w * 1.22; // a little air between the pouches
+              o.userData.design = chosen[i];
+              o.userData.home = new THREE.Matrix4().compose(o.position, o.quaternion, o.scale);
+              const kept = poses.current.byDesign.get(chosen[i]);
+              if (kept) kept.decompose(o.position, o.quaternion, o.scale);
+              // its own dimension lines, turning and moving with it (left out of pictures and the GLB)
+              const e = i === 0 ? effective : withLight(adjustedFor(chosen[i]));
+              const lines = dimensionOverlay(e.geometry, filled);
+              lines.userData.ui = true;
+              lines.name = "dimensions";
+              lines.visible = partOpts.current.get(chosen[i])?.dims ?? dims;
+              o.add(lines);
+              const own = partOpts.current.get(chosen[i])?.float;
+              if (own !== undefined) o.userData.float = own;
+              obj.add(o);
+            });
+          }
+          setSelPart(null);
+          setSize(objs.length === 1 ? measure(obj) : null); // upright, before the operator's turn applies
           stage.setObject(obj);
           stage.overlay.clear();
-          stage.overlay.add(dimensionOverlay(effective.geometry, filled));
+          if (objs.length === 1) stage.overlay.add(dimensionOverlay(effective.geometry, filled));
           stage.overlay.visible = dims;
-          if (firstBuild.current) goto("three_quarter_left");
+          if (firstBuild.current || builtCount.current !== objs.length) goto(firstBuild.current ? "three_quarter_left" : objs.length > 1 ? "front" : "three_quarter_left");
+          builtCount.current = objs.length;
           firstBuild.current = false;
           stage.invalidate();
         })
@@ -320,14 +397,87 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
     }, delay);
     return () => { cancelled = true; window.clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scene, filled, draftKey, lighting]);
+  }, [scene, filled, draftKey, lighting, chosenKey, showPouch]);
 
   useEffect(() => {
-    if (stageRef.current) {
-      stageRef.current.overlay.visible = dims;
-      stageRef.current.invalidate();
-    }
+    const stage = stageRef.current;
+    if (!stage) return;
+    stage.overlay.visible = dims;
+    // the switch for all pouches: each one's own choice gives way to it
+    for (const o of partOpts.current.values()) delete o.dims;
+    for (const p of stage.parts()) { const l = p.getObjectByName("dimensions"); if (l) l.visible = dims; }
+    stage.invalidate();
   }, [dims]);
+
+  /** Remember where a pouch was put (kept through rebuilds of the same designs). */
+  const keepPose = useRef((p: THREE.Object3D) => { poses.current.byDesign.set(p.userData.design as number, new THREE.Matrix4().compose(p.position, p.quaternion, p.scale)); });
+
+  /** Every pouch back to its place in the row, standing straight. */
+  const resetParts = () => {
+    poses.current.byDesign.clear();
+    for (const p of stageRef.current?.parts() ?? []) (p.userData.home as THREE.Matrix4 | undefined)?.decompose(p.position, p.quaternion, p.scale);
+  };
+
+  /** One pouch's own dimension lines / float height (undefined: as the whole frame). */
+  const partOpt = (n: number) => partOpts.current.get(n) ?? {};
+  const setPartOpt = (n: number, o: { dims?: boolean; float?: number | null }) => {
+    const stage = stageRef.current;
+    const cur = { ...partOpt(n) };
+    if ("dims" in o) cur.dims = o.dims;
+    if ("float" in o) { if (o.float === null) delete cur.float; else cur.float = o.float; }
+    partOpts.current.set(n, cur);
+    const part = stage?.parts().find((p) => p.userData.design === n);
+    if (stage && part) {
+      const l = part.getObjectByName("dimensions");
+      if (l) l.visible = cur.dims ?? dims;
+      if ("float" in o) { stage.setPartFloat(part, cur.float ?? null); keepPose.current(part); reframe(); } // (a raised pouch stays in the picture)
+      stage.invalidate();
+    }
+    rerender((x) => x + 1);
+  };
+
+  const pickPart = (n: number | null) => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const p = n === null ? null : stage.parts().find((o) => o.userData.design === n) ?? null;
+    stage.selected = p;
+    setSelPart(p ? n : null);
+    stage.invalidate();
+  };
+
+  /** Keys (the viewer focused): arrows turn, Shift+arrows slide the picked pouch, 1-9 pick a pouch,
+   *  Esc the whole frame, + / - zoom, R stands everything back up, Space spins. */
+  const onKey = (e: React.KeyboardEvent) => {
+    const stage = stageRef.current, oc = controls.current;
+    const el = e.target as HTMLElement;
+    if (!stage || !oc || el.closest("input, select, textarea, .viewer-panel") || (el.closest("button") && (e.key === " " || e.key === "Enter"))) return;
+    const STEP = THREE.MathUtils.degToRad(5), MOVE = 5; // per key press (hold the key for more)
+    const p = stage.selected;
+    const arrows: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    const a = arrows[e.key];
+    if (a) {
+      setSpin(false);
+      if (p && (e.shiftKey || mode === "move")) stage.movePart(p, a[0] * MOVE, a[1] * MOVE);
+      else if (p) stage.turnPart(p, a[0] * STEP, a[1] * STEP);
+      else stage.turn(a[0] * STEP, a[1] * STEP);
+      if (p) keepPose.current(p);
+      autoView.current = null;
+    } else if (/^[1-9]$/.test(e.key) && stage.parts().length) {
+      const part = stage.parts()[Number(e.key) - 1];
+      if (!part) return;
+      pickPart(part.userData.design as number);
+    } else if (e.key === "Escape" && p) pickPart(null);
+    else if (["+", "=", "-", "_"].includes(e.key)) {
+      const k = e.key === "-" || e.key === "_" ? 1.12 : 1 / 1.12;
+      stage.camera.position.sub(oc.target).multiplyScalar(k).add(oc.target);
+      oc.update();
+      autoView.current = null;
+    } else if (e.key === "r" || e.key === "R") { setSpin(false); resetParts(); goto(stage.parts().length ? "front" : "three_quarter_left"); }
+    else if (e.key === " ") setSpin(!spin);
+    else return;
+    e.preventDefault();
+    stage.invalidate();
+  };
 
   /** A named view: the pouch turned to face it, the camera framing it from the front. */
   const goto = (view: string) => {
@@ -403,9 +553,19 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
 
   return (
     <div className="stack">
-      <div className={`viewer viewer-${backdrop.kind} ${dark ? "viewer-dark" : ""} ${full ? "viewer-full" : ""} ${tool && onWindows ? "viewer-drawing" : ""}`} ref={wrap}>
+      <div className={`viewer viewer-${backdrop.kind} ${dark ? "viewer-dark" : ""} ${full ? "viewer-full" : ""} ${tool && onWindows ? "viewer-drawing" : ""}`} ref={wrap}
+        tabIndex={0} onKeyDown={onKey} aria-label="3D view: drag or use the arrow keys to turn">
         <canvas ref={canvas} />
         <div className="viewer-bar top">
+          <div className="row" style={{ gap: 8 }}>
+            <DesignPicker designs={designs} picked={chosen} onChange={setPicked} multi />
+            {chosen.length > 1 && selPart !== null && (
+              <div className="seg" role="group" aria-label="What a drag does to the picked pouch">
+                <button className={mode === "turn" ? "on" : ""} onClick={() => setMode("turn")} title="Drag turns the picked pouch (Shift+drag moves it)" aria-label="Turn" aria-pressed={mode === "turn"}><Icon d={ICONS.spin} /></button>
+                <button className={mode === "move" ? "on" : ""} onClick={() => setMode("move")} title="Drag moves the picked pouch over the floor (Shift+drag turns it)" aria-label="Move" aria-pressed={mode === "move"}><Icon d={ICONS.move} /></button>
+              </div>
+            )}
+          </div>
           <div className="seg">
             {(["realistic", "exact"] as Look[]).map((l) => <button key={l} className={look === l ? "on" : ""} onClick={() => setLook(l)}>{l === "realistic" ? "Realistic" : "Exact colours"}</button>)}
           </div>
@@ -469,6 +629,28 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
               <b>Scene</b>
               <button className="icon-btn" onClick={() => setPanel(false)} aria-label="Close"><Icon d={ICONS.close} /></button>
             </div>
+            {chosen.length > 1 && (
+              <div className="viewer-panel-section part-section">
+                <div className="viewer-panel-label">{selPart !== null ? `This pouch: design ${selPart}` : "One pouch at a time"}</div>
+                {selPart === null ? (
+                  <div className="viewer-panel-foot">Click a pouch (or press 1-{chosen.length}) to give it its own dimension lines{customer ? "" : " and float height"}. The switches below set every pouch.</div>
+                ) : (<>
+                  {toggle(partOpt(selPart).dims ?? dims, "Dimension lines", (v) => setPartOpt(selPart, { dims: v }))}
+                  {!customer && (() => {
+                    const f = partOpt(selPart).float ?? floor.float_mm;
+                    return (
+                      <label className="slider">
+                        <span>Float above the floor <b>{f ? `${f} mm` : "off"}</b></span>
+                        <input type="range" min={0} max={300} step={5} value={f} onChange={(e) => setPartOpt(selPart, { float: Number(e.target.value) })} />
+                      </label>
+                    );
+                  })()}
+                  {(partOpt(selPart).dims !== undefined || partOpt(selPart).float !== undefined) && (
+                    <button className="icon-btn" onClick={() => { partOpts.current.delete(selPart); setPartOpt(selPart, { dims: undefined, float: null }); }}>Same as the others</button>
+                  )}
+                </>)}
+              </div>
+            )}
             {!customer && <>
             <div className="viewer-panel-section">
               <div className="viewer-panel-label">Background</div>
@@ -506,8 +688,8 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
               )}
               {floor.kind !== "none" && toggle(floor.moves, "Turns with the pouch", (v) => setFloor({ moves: v }), "On: the floor turns with the pouch like a turntable. Off: the floor stays still.")}
               <label className="slider">
-                <span>Float above the floor <b>{floor.float_mm ? `${floor.float_mm} mm` : "off"}</b></span>
-                <input type="range" min={0} max={300} step={5} value={floor.float_mm} onChange={(e) => setFloor({ float_mm: Number(e.target.value) })} />
+                <span>Float above the floor{chosen.length > 1 ? " (all)" : ""} <b>{floor.float_mm ? `${floor.float_mm} mm` : "off"}</b></span>
+                <input type="range" min={0} max={300} step={5} value={floor.float_mm} onChange={(e) => { for (const o of partOpts.current.values()) delete o.float; for (const p of stageRef.current?.parts() ?? []) delete p.userData.float; setFloor({ float_mm: Number(e.target.value) }); }} />
               </label>
               {toggle(shadow, "Shadow", setShadow, "Soft contact shadow under the pouch")}
             </div>
@@ -515,7 +697,8 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
             <div className="viewer-panel-section">
               <div className="viewer-panel-label">Display</div>
               {toggle(filled, "Filled with product", setFilled, "Filled, or flat as made")}
-              {toggle(dims, "Dimension lines", setDims)}
+              {scene.geometry.template === "roll_stock" && toggle(showPouch, "Pouch beside the roll", setShowPouch, "Show the formed pouch next to the roll")}
+              {toggle(dims, chosen.length > 1 ? "Dimension lines (all pouches)" : "Dimension lines", setDims)}
             </div>
             {!customer && <div className="viewer-panel-foot">Pictures stay in this browser; they are not uploaded.</div>}
           </aside>
@@ -524,7 +707,7 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
         <div className="viewer-bar bottom">
           <div className="seg">
             {Object.keys(VIEW_LABELS).map((v) => <button key={v} onClick={() => { setSpin(false); goto(v); }}>{VIEW_LABELS[v]}</button>)}
-            <button onClick={() => { setSpin(false); goto("front"); }} title="Stand the pouch back up, facing front" aria-label="Reset"><Icon d={ICONS.reset} /></button>
+            <button onClick={() => { setSpin(false); resetParts(); goto("front"); }} title="Stand the pouch back up, facing front (R)" aria-label="Reset"><Icon d={ICONS.reset} /></button>
           </div>
           <div className="seg">
             <button className={spin ? "on" : ""} onClick={() => setSpin(!spin)} title="Turn the pouch all the way round"><Icon d={ICONS.spin} /> {spin ? "Stop" : "Spin 360°"}</button>
@@ -534,7 +717,11 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
         </div>
         {busy && <div className="viewer-note"><span className="spinner" /> Building 3D model…</div>}
         {error && <div className="viewer-note msg bad">{error}</div>}
-        <div className="viewer-hint">{tool && onWindows ? TOOL_HELP[tool] : "Drag the pouch to turn it any way · right-drag to move · scroll to zoom"}</div>
+        <div className="viewer-hint">{tool && onWindows ? TOOL_HELP[tool]
+          : chosen.length > 1 ? (selPart
+            ? `Design ${selPart} picked: drag or arrow keys ${mode === "move" ? "move" : "turn"} it, with Shift they ${mode === "move" ? "turn" : "move"} it · Esc: all`
+            : `Click a pouch (or keys 1-${chosen.length}) to move it on its own · drag elsewhere turns them all · arrow keys turn · scroll zooms`)
+          : "Drag the pouch to turn it any way · arrow keys turn it · right-drag to move · scroll to zoom"}</div>
       </div>
       <div className="muted small">
         Keyline: {g.width_mm} × {g.height_mm} mm

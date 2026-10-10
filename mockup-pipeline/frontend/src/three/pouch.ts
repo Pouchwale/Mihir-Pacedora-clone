@@ -14,6 +14,7 @@ import type { GeometrySpec, SceneTexture, Sleeve } from "./types";
 
 export interface BuildOptions {
   filled: boolean;
+  pouch?: boolean; // roll form: the formed pouch beside the roll (default shown)
 }
 
 const FILM = 0.12; // half film thickness: front and back never z-fight in the seals
@@ -734,7 +735,7 @@ function placeOnFace(face: THREE.Mesh, u: number, v: number, obj: THREE.Object3D
 }
 
 // ---------------------------------------------------------------- roll stock
-async function rollGroup(g: GeometrySpec, textures: Record<string, SceneTexture>, filled: boolean): Promise<THREE.Group> {
+async function rollGroup(g: GeometrySpec, textures: Record<string, SceneTexture>, filled: boolean, pouch = true): Promise<THREE.Group> {
   const roll = g.roll!;
   const grp = new THREE.Group();
   const R = roll.outer_diameter_mm / 2, r = roll.core_diameter_mm / 2, L = roll.web_width_mm;
@@ -788,7 +789,7 @@ async function rollGroup(g: GeometrySpec, textures: Record<string, SceneTexture>
   const sachet = await flatLikeGroup(sachetSpec, { front: textures.front ?? tex, back: textures.back ?? textures.front ?? tex }, filled, "center_seal_pillow");
   sachet.position.set(L / 2 + g.width_mm * 0.9, 0, R * 0.6);
   sachet.rotation.y = -0.5;
-  grp.add(sachet);
+  if (pouch) grp.add(sachet);
   return grp;
 }
 
@@ -1267,7 +1268,7 @@ async function sleeveGroup(g: GeometrySpec, textures: Record<string, SceneTextur
 export async function buildPouch(g: GeometrySpec, textures: Record<string, SceneTexture>, opts: BuildOptions): Promise<THREE.Group> {
   let grp: THREE.Group;
   if (g.template === "shrink_sleeve" && g.sleeve) grp = await sleeveGroup(g, textures);
-  else if (g.template === "roll_stock" && g.roll) grp = await rollGroup(g, textures, opts.filled);
+  else if (g.template === "roll_stock" && g.roll) grp = await rollGroup(g, textures, opts.filled, opts.pouch !== false);
   else if (["center_seal_side_gusset", "quad_seal", "flat_bottom_box_pouch"].includes(g.shape)) grp = await boxGroup(g, textures, opts.filled, g.shape);
   else grp = await flatLikeGroup(g, textures, opts.filled, g.shape);
   if (g.valve) {

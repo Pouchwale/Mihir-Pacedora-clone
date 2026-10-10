@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, type User } from "../api";
 import { useSession } from "../App";
@@ -44,6 +44,11 @@ const I = {
   search: "M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.35-4.35",
   upload: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12",
   box: "M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z",
+  close: "M18 6 6 18M6 6l12 12",
+  layers: "M12 2 2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5",
+  check: "M20 6 9 17l-5-5",
+  clock: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 6v6l4 2",
+  alert: "M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01",
 };
 
 /** Pause / resume / cancel controls for one job (used on the list and on the job page). */
@@ -104,6 +109,17 @@ export default function Jobs() {
   const [style, setStyle] = useState(""); // pouch style filter ("" = all)
   const [status, setStatus] = useState("");
   const [q, setQ] = useState("");
+  const [qInput, setQInput] = useState(""); // what is typed; the search runs a moment after typing stops
+  const searchRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { const t = window.setTimeout(() => setQ(qInput.trim()), 250); return () => window.clearTimeout(t); }, [qInput]);
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement;
+      if (e.key === "/" && !el.closest("input, textarea, select, [contenteditable]")) { e.preventDefault(); searchRef.current?.focus(); }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, []);
   const [tests, setTests] = useState(false); // workflow editor test runs instead of real jobs
   const [msg, setMsg] = useState("");
   const [tick, setTick] = useState(0);
@@ -144,12 +160,17 @@ export default function Jobs() {
 
   const n = (...s: string[]) => s.reduce((a, k) => a + (counts[k] ?? 0), 0);
   const all = n(...STATUSES);
-  const stats: { label: string; value: number; filter: string; tone: string; hint: string }[] = [
-    { label: "All jobs", value: all, filter: "", tone: "", hint: "Every job" },
-    { label: "Done", value: n("DONE"), filter: "DONE", tone: "ok", hint: "3D mockup ready" },
-    { label: "In progress", value: n("QUEUED", "RUNNING"), filter: "QUEUED,RUNNING", tone: "accent", hint: "Queued or running" },
-    { label: "Need attention", value: n("FAILED", "NEEDS_REVIEW", "PAUSED"), filter: "FAILED,NEEDS_REVIEW,PAUSED", tone: "bad", hint: "Failed, paused or waiting" },
+  const stats: { label: string; value: number; filter: string; tone: string; hint: string; icon: string }[] = [
+    { label: "All jobs", value: all, filter: "", tone: "", icon: I.layers, hint: n("CANCELLED") ? `${n("CANCELLED")} cancelled included` : "Every upload" },
+    { label: "Done", value: n("DONE"), filter: "DONE", tone: "ok", icon: I.check, hint: "3D mockup ready" },
+    { label: "In progress", value: n("QUEUED", "RUNNING"), filter: "QUEUED,RUNNING", tone: "accent", icon: I.clock, hint: n("QUEUED", "RUNNING") ? `${n("RUNNING")} running, ${n("QUEUED")} queued` : "Nothing running" },
+    { label: "Need attention", value: n("FAILED", "NEEDS_REVIEW", "PAUSED"), filter: "FAILED,NEEDS_REVIEW,PAUSED", tone: "bad", icon: I.alert,
+      hint: n("FAILED", "NEEDS_REVIEW", "PAUSED") ? [["FAILED", "failed"], ["NEEDS_REVIEW", "to review"], ["PAUSED", "paused"]].filter(([k]) => n(k)).map(([k, w]) => `${n(k)} ${w}`).join(", ") : "All clear" },
   ];
+  const group = stats.find((x) => x.filter === status && status.includes(","));
+  const styleKeys = [...Object.keys(POUCH_STYLE), ...Object.keys(types).filter((k) => !(k in POUCH_STYLE))].filter((k) => (types[k] ?? 0) > 0 || style === k);
+  const filtered = !!(q || status || style || owner);
+  const clearAll = () => { setQInput(""); setQ(""); setStatus(""); setStyle(""); setOwner(""); };
   const controls = (j: JobSummary) => <JobControls job={j} compact onDone={(m) => { setMsg(m); setTick((t) => t + 1); }} />;
 
   return (
@@ -161,57 +182,66 @@ export default function Jobs() {
 
       <div className="stat-row">
         {stats.map((s) => (
-          <button key={s.label} className={`stat ${s.tone} ${status === s.filter ? "on" : ""}`} onClick={() => setStatus(s.filter)} title={s.hint}>
-            <span className="stat-label">{s.label}</span>
+          <button key={s.label} className={`stat ${s.tone} ${status === s.filter ? "on" : ""}`} onClick={() => setStatus(status === s.filter ? "" : s.filter)} aria-pressed={status === s.filter}>
+            <span className="stat-top"><span className="stat-label">{s.label}</span><span className="stat-icon"><Icon d={s.icon} size={15} /></span></span>
             <span className="stat-value">{s.value}</span>
+            <span className="stat-hint">{s.hint}</span>
           </button>
         ))}
       </div>
 
-      <div className="toolbar">
-        <div className="pills">
-          <button className={`pill ${status === "" ? "on" : ""}`} onClick={() => setStatus("")}>All</button>
-          {STATUSES.map((s) => (
-            <button key={s} className={`pill ${status === s ? "on" : ""}`} onClick={() => setStatus(s)}>{LABEL[s]} <span className="pill-count">{counts[s] ?? 0}</span></button>
-          ))}
-        </div>
-        <div className="row" style={{ marginLeft: "auto" }}>
+      <div className="filter-bar">
+        <div className="filter-main">
+          <label className="search filter-search">
+            <Icon d={I.search} />
+            <input ref={searchRef} placeholder="Search item code, client or file" value={qInput} onChange={(e) => setQInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Escape") setQInput(""); }} aria-label="Search jobs" />
+            {qInput ? <button className="search-clear" onClick={() => setQInput("")} aria-label="Clear search"><Icon d={I.close} size={14} /></button> : <kbd>/</kbd>}
+          </label>
+          <select value={group ? status : status} onChange={(e) => setStatus(e.target.value)} aria-label="Status">
+            <option value="">Any status</option>
+            {group && <option value={group.filter}>{group.label}</option>}
+            {STATUSES.map((k) => <option key={k} value={k}>{LABEL[k]} ({counts[k] ?? 0})</option>)}
+          </select>
           {seesAll && (
-            <select value={owner} onChange={(e) => setOwner(e.target.value)} aria-label="Uploaded by" title="Uploaded by">
-              <option value="">Everyone's jobs</option>
+            <select value={owner} onChange={(e) => setOwner(e.target.value)} aria-label="Uploaded by">
+              <option value="">Everyone</option>
               {people.map((u) => <option key={u.id} value={u.id}>{u.name || u.email}</option>)}
             </select>
           )}
-          <label className="search"><Icon d={I.search} /><input placeholder="Search item code or client" value={q} onChange={(e) => setQ(e.target.value)} /></label>
-          <div className="seg-toggle" role="group" aria-label="Layout">
-            <button className={layout === "grid" ? "on" : ""} onClick={() => setLayout("grid")} title="Cards" aria-label="Cards"><Icon d={I.grid} /></button>
-            <button className={layout === "list" ? "on" : ""} onClick={() => setLayout("list")} title="List" aria-label="List"><Icon d={I.list} /></button>
+          <div className="filter-end">
+            <label className="switch-inline" title="Workflow editor test runs instead of real jobs">
+              <input type="checkbox" checked={tests} onChange={(e) => setTests(e.target.checked)} /> Test runs
+            </label>
+            <div className="seg-toggle" role="group" aria-label="Layout">
+              <button className={layout === "grid" ? "on" : ""} onClick={() => setLayout("grid")} title="Cards" aria-label="Cards" aria-pressed={layout === "grid"}><Icon d={I.grid} /></button>
+              <button className={layout === "list" ? "on" : ""} onClick={() => setLayout("list")} title="List" aria-label="List" aria-pressed={layout === "list"}><Icon d={I.list} /></button>
+            </div>
           </div>
-          <label className="check small muted"><input type="checkbox" checked={tests} onChange={(e) => setTests(e.target.checked)} /> test runs</label>
+        </div>
+        <div className="style-chips" role="group" aria-label="Pouch style">
+          <button className={`chip ${style === "" ? "on" : ""}`} onClick={() => setStyle("")} aria-pressed={style === ""}>All styles</button>
+          {styleKeys.map((k) => (
+            <button key={k} className={`chip ${style === k ? "on" : ""}`} onClick={() => setStyle(style === k ? "" : k)} aria-pressed={style === k} title={`Show only ${pouchStyle(k)} jobs`}>
+              {POUCH_STYLE[k] ?? pouchStyle(k)} <span className="chip-count">{types[k] ?? 0}</span>
+            </button>
+          ))}
         </div>
       </div>
-      <div className="style-row" role="group" aria-label="Pouch style">
-        <span className="style-row-label">Pouch style</span>
-        <button className={`pill ${style === "" ? "on" : ""}`} onClick={() => setStyle("")}>All styles</button>
-        {[...Object.keys(POUCH_STYLE), ...Object.keys(types).filter((k) => !(k in POUCH_STYLE))].map((k) => {
-          const n = types[k] ?? 0;
-          if (!n && k === "none") return null;
-          return (
-            <button key={k} className={`pill ${style === k ? "on" : ""}`} disabled={!n && style !== k} onClick={() => setStyle(style === k ? "" : k)}
-              title={n ? `Show only ${pouchStyle(k)} jobs` : "No jobs of this style yet"}>
-              {POUCH_STYLE[k] ?? pouchStyle(k)} <span className="pill-count">{n}</span>
-            </button>
-          );
-        })}
+
+      <div className="result-line">
+        <span className="muted small">{loaded ? `${total} ${total === 1 ? "job" : "jobs"}${filtered ? " match" : ""}` : "Loading…"}</span>
+        {filtered && <button className="link small" onClick={clearAll}>Clear filters</button>}
       </div>
       {msg && <div className="msg warn" style={{ marginBottom: 12 }}>{msg}</div>}
 
       {loaded && jobs.length === 0 && (
         <div className="card empty-state">
           <div className="dropzone-icon"><Icon d={I.box} size={26} /></div>
-          <b>{q || status || style ? "No jobs match" : "No jobs yet"}</b>
-          <span className="muted">{q || status || style ? "Try another filter or search." : "Upload approval PDFs and each one becomes a 3D mockup automatically."}</span>
-          {!q && !status && !style && <Link className="btn primary" to="/upload"><Icon d={I.upload} /> Upload PDFs</Link>}
+          <b>{filtered ? "No jobs match" : "No jobs yet"}</b>
+          <span className="muted">{filtered ? "Try another filter or search." : "Upload approval PDFs and each one becomes a 3D mockup automatically."}</span>
+          {filtered && <button onClick={clearAll}>Clear filters</button>}
+          {!filtered && <Link className="btn primary" to="/upload"><Icon d={I.upload} /> Upload PDFs</Link>}
         </div>
       )}
 

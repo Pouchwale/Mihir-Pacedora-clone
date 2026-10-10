@@ -56,11 +56,11 @@ def _png(data_url: str) -> bytes:
 
 
 def render(job_id: int, token: str, views: list[str], width: int, height: int, transparent: bool, want_glb: bool,
-           turntable: tuple[float, int] | None) -> RenderResult:
+           turntable: tuple[float, int] | None, design: int | None = None) -> RenderResult:
     from playwright.sync_api import sync_playwright
 
     s = get_settings()
-    url = f"{local_base_url()}/render/{job_id}?token={token}"
+    url = f"{local_base_url()}/render/{job_id}?token={token}" + (f"&design={design}" if design else "")
     result = RenderResult()
     with sync_playwright() as p:
         browser = p.chromium.launch(args=CHROMIUM_ARGS, channel=s.render_browser_channel or None)

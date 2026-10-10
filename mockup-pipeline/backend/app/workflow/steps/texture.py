@@ -57,6 +57,7 @@ class PanelTexture(BaseModel):
     color: str | None = None
     raw_web_key: str | None = None  # the web texture before overlays / colour correction were baked in (the job page previews on it)
     clear: bool = False  # transparent unprinted film (a "Window" side / gusset)
+    blank: bool = False  # no print at all (a plain pouch, FGPO7530): renders light the film instead of "exact colours"
 
 
 class Output(BaseModel):
@@ -89,7 +90,8 @@ def _load(ctx: StepContext, key: str) -> Image.Image:
 
 def run(ctx: StepContext) -> Output:
     geo = ctx.output("build_geometry", GeometryOutput).geometry
-    panels = ctx.output("link_panels", LinkOutput).panels
+    linked = ctx.output("link_panels", LinkOutput)
+    panels = linked.panels
     keyline = ctx.output("resolve_keyline", KeylineOutput).keyline.values()
     sheet = ctx.output("validate", ValidateOutput).sheet
     profile = ctx.index.pdf_profile()
@@ -160,35 +162,39 @@ def run(ctx: StepContext) -> Output:
     corrections = ctx.inputs.get("spec_corrections") or {}
     operator_sized = {f for f in ("pouch_closed_width_mm", "pouch_height_mm", "pouch_open_width_mm") if f"spec_table.{f}" in corrections}
     tol = profile.finished_size_tolerance_mm
-    for role in sorted(panels, key=lambda r: r != "front"):  # front first: substitutes reuse it
-        p = panels[role]
+    # design 1 (the sheet's first lane or the job's own files) under its roles; the sheet's other designs
+    # (link_panels.designs) under "front@2", "back@2", ... made the same way
+    work = [(role, role, panels[role], "") for role in sorted(panels, key=lambda r: r != "front")]  # front first: substitutes reuse it
+    for n, design in enumerate(linked.designs, start=2):
+        work += [(f"{role}@{n}", role, design[role], f"@{n}") for role in sorted(design, key=lambda r: r != "front")]
+    for tkey, role, p, at in work:
         w, h = p.expected_mm
-        base = f"{ctx.prefix}/{ctx.job.item_code or 'item'}_{role}"
+        base = f"{ctx.prefix}/{ctx.job.item_code or 'item'}_{role}" + (f"_design{at[1:]}" if at else "")
         if p.source == "plain":
             p.color = plain_colour or p.color
             raw = panel_art.blank(p.color or "#dddddd", (w, h), dpi)
             img, changed = baked(role, raw, w)
             if changed:  # a logo or text on plain film: a real image, not a colour
-                textures[role] = store_panel(role, img, "plain", base, w, h, raw=Image.new("RGB", (64, 64), p.color or "#dddddd"))
+                textures[tkey] = store_panel(role, img, "plain", base, w, h, raw=Image.new("RGB", (64, 64), p.color or "#dddddd"))
                 continue
             img = Image.new("RGB", (64, 64), p.color or "#dddddd")
             web_key = ctx.storage.put_bytes(f"{base}_web.webp", _jpeg(img, 64), "image/webp")
             svg = panel_svg(role, geo, None, p.color)
             prev = ctx.storage.put_bytes(f"{base}_keyline.svg", svg.encode(), "image/svg+xml")
-            textures[role] = PanelTexture(role=role, source="plain", finished_key=None, web_key=web_key, width_mm=w, height_mm=h,
+            textures[tkey] = PanelTexture(role=role, source="plain", finished_key=None, web_key=web_key, width_mm=w, height_mm=h,
                                           px=img.size, masks={}, preview_key=prev, color=p.color, clear=p.clear)
             continue
         if p.source == "front":
-            f = textures["front"]
+            f = textures["front" + at]
             front_img = _load(ctx, f.finished_key) if f.finished_key else None
             if front_img is not None:
                 img, changed = baked(role, front_img, w)
                 if changed:  # this panel's own overlays on the front's artwork
-                    textures[role] = store_panel(role, img, "front", base, w, h, spot=f.masks.get("spot"), raw=front_img)
+                    textures[tkey] = store_panel(role, img, "front", base, w, h, spot=f.masks.get("spot"), raw=front_img)
                     continue
             svg = panel_svg(role, geo, front_img)
             prev = ctx.storage.put_bytes(f"{base}_keyline.svg", svg.encode(), "image/svg+xml")
-            textures[role] = f.model_copy(update={"role": role, "source": "front", "preview_key": prev, "technical_preview_key": None})
+            textures[tkey] = f.model_copy(update={"role": role, "source": "front", "preview_key": prev, "technical_preview_key": None})
             continue
         if p.source == "image":
             # An uploaded picture (or PDF page) fitted to the panel: cover / contain / stretch, as set.
@@ -200,7 +206,7 @@ def run(ctx: StepContext) -> Output:
             src = panel_art.open_upload(ctx.storage.get_bytes(f_row.storage_key), dpi)
             raw = panel_art.fit_image(src, panel_art.pixel_size((w, h), dpi), pa.fit, pa.background)
             img, changed = baked(role, raw, w)
-            textures[role] = store_panel(role, img, "image", base, w, h, raw=raw if changed else None)
+            textures[tkey] = store_panel(role, img, "image", base, w, h, raw=raw if changed else None)
             ctx.log(f"{role}: {f_row.filename} ({src.width}x{src.height} px) fitted '{pa.fit}' to {w:g} x {h:g} mm = {img.width}x{img.height} px at {dpi:g} dpi",
                     "audit", {"sha256": f_row.sha256, "fit": pa.fit})
             continue
@@ -305,7 +311,7 @@ def run(ctx: StepContext) -> Output:
                 issue = Issue(**{**issue.model_dump(), "severity": "warning"})
             issues.append(issue)
             if fin.preview_key:
-                previews[role] = fin.preview_key
+                previews[tkey] = fin.preview_key
 
         masks: dict[str, str] = {}
         if wants_metal and not has_white:
@@ -320,9 +326,10 @@ def run(ctx: StepContext) -> Output:
         web_key = ctx.storage.put_bytes(f"{base}_web.webp", _jpeg(img, WEB_MAX), "image/webp")
         svg = panel_svg(role, geo, img)
         prev = ctx.storage.put_bytes(f"{base}_keyline.svg", svg.encode(), "image/svg+xml")
-        textures[role] = PanelTexture(role=role, source=p.source, finished_key=finished_key, web_key=web_key, width_mm=w, height_mm=h,
+        textures[tkey] = PanelTexture(role=role, source=p.source, finished_key=finished_key, web_key=web_key, width_mm=w, height_mm=h,
                                       px=img.size, masks=masks, preview_key=prev, technical_preview_key=fin.preview_key,
-                                      raw_web_key=raw_web(base, raw if changed else None))
+                                      raw_web_key=raw_web(base, raw if changed else None),
+                                      blank=float(np.asarray(img.convert("L").resize((64, 64), Image.BOX)).std()) < 1.5)
         ctx.log(f"{role}: finished {img.width}x{img.height} px = {fin.finished_mm[0]} x {fin.finished_mm[1]} mm", "audit",
                 {"bleed": bleed.model_dump(), "technical_pixels": fin.technical_pixels})
         if role == "roll":
@@ -528,20 +535,33 @@ def window_marked(img: Image.Image, pdf: Path, box_pt: tuple[float, float, float
 
     dpi = img.width / (width_mm / 25.4)
     words = [w for w in pdf_text.words(pdf, Box(*box_pt), round(dpi)) if 0 <= w.left < img.width and 0 <= w.top < img.height]
-    labels = [w for w in words if w.text.lower().strip(".,()") == "window"]
+    # "Window", or "Transparent Area" (FGPO5636: the clear area drawn grey and labelled so)
+    def says_clear(w) -> bool:
+        t = w.text.lower().strip(".,()")
+        return t == "window" or (t == "area" and any(o.text.lower().strip(".,()") == "transparent" and abs(o.top - w.top) <= 2 * w.height
+                                                     and abs(o.left - w.left) <= 12 * w.height for o in words))
+    labels = [w for w in words if says_clear(w)]
     if not labels:
         return img, None
     # the whole note: the words beside or above the key word ("Transparent", "Clear")
     line = {id(w): w for h in labels for w in words
             if abs(w.top - h.top) <= 2 * h.height and abs((w.left + w.right) / 2 - (h.left + h.right) / 2) <= 6 * h.height}
     arr = np.asarray(img.convert("RGB")).copy()
+    # the area's own colour, read round the label: white, or the light neutral grey a printer may draw the
+    # clear area in (FGPO5636); the label is painted out in it
+    ring = np.concatenate([arr[max(0, w.top - 2 * w.height):w.top + 3 * w.height, max(0, w.left - w.height):w.right + w.height].reshape(-1, 3)
+                           for w in line.values()])
+    bg = np.median(ring, axis=0)
+    grey = bg.min() >= 150 and bg.max() - bg.min() <= 20 and bg.min() < 235
+    fill = bg.astype(np.uint8) if grey else 255
     for w in line.values():
         pad = max(2, round(0.5 * w.height))
-        arr[max(0, w.top - pad):w.top + w.height + pad, max(0, w.left - pad):w.right + pad] = 255
+        arr[max(0, w.top - pad):w.top + w.height + pad, max(0, w.left - pad):w.right + pad] = fill
     cleaned = Image.fromarray(arr)
     k = img.width / width_mm
     cell = max(1, round(k / 2))  # 0.5 mm grid
-    white = np.asarray(cleaned.reduce(cell)).astype(int).min(axis=2) >= 235
+    cells = np.asarray(cleaned.reduce(cell)).astype(int)
+    white = (np.abs(cells - bg).max(axis=2) <= 14) if grey else cells.min(axis=2) >= 235
     gh, gw = white.shape
     seen = np.zeros_like(white)
     q = deque()

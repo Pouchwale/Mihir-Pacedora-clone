@@ -9,7 +9,7 @@ import ImportExport from "./pages/ImportExport";
 import JobDetail from "./pages/JobDetail";
 import Jobs from "./pages/Jobs";
 import KindList from "./pages/KindList";
-import Login from "./pages/Login";
+import Login, { Welcome } from "./pages/Login";
 import RenderPage from "./pages/RenderPage";
 import RuleTester from "./pages/RuleTester";
 import Upload from "./pages/Upload";
@@ -53,6 +53,7 @@ export default function App() {
 
 function SignedIn() {
   const [user, setUser] = useState<User | null | undefined>(undefined);
+  const [welcome, setWelcome] = useState(false); // the greeting after a fresh sign-in (not a restored session)
   const [kinds, setKinds] = useState<KindInfo[]>([]);
 
   const refreshKinds = useCallback(() => {
@@ -71,8 +72,8 @@ function SignedIn() {
     if (user) api.post("/api/activity", { page: location.pathname + location.search }).catch(() => undefined);
   }, [user, location.pathname, location.search]);
 
-  if (user === undefined) return <div className="login muted">Loading…</div>;
-  if (user === null) return <Login onLogin={setUser} />;
+  if (user === undefined) return <div className="boot muted">Loading…</div>;
+  if (user === null) return <Login onLogin={(u) => { setUser(u); setWelcome(true); }} />;
 
   const can = (p: Permission) => user.permissions.includes(p);
   const canEdit = (kind: string) => can(KEYLINE_KINDS.has(kind) ? "edit_keyline" : "edit_index");
@@ -96,6 +97,7 @@ function SignedIn() {
           <Route path="*" element={<p className="muted">Page not found.</p>} />
         </Routes>
       </Shell>
+      {welcome && <Welcome user={user} onClose={() => setWelcome(false)} />}
     </SessionContext.Provider>
   );
 }
@@ -151,8 +153,8 @@ function Shell({ children }: { children: React.ReactNode }) {
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark"><svg width="16" height="16" viewBox="0 0 32 32" aria-hidden="true"><path d="M8 4h16l2 22c-6 3-14 3-20 0z" fill="#fff" /></svg></span>
-          Pouch Mockups
+          <img className="brand-logo" src="/gp3-mark.png" alt="" />
+          GP3 Mockup
         </div>
         <NavLink to="/upload" className="nav-cta"><NavIcon name="upload" /> Upload PDFs</NavLink>
         <nav className="nav">

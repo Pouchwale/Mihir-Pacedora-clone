@@ -120,6 +120,9 @@ export interface SceneData {
   textures: Record<string, SceneTexture>;
   adjust?: Record<string, unknown>; // the job's saved adjustments (app/workflow/adjust.py)
   files?: Record<string, SceneFile>; // the uploads those adjustments use (panel pictures, logos)
+  // other designs printed on the same sheet (FGPO6443: three flavours), each a full set of textures;
+  // empty for a one-design sheet
+  designs?: { index: number; name: string; textures: Record<string, SceneTexture> }[];
 }
 
 /** A see-through window the operator marks on the front or back face (app/workflow/adjust.py

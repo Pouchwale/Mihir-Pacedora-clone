@@ -20,9 +20,12 @@ an uploaded image, or a PDF whose page is not a dieline panel of this size, beco
 panel that the texture step fits to the panel (cover / contain / stretch).
 """
 
+import io
 import re
 from typing import Literal
 
+import numpy as np
+from PIL import Image
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -75,6 +78,9 @@ class Output(BaseModel):
     panels: dict[str, Panel]
     required: list[str]
     confirmed_codes: dict[str, str]  # role -> item code found in the registry
+    # Other designs printed on the same sheet (FGPO6443: three flavours side by side), each its own set of
+    # panels like `panels` (which is design 1). Copies of design 1 (plain repeats) are not listed.
+    designs: list[dict[str, Panel]] = []
 
 
 _NOT_XML = ~UploadedFile.filename.ilike("%.xml")  # (an item master XML is registered under its items' codes too: not a panel)
@@ -129,16 +135,24 @@ def _code_number(code: str | None) -> int | None:
 
 
 def _next_code_file(ctx: StepContext, role: str) -> UploadedFile | None:
-    """The back of a front uploaded alone: approval PDFs come in pairs numbered one after the other
-    (FGPO7002 front, FGPO7003 back), so the latest upload with the next item code whose name says
-    "back" is this job's back."""
-    import re
-
+    """A panel uploaded apart from its front: approval PDFs are numbered one after the other (FGPO7002
+    front, FGPO7003 back; FGPO7150 front + back, FGPO7151 gusset; FGPO4585 front, FGPO4586 back,
+    FGPO4587 gusset), so the latest upload with the next code or the one after whose name says this
+    panel is this job's (any batch: only a back was looked for once, and FGPO7150 kept a plain gusset)."""
     m = re.fullmatch(r"([A-Za-z]+)(\d+)", ctx.job.item_code or "")
-    if role != "back" or not m:
+    words = _ROLE_WORDS.get(role)
+    if not words or not m:
         return None
-    f = _latest_file(ctx, f"{m.group(1)}{int(m.group(2)) + 1:0{len(m.group(2))}d}")
-    return f if f is not None and "back" in f.filename.lower() and not names_front(f.filename) else None
+    for step in (1, 2):
+        f = _latest_file(ctx, f"{m.group(1)}{int(m.group(2)) + step:0{len(m.group(2))}d}")
+        if f is None:
+            continue
+        name = f.filename.lower()
+        if any(w in name for w in words) and not names_front(f.filename):
+            return f
+        if names_front(f.filename) or not any(w in name for ws in _ROLE_WORDS.values() for w in ws):
+            return None  # the next code is another pouch: stop there
+    return None
 
 
 def _front_colour(ctx: StepContext, trim: trim_impl.TrimArtworkOutput) -> str:
@@ -194,6 +208,7 @@ def run(ctx: StepContext) -> Output:
 
     extracted = ctx.output("extract_specs", extract_impl.ExtractSpecsOutput)
     panels: dict[str, Panel] = {}
+    designs: list[dict[str, Panel]] = []
     swapped: dict[str, str] = {}
     if pouch.geometry_template == "shrink_sleeve":
         # A sleeve sheet: the printed sleeve is one rectangle on it (extract_specs found it); nothing to link.
@@ -240,6 +255,7 @@ def run(ctx: StepContext) -> Output:
                 p.role = {"front": "back", "back": "front"}.get(p.role or "", p.role)
             ctx.log("front and back swapped by the operator", "audit")
         panels = _sheet_panels(ctx, layout, extracted.sheet_box_pt, front_trim, sizes, wanted)
+        designs = _other_designs(ctx, layout, extracted.sheet_box_pt, front_trim, sizes, wanted, sheet, panels)
         for role, pa in adj.panels.items():
             if pa.source == "sheet" and pa.sheet_panel is not None and pa.sheet_panel < len(layout.panels) and role in sizes:
                 sp = layout.panels[pa.sheet_panel]
@@ -260,8 +276,14 @@ def run(ctx: StepContext) -> Output:
         # swapped with only one face on the sheet (FGPO6784 + its back PDF): the other face's file
         src = swapped.get(role, role)
         if role == "front" and not choice.get("file_id") and src == role:
+            trim = front_trim
+            if front_trim.mode == "page" and front_trim.trim_width_mm * front_trim.trim_height_mm > 2 * expected[0] * expected[1]:
+                # No dieline found and the whole page is far bigger than the panel: the page is an approval
+                # sheet (spec table, ink dots, keyline drawing beside the artwork, FGPO5635). Never wrap the
+                # sheet round the pouch: cut out its artwork, the largest solid block of print.
+                trim = _art_block(ctx, front_trim, expected) or front_trim
             panels[role] = Panel(role=role, source="file", expected_mm=expected, file_id=ctx.job.file_id, item_code=ctx.job.item_code,
-                                 filename=ctx.job.file.filename, trim=front_trim)
+                                 filename=ctx.job.file.filename, trim=trim)
             continue
         f = None
         if choice.get("file_id"):
@@ -360,11 +382,139 @@ def run(ctx: StepContext) -> Output:
         # front and back from separate PDFs (a sheet swaps its panels above): trade them here
         panels["front"], panels["back"] = panels["back"].model_copy(update={"role": "front"}), panels["front"].model_copy(update={"role": "back"})
         ctx.log("front and back swapped by the operator", "audit")
-    return Output(panels=panels, required=required, confirmed_codes=confirmed)
+    return Output(panels=panels, required=required, confirmed_codes=confirmed, designs=designs)
+
+
+def _art_block(ctx: StepContext, trim: trim_impl.TrimArtworkOutput, expected: tuple[float, float]) -> trim_impl.TrimArtworkOutput | None:
+    """The artwork on a whole-page render: the largest connected block of solid print (colour or dark ink)
+    on a grid of 3 mm cells. A spec table (thin lines and text on white), ink dots, a keyline drawing and a
+    grey white-separation preview are not solid print and drop out."""
+    img = Image.open(io.BytesIO(ctx.storage.get_bytes(trim.bleed_key))).convert("RGB")
+    cell = max(1, round(img.width / trim.trim_width_mm * 3))  # px per 3 mm cell
+    gw, gh = img.width // cell, img.height // cell
+    if gw < 4 or gh < 4:
+        return None
+    a = np.asarray(img.resize((gw * 4, gh * 4), Image.BOX)).astype(np.int16)
+    sat = a.max(axis=2) - a.min(axis=2)
+    printed = (sat > 40) | (a.mean(axis=2) < 90)
+    grid = printed.reshape(gh, 4, gw, 4).mean(axis=(1, 3)) > 0.6
+    seen = np.zeros_like(grid)
+    best: tuple[int, tuple[int, int, int, int]] | None = None
+    for y0, x0 in zip(*np.nonzero(grid)):
+        if seen[y0, x0]:
+            continue
+        stack, n, box = [(y0, x0)], 0, [x0, y0, x0, y0]
+        seen[y0, x0] = True
+        while stack:
+            y, x = stack.pop()
+            n += 1
+            box = [min(box[0], x), min(box[1], y), max(box[2], x), max(box[3], y)]
+            for yy, xx in ((y + 1, x), (y - 1, x), (y, x + 1), (y, x - 1)):
+                if 0 <= yy < gh and 0 <= xx < gw and grid[yy, xx] and not seen[yy, xx]:
+                    seen[yy, xx] = True
+                    stack.append((yy, xx))
+        if best is None or n > best[0]:
+            best = (n, (box[0], box[1], box[2] + 1, box[3] + 1))
+    if best is None or best[0] * 9 < 0.15 * expected[0] * expected[1]:  # (cells are 3 x 3 mm)
+        ctx.log("front: the page is an approval sheet but no block of artwork was found on it; the whole page is used", "warning")
+        return None
+    t = Box(*trim.trim_box_pt)
+    px, py = (t.x1 - t.x0) / img.width, (t.y1 - t.y0) / img.height  # pt per px
+    x0, y0, x1, y1 = (v * cell for v in best[1])
+    box = Box(t.x0 + x0 * px, t.y1 - y1 * py, t.x0 + x1 * px, t.y1 - y0 * py)
+    ctx.log(f"front: no dieline on the {trim.trim_width_mm:.0f} x {trim.trim_height_mm:.0f} mm page, which is an approval sheet; its artwork "
+            f"block {box.width_mm:.0f} x {box.height_mm:.0f} mm is used for the {expected[0]:g} x {expected[1]:g} mm panel", "warning")
+    return trim_impl.crop_panel(trim, "front", box, ctx.storage)
+
+
+def _other_designs(ctx: StepContext, layout: SheetLayout, sheet_box: tuple, front_trim: trim_impl.TrimArtworkOutput,
+                   sizes: dict[str, tuple[float, float]], wanted: list[str], sheet, first: dict[str, Panel]) -> list[dict[str, Panel]]:
+    """The sheet's other lanes (AR Ups across, AC Ups around; the layout's own count when the table's does
+    not fit the sheet), cut like design 1 one lane over, kept when their front differs from design 1's."""
+
+    if not layout.panels or "front" not in first or first["front"].trim is None:
+        return []
+    box = Box(*sheet_box)
+    W, H = box.width_mm, box.height_mm
+    # (a lane must hold the widest panel; its offset from the sheet edge is margin, not lane: FGPO5262's
+    # 63.5 mm faces sit 7 mm in, and counting that turned its four lanes into three, cut in the wrong places)
+    lane = max(p.width_mm for p in layout.panels), max(p.height_mm for p in layout.panels)
+
+    def count(ups: float | None, extent: float, used: float) -> int:
+        n = int(ups or 1)
+        return n if n > 1 and extent / n >= used - 2 else 1
+
+    across = count(sheet.spec_table.ar_ups.value, W, lane[0]) if layout.axis != "horizontal" else count(sheet.spec_table.ac_ups.value, W, lane[0])
+    down = count(sheet.spec_table.ac_ups.value, H, lane[1]) if layout.axis != "horizontal" else count(sheet.spec_table.ar_ups.value, H, lane[1])
+    if across == 1 and down == 1 and layout.ups > 1:
+        across, down = (layout.ups, 1) if layout.axis != "horizontal" else (1, layout.ups)
+
+    def look(panel: Panel) -> np.ndarray:
+        img = Image.open(io.BytesIO(ctx.storage.get_bytes(panel.trim.bleed_key))).convert("RGB")
+        return np.asarray(img.resize((100, max(10, round(100 * img.height / img.width))), Image.BOX)).astype(np.int16)
+
+    def differs(a: np.ndarray, b: np.ndarray) -> bool:
+        # by 10 x 10 blocks: a badge or a flavour name changes a block outright (FGPO5262's "Elaichi");
+        # a copy a fraction of a pixel off only softens edges
+        if a.shape != b.shape:
+            return True
+        d = np.abs(a - b).max(axis=2)
+        bh, bw = d.shape[0] // 10, d.shape[1] // 10
+        return max(d[y:y + bh, x:x + bw].mean() for y in range(0, bh * 10, bh) for x in range(0, bw * 10, bw)) > 20
+
+    base = look(first["front"])
+    out: list[dict[str, Panel]] = []
+    for j in range(down):
+        for i in range(across):
+            if i == 0 and j == 0:
+                continue
+            dx, dy = i * W / across, j * H / down
+            shifted = layout.model_copy(update={"panels": [p.model_copy(update={"x_mm": p.x_mm + dx, "y_mm": p.y_mm + dy}) for p in layout.panels]})
+            tag = f"_d{len(out) + 2}"
+            lane_panels = _sheet_panels(ctx, shifted, sheet_box, front_trim, sizes, wanted, tag=tag)
+            if "front" not in lane_panels:
+                continue
+            _wrap_overflow(ctx, shifted, box, front_trim, lane_panels, W, H, W / across, H / down)
+            if not differs(look(lane_panels["front"]), base):
+                continue  # the same design repeated (a plain multi-up sheet)
+            out.append(lane_panels)
+            ctx.log(f"design {len(out) + 1}: lane {i + 1}, {j + 1} of the sheet differs from design 1", "audit")
+    return out
+
+
+def _wrap_overflow(ctx: StepContext, layout: SheetLayout, box: Box, front_trim: trim_impl.TrimArtworkOutput,
+                   panels: dict[str, Panel], W: float, H: float, pitch_x: float, pitch_y: float) -> None:
+    """A face reaching into the next lane's seal (FGPO5262: 7 mm) runs off the sheet on the last lane: that
+    strip is taken from the lane's own start instead, as the first lane takes it from its neighbour."""
+    sheet = Image.open(io.BytesIO(ctx.storage.get_bytes(front_trim.bleed_key))).convert("RGB")
+    t = Box(*front_trim.trim_box_pt)
+    sx, sy = sheet.width / (t.x1 - t.x0), sheet.height / (t.y1 - t.y0)
+
+    def grab(x_mm: float, y_mm: float, w_mm: float, h_mm: float) -> Image.Image:
+        """The sheet render under a rectangle given like a SheetPanel (mm from the sheet box's top-left)."""
+        b = extract_impl.panel_box(box, layout.panels[0].model_copy(update={"x_mm": x_mm, "y_mm": y_mm, "width_mm": w_mm, "height_mm": h_mm}))
+        return sheet.crop((round((b.x0 - t.x0) * sx), round((t.y1 - b.y1) * sy), round((b.x1 - t.x0) * sx), round((t.y1 - b.y0) * sy)))
+
+    for p in layout.panels:
+        panel = panels.get(p.role or "")
+        over_x, over_y = p.x_mm + p.width_mm - W, p.y_mm + p.height_mm - H
+        if panel is None or panel.trim is None or (over_x < 0.5 and over_y < 0.5):
+            continue
+        cut = Image.open(io.BytesIO(ctx.storage.get_bytes(panel.trim.bleed_key))).convert("RGB")
+        s = cut.width / p.width_mm
+        if over_x >= 0.5:  # the strip past the right edge, from one lane to the left
+            src = grab(W - pitch_x, p.y_mm, over_x, p.height_mm)
+            cut.paste(src.resize((round(over_x * s), cut.height)), (cut.width - round(over_x * s), 0))
+        if over_y >= 0.5:  # the strip past the bottom edge, from one lane up
+            src = grab(p.x_mm, H - pitch_y, p.width_mm, over_y)
+            cut.paste(src.resize((cut.width, round(over_y * s))), (0, cut.height - round(over_y * s)))
+        buf = io.BytesIO()
+        cut.save(buf, format="PNG")
+        ctx.storage.put_bytes(panel.trim.bleed_key, buf.getvalue(), "image/png")
 
 
 def _sheet_panels(ctx: StepContext, layout: SheetLayout, sheet_box: tuple, front_trim: trim_impl.TrimArtworkOutput,
-                  sizes: dict[str, tuple[float, float]], wanted: list[str]) -> dict[str, Panel]:
+                  sizes: dict[str, tuple[float, float]], wanted: list[str], tag: str = "") -> dict[str, Panel]:
     """Panels printed on the job's own sheet, cut from its render (bleed 0: the cut is the dieline)."""
     box = Box(*sheet_box)
     front = layout.face("front")
@@ -377,7 +527,7 @@ def _sheet_panels(ctx: StepContext, layout: SheetLayout, sheet_box: tuple, front
     blank = layout.blank()
     if blank is not None:
         # One pillow blank supplies both faces; the texture step splits it at the fin seal.
-        crop = trim_impl.crop_panel(front_trim, "blank", extract_impl.panel_box(box, blank), ctx.storage)
+        crop = trim_impl.crop_panel(front_trim, "blank" + tag, extract_impl.panel_box(box, blank), ctx.storage)
         for role in ("front", "back"):
             if role in sizes:
                 out[role] = Panel(role=role, source="blank", expected_mm=sizes[role], file_id=ctx.job.file_id, item_code=ctx.job.item_code,
@@ -401,7 +551,7 @@ def _sheet_panels(ctx: StepContext, layout: SheetLayout, sheet_box: tuple, front
                 rotation = 180  # its edge that joins the front becomes the top edge, as for a gusset PDF
         if role is None or role not in sizes or role in out:
             continue
-        crop = trim_impl.crop_panel(front_trim, role, extract_impl.panel_box(box, p), ctx.storage)
+        crop = trim_impl.crop_panel(front_trim, role + tag, extract_impl.panel_box(box, p), ctx.storage)
         out[role] = Panel(role=role, source="sheet", expected_mm=sizes[role], file_id=ctx.job.file_id, item_code=ctx.job.item_code,
                           filename=ctx.job.file.filename, trim=crop, bleed=Sides.uniform(0), bleed_source="sheet", rotation=rotation)
         ctx.log(f"{role}: cut from the sheet, {p.width_mm:g} x {p.height_mm:g} mm at {p.x_mm:g}, {p.y_mm:g} mm"
