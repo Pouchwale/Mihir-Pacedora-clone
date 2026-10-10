@@ -6,12 +6,12 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app import auth
+from app import activity, auth
 from app.db import get_session
 from app.index import store
 from app.index.conditions import spec_context
@@ -42,6 +42,7 @@ class VersionOut(BaseModel):
     reason: str
     author: str
     created_at: datetime
+    changes: list[dict] = []  # each value this version changed: {path, old, new}
 
 
 class EntrySummary(BaseModel):
@@ -296,7 +297,7 @@ class SaveIn(BaseModel):
 
 
 @router.put("/{kind}/{key}")
-def save_entry(kind: str, key: str, body: SaveIn, session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> EntryOut:
+def save_entry(kind: str, key: str, body: SaveIn, request: Request, session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> EntryOut:
     data = body.data
     if body.yaml is not None:
         try:
@@ -306,6 +307,8 @@ def save_entry(kind: str, key: str, body: SaveIn, session: Session = Depends(get
     if not isinstance(data, dict):
         raise HTTPException(422, {"problems": ["entry must be a mapping"]})
     _may_write(session, user, kind, key, data)
+    old = store.get_version(session, kind, key)
+    before = dict(old.data) if old else None
     try:
         author = store.Author.of(user)
         if kind == "output_preset" and data.get("is_default"):
@@ -319,6 +322,7 @@ def save_entry(kind: str, key: str, body: SaveIn, session: Session = Depends(get
     except store.IndexError_ as exc:
         session.rollback()
         raise _problems(exc) from exc
+    _log_change(request, user, "index changed" if before is not None else "index created", kind, key, before, data, body.reason, session)
     return get_entry(kind, key, None, session, user)
 
 
@@ -337,8 +341,9 @@ class ReasonIn(BaseModel):
 
 
 @router.delete("/{kind}/{key}")
-def archive_entry(kind: str, key: str, body: ReasonIn, session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> dict:
+def archive_entry(kind: str, key: str, body: ReasonIn, request: Request, session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> dict:
     _may_write(session, user, kind, key, {})
+    activity.record("index archived", user, request, kind=kind, key=key, reason=body.reason)
     try:
         store.archive(session, _kind(kind), key, store.Author.of(user), body.reason)
         session.commit()
@@ -350,7 +355,19 @@ def archive_entry(kind: str, key: str, body: ReasonIn, session: Session = Depend
 
 @router.get("/{kind}/{key}/history")
 def history(kind: str, key: str, session: Session = Depends(get_session), _: User = Depends(auth.current_user)) -> list[VersionOut]:
-    return [_version_out(v) for v in store.history(session, _kind(kind), key)]
+    versions = store.history(session, _kind(kind), key)  # newest first
+    out = []
+    for i, v in enumerate(versions):
+        before = versions[i + 1].data if i + 1 < len(versions) else {}
+        out.append(_version_out(v).model_copy(update={"changes": store.field_changes(before, v.data)}))
+    return out
+
+
+def _log_change(request: Request, user: User, action: str, kind: str, key: str, before: dict | None, after: dict | None, reason: str, session: Session) -> None:
+    """The activity log line for an index / workflow change: who, why, and every value before and after."""
+    now = store.get_version(session, kind, key)
+    activity.record(action, user, request, kind=kind, key=key, version=now.version if now else None, reason=reason,
+                    changes=store.field_changes(before or {}, dict(now.data) if now else (after or {})))  # (as saved, defaults filled in)
 
 
 @router.get("/{kind}/{key}/diff", response_class=PlainTextResponse)
@@ -367,13 +384,16 @@ class RestoreIn(BaseModel):
 
 
 @router.post("/{kind}/{key}/restore")
-def restore(kind: str, key: str, body: RestoreIn, session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> EntryOut:
+def restore(kind: str, key: str, body: RestoreIn, request: Request, session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> EntryOut:
     old = store.get_version(session, kind, key, body.version)
     _may_write(session, user, kind, key, dict(old.data) if old else {})
+    cur = store.get_version(session, kind, key)
+    before = dict(cur.data) if cur else None
     try:
         store.restore(session, _kind(kind), key, body.version, store.Author.of(user), body.reason)
         session.commit()
     except store.IndexError_ as exc:
         session.rollback()
         raise _problems(exc) from exc
+    _log_change(request, user, f"index restored to v{body.version}", kind, key, before, dict(old.data) if old else None, body.reason, session)
     return get_entry(kind, key, None, session, user)

@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useState } from "rea
 import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { api, KEYLINE_KINDS, KindInfo, Permission, ROLE_LABELS, User } from "./api";
 import Activity from "./pages/Activity";
+import Notifications from "./components/Notifications";
 import RaiseError from "./components/RaiseError";
 import ErrorReports from "./pages/ErrorReports";
 import EntryPage from "./pages/EntryPage";
@@ -183,6 +184,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           {can("manage_errors") && <NavLink to="/errors"><NavIcon name="errors" /><span>Error reports</span>{openErrors > 0 && <span className="count alert">{openErrors}</span>}</NavLink>}
         </nav>
         <div className="sidebar-foot">
+          {can("manage_users") && <Notifications />}
           <RaiseError className="raise-error-side" />
           <div className="theme-switch" role="group" aria-label="Theme">
             {(["light", "dark", "system"] as Theme[]).map((t) => (

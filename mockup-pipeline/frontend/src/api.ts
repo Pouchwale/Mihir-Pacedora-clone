@@ -68,6 +68,7 @@ export const KEYLINE_KINDS = new Set(["keyline_template", "pouch_type", "standar
 export interface User {
   id: number; email: string; name: string; role: Role; active: boolean;
   permissions: Permission[]; locked: boolean; created_at: string | null; last_login_at: string | null;
+  permission_overrides?: Partial<Record<Permission, boolean>>; role_permissions?: Permission[];
 }
 export interface KindInfo { kind: string; label: string; singleton: boolean; count: number; page?: string | null }
 export interface EntrySummary { kind: string; key: string; name: string; version: number; archived: boolean; updated_at: string; author: string; extra?: Record<string, unknown> }
@@ -104,7 +105,7 @@ export interface WorkflowOut {
 export const emptyNode = (id: string, type: NodeType, x: number, y: number): WfNode => ({
   id, type, label: "", position: { x, y }, question: "", fields: [], pouch_type: null, message: "", workflow: null, notes: "",
 });
-export interface VersionMeta { version: number; action: string; reason: string; author: string; created_at: string }
+export interface VersionMeta { version: number; action: string; reason: string; author: string; created_at: string; changes?: { path: string; old: unknown; new: unknown }[] }
 export interface Entry { kind: string; key: string; version: number; current_version: number; archived: boolean; data: Record<string, unknown>; yaml: string; meta: VersionMeta }
 
 // Index data shapes (mirrors app/index/schemas.py).

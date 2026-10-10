@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { api, ApiError, Role, ROLE_LABELS } from "../api";
 import { formatTime } from "../util";
+import Changes, { type Change } from "../components/Changes";
 
 interface Entry { ts: string; action: string; user: string | null; role: string | null; ip?: string; method?: string; path?: string; status?: number; [k: string]: unknown }
 interface Log { day: string; days: string[]; users: string[]; entries: Entry[]; total: number; page: number; page_size: number; pages: number; folder: string }
 const PAGE_SIZES = [50, 100, 250, 500];
 
-const SHOWN = new Set(["ts", "action", "user", "role", "ip", "method", "path", "status", "ms", "page"]);
+const SHOWN = new Set(["ts", "action", "user", "role", "ip", "method", "path", "status", "ms", "page", "changes"]);
 
 /** What happened, in words: the request line, the page, or the event's own fields. */
 function describe(e: Entry): string {
@@ -66,7 +67,13 @@ export default function Activity() {
                 <td className="small" style={{ whiteSpace: "nowrap" }}>{formatTime(e.ts, true)}</td>
                 <td className="small">{e.user ?? <span className="muted">not signed in</span>}{e.role && <div className="muted">{ROLE_LABELS[e.role as Role] ?? e.role}</div>}</td>
                 <td><span className={`badge ${e.action.includes("failed") ? "bad" : e.action === "request" || e.action === "page" ? "" : "accent"}`}>{e.action}</span></td>
-                <td className="small" style={{ maxWidth: 560, wordBreak: "break-word" }}>{describe(e)}</td>
+                <td className="small" style={{ maxWidth: 560, wordBreak: "break-word" }}>
+                  {describe(e)}
+                  {Array.isArray(e.changes) && <Changes changes={e.changes as Change[]} max={20} />}
+                  {!!e.changes && !Array.isArray(e.changes) && typeof e.changes === "object" && (
+                    <Changes changes={Object.entries(e.changes as Record<string, unknown>).map(([path, v]) => Array.isArray(v) && v.length === 2 ? { path, old: v[0], new: v[1] } : { path, old: null, new: v })} max={20} />
+                  )}
+                </td>
                 <td className="small muted">{e.ip}</td>
               </tr>
             ))}

@@ -565,3 +565,31 @@ button.primary.login-submit:active:not(:disabled) { transform: translateY(1px) s
 .design-picker button.design-all { width: auto; padding: 0 10px; font-size: 12px; font-weight: 600; color: var(--text); }
 .viewer:focus { outline: none; }
 .viewer:focus-visible { outline: 2px solid #b01f24; outline-offset: 2px; }
+
+/* notifications: errors the admin solved */
+.notif { position: relative; }
+.notif-bell { width: 100%; display: flex; align-items: center; gap: 8px; justify-content: flex-start; font-size: 12.5px; }
+.notif-bell .count { margin-left: auto; }
+.notif-panel { position: fixed; left: 12px; bottom: 96px; width: min(360px, calc(100vw - 24px)); max-height: 60vh; overflow: auto; z-index: 50; /* (fixed: the scrolling sidebar would clip it) */
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
+.notif-head { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.notif-empty { padding: 12px; }
+.notif-item { padding: 10px 12px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 3px; }
+.notif-item:last-child { border-bottom: 0; }
+.notif-item.new { background: var(--accent-soft); }
+/* index / workflow changes, value by value */
+.changes { margin: 4px 0 0; padding-left: 16px; display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
+.changes code { font-size: 11.5px; }
+.changes s { text-decoration-thickness: 1px; }
+/* per-person access on the Users page */
+.access-row td { background: var(--panel-2); }
+.access-editor { display: flex; flex-direction: column; gap: 10px; padding: 4px 2px; }
+.access-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 6px 16px; }
+.access-item { display: flex; align-items: center; gap: 8px; }
+.access-item.changed span:not(.badge) { font-weight: 700; }
+.notif-top .notif-bell { width: auto; padding: 8px 12px; font-size: 13.5px; }
+.notif-top .notif-bell.has-new { border-color: var(--bad); }
+.notif-top .notif-panel { position: absolute; left: auto; right: 0; bottom: auto; top: calc(100% + 6px); }
+.pw-field { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.pw-field .password-row { flex: 1 1 220px; min-width: 200px; }
+.pw-field .password-row input { font-family: var(--mono); }

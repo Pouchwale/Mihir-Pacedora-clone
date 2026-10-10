@@ -9,12 +9,12 @@ import json
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import auth
+from app import activity, auth
 from app.api.job_routes import _event, register_file
 from app.db import get_session
 from app.index import store
@@ -186,8 +186,10 @@ class PublishIn(BaseModel):
 
 
 @router.post("/{key}/publish")
-def publish(key: str, body: PublishIn, session: Session = Depends(get_session), user: User = Depends(auth.require("edit_keyline"))) -> WorkflowOut:
+def publish(key: str, body: PublishIn, request: Request, session: Session = Depends(get_session), user: User = Depends(auth.require("edit_keyline"))) -> WorkflowOut:
     _key(key)
+    old = store.get_version(session, "workflow", key)
+    before = dict(old.data) if old else {}
     draft = session.get(WorkflowDraft, key)
     data = body.graph if body.graph is not None else (draft.graph if draft else None)
     if data is None:
@@ -204,6 +206,9 @@ def publish(key: str, body: PublishIn, session: Session = Depends(get_session), 
     if draft is not None:
         session.delete(draft)
     session.commit()
+    now = store.get_version(session, "workflow", key)
+    activity.record("workflow published", user, request, kind="workflow", key=key, version=now.version if now else None, reason=body.reason,
+                    changes=store.field_changes(before, graph.model_dump(mode="json")))
     return get_workflow(key, session, user)
 
 

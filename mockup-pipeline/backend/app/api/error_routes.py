@@ -77,6 +77,29 @@ def list_errors(status: Literal["open", "resolved", "all"] = "open", session: Se
     return {"reports": [_out(session, r) for r in reports], "counts": {"open": counts.get("open", 0), "resolved": counts.get("resolved", 0)}}
 
 
+@router.get("/notifications")
+def notifications(session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> dict:
+    """The user's own reports the admin resolved: unread = resolved after the user last looked."""
+    resolved = list(session.scalars(select(ErrorReport).where(ErrorReport.user_id == user.id, ErrorReport.status == "resolved")
+                                    .order_by(ErrorReport.resolved_at.desc()).limit(30)))
+    def unread(r: ErrorReport) -> bool:
+        return r.resolved_at is not None and (r.user_seen_at is None or auth._aware(r.user_seen_at) < auth._aware(r.resolved_at))
+    return {"unread": sum(unread(r) for r in resolved),
+            "items": [{**_out(session, r).model_dump(mode="json"), "unread": unread(r)} for r in resolved]}
+
+
+@router.post("/notifications/seen")
+def notifications_seen(session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> dict:
+    now = utcnow()
+    n = 0
+    for r in session.scalars(select(ErrorReport).where(ErrorReport.user_id == user.id, ErrorReport.status == "resolved")):
+        if r.user_seen_at is None or auth._aware(r.user_seen_at) < auth._aware(r.resolved_at or now):
+            r.user_seen_at = now
+            n += 1
+    session.commit()
+    return {"seen": n}
+
+
 class ReportPatch(BaseModel):
     status: Literal["open", "resolved"] | None = None
     admin_note: str | None = Field(None, max_length=4000)

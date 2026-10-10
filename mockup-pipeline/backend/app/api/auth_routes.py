@@ -22,6 +22,8 @@ class UserOut(BaseModel):
     role: str
     active: bool
     permissions: list[str] = []
+    permission_overrides: dict[str, bool] = {}  # the admin's changes to the role's rights
+    role_permissions: list[str] = []  # what the role alone gives
     locked: bool = False
     created_at: datetime | None = None
     last_login_at: datetime | None = None
@@ -30,6 +32,8 @@ class UserOut(BaseModel):
     def of(cls, u: User) -> "UserOut":
         locked = bool(u.locked_until and auth._aware(u.locked_until) > utcnow())
         return cls(id=u.id, email=u.email, name=u.name, role=u.role, active=u.active, permissions=auth.permissions(u),
+                   permission_overrides={k: v for k, v in (u.permission_overrides or {}).items() if k in auth.OVERRIDABLE},
+                   role_permissions=[p for p in auth.PERMISSIONS if auth.role_can(u.role, p)],
                    locked=locked, created_at=u.created_at, last_login_at=u.last_login_at)
 
 
@@ -100,6 +104,8 @@ class UserPatch(BaseModel):
     active: bool | None = None
     password: str | None = Field(None, description="Set a new password")
     unlock: bool = False  # clear the lock after too many wrong passwords
+    # {permission: true (give) / false (take away) / null (as the role)}; only the rights in auth.OVERRIDABLE
+    permissions: dict[str, bool | None] | None = None
 
 
 def _sign_out(session: Session, user: User) -> int:
@@ -178,6 +184,21 @@ def update_user(user_id: int, body: UserPatch, request: Request, session: Sessio
     if body.active is not None and body.active != user.active:
         changes["active"] = [user.active, body.active]
         user.active = body.active
+    if body.permissions is not None:
+        bad = sorted(set(body.permissions) - set(auth.OVERRIDABLE))
+        if bad:
+            raise HTTPException(422, f"Not a right the admin can give per user: {', '.join(bad)}")
+        before = set(auth.permissions(user))
+        own = dict(user.permission_overrides or {})
+        for perm, value in body.permissions.items():
+            if value is None or value == auth.role_can(user.role, perm):
+                own.pop(perm, None)  # the same as the role: no override needed
+            else:
+                own[perm] = value
+        user.permission_overrides = own or None
+        after = set(auth.permissions(user))
+        for perm in sorted(before ^ after):
+            changes[f"access.{perm}"] = [perm in before, perm in after]
     if body.password:
         auth.validate_password(body.password)
         user.password_hash = auth.hash_password(body.password)
@@ -186,7 +207,7 @@ def update_user(user_id: int, body: UserPatch, request: Request, session: Sessio
     if body.unlock and (user.locked_until or user.failed_logins):
         user.failed_logins, user.locked_until = 0, None
         changes["unlocked"] = True
-    if ({"credentials_reset", "role", "email"} & changes.keys() or changes.get("active") == [True, False]) and user.id != admin.id:
+    if ({"credentials_reset", "role", "email"} & changes.keys() or changes.get("active") == [True, False]) and user.id != admin.id:  # (new rights apply at the next request)
         changes["sessions_ended"] = _sign_out(session, user)  # the admin's own session survives their own edit
     session.commit()
     if changes:

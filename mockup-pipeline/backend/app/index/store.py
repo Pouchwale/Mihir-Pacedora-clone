@@ -151,6 +151,34 @@ def diff(old: dict | None, new: dict | None) -> str:
     return "\n".join(difflib.unified_diff(a, b, "before", "after", lineterm=""))
 
 
+def field_changes(old: Any, new: Any, path: str = "", out: list | None = None, limit: int = 300) -> list[dict]:
+    """Every value that differs, as {path, old, new}: dicts by key, lists of items with an "id" / "key"
+    by that, other lists by position (a workflow's nodes stay matched when one is inserted)."""
+    out = [] if out is None else out
+    if len(out) >= limit:
+        return out
+
+    def keyed(items: list) -> dict | None:
+        names = [i.get("id", i.get("key")) if isinstance(i, dict) else None for i in items]
+        return dict(zip(names, items)) if names and None not in names and len(set(names)) == len(names) else None
+
+    if isinstance(old, dict) and isinstance(new, dict):
+        for k in list(dict.fromkeys([*old, *new])):
+            field_changes(old.get(k), new.get(k), f"{path}.{k}" if path else str(k), out, limit)
+    elif isinstance(old, list) and isinstance(new, list) and (ko := keyed(old)) is not None and (kn := keyed(new)) is not None:
+        for k in list(dict.fromkeys([*ko, *kn])):
+            field_changes(ko.get(k), kn.get(k), f"{path}[{k}]", out, limit)
+    elif isinstance(old, list) and isinstance(new, list) and all(not isinstance(v, (dict, list)) for v in [*old, *new]):
+        if old != new:
+            out.append({"path": path, "old": old, "new": new})
+    elif isinstance(old, list) and isinstance(new, list):
+        for i in range(max(len(old), len(new))):
+            field_changes(old[i] if i < len(old) else None, new[i] if i < len(new) else None, f"{path}[{i}]", out, limit)
+    elif old != new:
+        out.append({"path": path, "old": old, "new": new})
+    return out
+
+
 def snapshot(session: Session) -> dict[str, dict[str, int]]:
     """{kind: {key: version}} of the current index; jobs store this to re-render identically."""
     out: dict[str, dict[str, int]] = {}

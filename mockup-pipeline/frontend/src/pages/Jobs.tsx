@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, type User } from "../api";
 import { useSession } from "../App";
 import { formatTime, parseTime } from "../util";
+import Notifications from "../components/Notifications";
 
 export interface JobSummary {
   id: number; batch_id: number | null; filename: string; item_code: string | null; client_name: string | null; status: string;
@@ -177,7 +178,10 @@ export default function Jobs() {
     <>
       <div className="page-head">
         <div><h1>Jobs</h1><div className="muted">Every approval PDF you upload becomes a job; the list updates live.</div></div>
-        <Link className="btn primary" to="/upload"><Icon d={I.upload} /> Upload PDFs</Link>
+        <div className="row">
+          {!can("manage_users") && <Notifications top />}
+          <Link className="btn primary" to="/upload"><Icon d={I.upload} /> Upload PDFs</Link>
+        </div>
       </div>
 
       <div className="stat-row">

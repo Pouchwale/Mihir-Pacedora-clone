@@ -117,19 +117,29 @@ def current_user(request: Request, session: Session = Depends(get_session)) -> U
     return s.user
 
 
+# Rights the admin may give or take per user, over the role's own (the Users page). Managing users stays
+# with the admin role, so no override can lock every administrator out.
+OVERRIDABLE = ("edit_index", "edit_keyline", "approve", "view_activity", "see_all_jobs", "manage_errors")
+
+
+def role_can(role: str, permission: str) -> bool:
+    return role in PERMISSIONS[permission]
+
+
 def can(user: User, permission: str) -> bool:
-    return user.role in PERMISSIONS[permission]
+    own = (getattr(user, "permission_overrides", None) or {}).get(permission) if permission in OVERRIDABLE else None
+    return own if isinstance(own, bool) else role_can(user.role, permission)
 
 
 def permissions(user: User) -> list[str]:
-    return [p for p, roles in PERMISSIONS.items() if user.role in roles]
+    return [p for p in PERMISSIONS if can(user, p)]
 
 
 def require(permission: str):
     """Dependency: the signed-in user, or 403 when their role lacks `permission`."""
     def check(user: User = Depends(current_user)) -> User:
         if not can(user, permission):
-            raise HTTPException(403, f"Your role ({ROLE_LABELS.get(user.role, user.role)}) may not do this")
+            raise HTTPException(403, f"You ({ROLE_LABELS.get(user.role, user.role)}) may not do this; ask the admin for access")
         return user
     return check
 
@@ -141,7 +151,7 @@ def can_edit_kind(user: User, kind: str) -> bool:
 def require_kind(user: User, kind: str) -> None:
     if not can_edit_kind(user, kind):
         what = "keyline, dieline and workflow values" if kind in KEYLINE_KINDS else "the index"
-        raise HTTPException(403, f"Your role ({ROLE_LABELS.get(user.role, user.role)}) may not change {what}")
+        raise HTTPException(403, f"You ({ROLE_LABELS.get(user.role, user.role)}) may not change {what}; ask the admin for access")
 
 
 require_admin = require("manage_users")

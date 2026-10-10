@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, ApiError, VersionMeta } from "../api";
 import { useSession } from "../App";
 import { formatTime } from "../util";
+import Changes from "./Changes";
 
 export default function History({ kind, entryKey, current, onRestored }: { kind: string; entryKey: string; current: number; onRestored: () => void }) {
   const { canEdit } = useSession();
@@ -43,7 +44,10 @@ export default function History({ kind, entryKey, current, onRestored }: { kind:
             {versions.map((v) => (
               <tr key={v.version} className="clickable" onClick={() => setSelected(v.version)} style={selected === v.version ? { outline: "2px solid var(--accent)" } : undefined}>
                 <td>v{v.version} {v.version === current && <span className="badge ok">current</span>}</td>
-                <td><span className="badge">{v.action}</span> {v.reason}</td>
+                <td>
+                  <span className="badge">{v.action}</span> {v.reason}
+                  {!!v.changes?.length && <div className="small muted">{v.changes.length} value{v.changes.length === 1 ? "" : "s"} changed</div>}
+                </td>
                 <td className="muted">{v.author}</td>
                 <td className="muted small">{formatTime(v.created_at)}</td>
               </tr>
@@ -57,7 +61,16 @@ export default function History({ kind, entryKey, current, onRestored }: { kind:
         ) : (
           <>
             <h2>{selected === current ? `Changes in v${current}` : `v${selected} → current (v${current})`}</h2>
-            <Diff text={diff} />
+            {(() => {
+              const v = versions.find((x) => x.version === selected);
+              return v?.changes ? (
+                <div>
+                  <div className="small muted" style={{ marginBottom: 4 }}>What v{selected} changed (new values in bold), by {v.author}:</div>
+                  <Changes changes={v.changes} />
+                </div>
+              ) : null;
+            })()}
+            <details><summary className="small muted">Full YAML diff</summary><Diff text={diff} /></details>
             {editable && selected !== current && (
               <div className="row">
                 <input style={{ flex: 1 }} placeholder={`Reason (default: restore version ${selected})`} value={reason} onChange={(e) => setReason(e.target.value)} />

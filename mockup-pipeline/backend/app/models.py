@@ -37,6 +37,8 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(120), default="")
     password_hash: Mapped[str] = mapped_column(String(100))
     role: Mapped[str] = mapped_column(String(20))  # app.auth.Role: admin, head_designer, designer, manager
+    # the admin's per-user changes to the role's rights: {permission: true / false}; absent = as the role
+    permission_overrides: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     failed_logins: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
@@ -147,6 +149,8 @@ class ErrorReport(Base):
     admin_note: Mapped[str] = mapped_column(Text, default="")
     resolved_by: Mapped[str | None] = mapped_column(String(254), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    # when the user who raised it last opened their notifications: a resolution after it is news to them
+    user_seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     user: Mapped[User | None] = relationship()
 

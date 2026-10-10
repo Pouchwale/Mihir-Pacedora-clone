@@ -211,3 +211,43 @@ def test_jobs_are_their_uploaders_and_errors_reach_the_admin(staff, seeded):
     assert (done["status"], done["resolved_by"], done["admin_note"]) == ("resolved", "admin@example.com", "fixed the swap")
     assert c.get("/api/errors?status=resolved").json()["reports"][0]["id"] == r.json()["id"]
     assert any(e["action"] == "error raised" for e in _today())
+
+
+def test_admin_gives_one_person_a_right_and_logs_it(staff):
+    """Admin -> Users -> Access: a designer given keyline / workflow rights may use them at once;
+    the change and every index value it changes are logged with their old and new values."""
+    c = staff
+    login(c)
+    designer = next(u for u in c.get("/api/users").json() if u["email"] == "designer@example.com")
+    r = c.patch(f"/api/users/{designer['id']}", json={"permissions": {"edit_keyline": True, "manage_users": True}}, headers=H)
+    assert r.status_code == 422  # managing users stays with the admin role
+    r = c.patch(f"/api/users/{designer['id']}", json={"permissions": {"edit_keyline": True}}, headers=H)
+    assert r.json()["permission_overrides"] == {"edit_keyline": True} and "edit_keyline" in r.json()["permissions"]
+    assert any(e["action"] == "user changed" and e["changes"].get("access.edit_keyline") == [False, True] for e in _today())
+
+    as_role(c, "designer")
+    assert c.put("/api/index/standard_size/x", json={"data": {"name": "x"}, "reason": "r"}, headers=H).status_code in (200, 422)  # allowed now (422 = schema)
+    c.put("/api/index/client/x", json={"data": {"client_name": "A", "notes": "one"}, "reason": "first"}, headers=H)
+    c.put("/api/index/client/x", json={"data": {"client_name": "A", "notes": "two"}, "reason": "second"}, headers=H)
+    changed = [e for e in _today() if e["action"] == "index changed" and e["key"] == "x"][-1]
+    assert changed["changes"] == [{"path": "notes", "old": "one", "new": "two"}]
+    assert c.get("/api/index/client/x/history").json()[0]["changes"] == [{"path": "notes", "old": "one", "new": "two"}]
+
+    login(c)  # back to the role's rights
+    c.patch(f"/api/users/{designer['id']}", json={"permissions": {"edit_keyline": None}}, headers=H)
+    as_role(c, "designer")
+    assert "edit_keyline" not in c.get("/api/auth/me").json()["permissions"]
+
+
+def test_raiser_is_told_when_the_admin_solves_their_error(staff):
+    c = staff
+    as_role(c, "designer")
+    report = c.post("/api/errors", json={"message": "the gusset is wrong"}, headers=H).json()
+    assert c.get("/api/errors/notifications").json()["unread"] == 0
+    login(c)
+    c.patch(f"/api/errors/{report['id']}", json={"status": "resolved", "admin_note": "fixed"}, headers=H)
+    as_role(c, "designer")
+    n = c.get("/api/errors/notifications").json()
+    assert n["unread"] == 1 and n["items"][0]["admin_note"] == "fixed" and n["items"][0]["resolved_by"] == "admin@example.com"
+    c.post("/api/errors/notifications/seen", headers=H)
+    assert c.get("/api/errors/notifications").json()["unread"] == 0
