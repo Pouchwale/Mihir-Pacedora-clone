@@ -27,7 +27,7 @@ def _pdf_tools(request):
             pytest.skip(mark.kwargs["reason"])
 
 
-def measuring_render(job_id, token, views, width, height, transparent, want_glb, turntable):
+def measuring_render(job_id, token, views, width, height, transparent, want_glb, turntable, design=None):
     """A render stub that measures like the real renderer would: the size the geometry was built to."""
     from PIL import Image
     from sqlalchemy import select
