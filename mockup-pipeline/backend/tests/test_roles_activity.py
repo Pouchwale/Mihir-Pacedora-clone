@@ -251,3 +251,28 @@ def test_raiser_is_told_when_the_admin_solves_their_error(staff):
     assert n["unread"] == 1 and n["items"][0]["admin_note"] == "fixed" and n["items"][0]["resolved_by"] == "admin@example.com"
     c.post("/api/errors/notifications/seen", headers=H)
     assert c.get("/api/errors/notifications").json()["unread"] == 0
+
+
+def test_container_model_upload_takes_only_a_glb(staff):
+    """A sleeve container's 3D model: a binary glTF 2.0 file, checked by its header, stored by its hash."""
+    import struct
+
+    c = staff
+    login(c)
+    files = lambda data: {"file": ("m.glb", data, "model/gltf-binary")}  # noqa: E731
+    assert c.post("/api/index/container/model", files=files(b"<html>not a model</html>"), headers=H).status_code == 422
+    from tests.test_pouch_guards import _lathe_glb
+
+    def bare(body: bytes) -> bytes:  # a GLB of just a JSON chunk (4-byte aligned)
+        body += b" " * (-len(body) % 4)
+        return struct.pack("<4sII", b"glTF", 2, 12 + 8 + len(body)) + struct.pack("<I4s", len(body), b"JSON") + body
+
+    # valid GLBs the app cannot use are refused at once, not saved and then silently left out of every job
+    assert c.post("/api/index/container/model", files=files(bare(b'{"asset":{"version":"2.0"}}')), headers=H).status_code == 422
+    r = c.post("/api/index/container/model", files=files(bare(b'{"asset":{"version":"2.0"},"extensionsRequired":["KHR_draco_mesh_compression"]}')), headers=H)
+    assert r.status_code == 422 and "compress" in r.json()["detail"]
+    glb = _lathe_glb([(0.9, 0), (1, 0.1), (1, 1.6), (0.8, 2.0)], z_up=False)
+    r = c.post("/api/index/container/model", files=files(glb), headers=H)
+    assert r.status_code == 200 and r.json()["key"].startswith("containers/") and r.json()["key"].endswith(".glb")
+    as_role(c, "manager")  # reads the index without changing it
+    assert c.post("/api/index/container/model", files=files(glb), headers=H).status_code == 403

@@ -19,6 +19,7 @@ export interface BuildOptions {
 
 const FILM = 0.12; // half film thickness: front and back never z-fight in the seals
 const loader = new THREE.TextureLoader();
+const gltf = new GLTFLoader();
 
 // ---------------------------------------------------------------- helpers
 function smooth(e0: number, e1: number, x: number) {
@@ -1160,77 +1161,277 @@ function canEnd(r: number, H: number, mat: THREE.Material): THREE.Object3D[] {
   return [spun(end, r), onEnd(ring, 0.8, P, bright), onEnd(tab, 0.6, P + 0.45, bright), rivet];
 }
 
+// Uploaded container models (Sleeve containers: "3D model (GLB)"), loaded once per URL.
+const containerModels = new Map<string, Promise<THREE.Object3D>>();
+
+/** Points on a model's surface, in its own world space (x, y, z, ...): every vertex, plus points along every
+ *  triangle edge no further apart than `step`. A wall drawn as tall faces has vertices only at a few heights;
+ *  without the edges, the slices between them read the inside (FGSL4090's clear jar read its ghee and stopped
+ *  its sleeve at a third of the height). */
+function vertices(root: THREE.Object3D, step = Infinity): Float32Array {
+  root.updateMatrixWorld(true);
+  const out: number[] = [];
+  const a = new THREE.Vector3(), b = new THREE.Vector3();
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    const pos = mesh.isMesh ? mesh.geometry.getAttribute("position") : undefined;
+    if (!pos) return;
+    const world = (i: number, v: THREE.Vector3) => v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+    for (let i = 0; i < pos.count; i++) { world(i, a); out.push(a.x, a.y, a.z); }
+    if (!Number.isFinite(step)) return;
+    const idx = mesh.geometry.index;
+    const tris = idx ? idx.count / 3 : pos.count / 3;
+    const corner = (t: number, c: number) => (idx ? idx.getX(3 * t + c) : 3 * t + c);
+    for (let t = 0; t < tris; t++) {
+      for (let c = 0; c < 3; c++) {
+        world(corner(t, c), a);
+        world(corner(t, (c + 1) % 3), b);
+        const n = Math.min(64, Math.floor(a.distanceTo(b) / step));
+        for (let k = 1; k < n; k++) { const f = k / n; out.push(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f); }
+      }
+    }
+  });
+  return new Float32Array(out);
+}
+
+const SECTORS = 24;
+
+/** Along `axis` (0 x, 1 y, 2 z), in `bins` slices: the container's radius at each, read as the median of its
+ *  24 sectors' outermost points, so a handle, a spout or a stray vertex does not count; slices with too few
+ *  sectors filled are 0 (no reading). Also how round the slices are (the spread of the sectors, lower is rounder). */
+function slices(p: Float32Array, axis: number, bins: number): { radius: Float64Array; roundness: number; lo: number; hi: number } {
+  const [u, w] = [0, 1, 2].filter((a) => a !== axis);
+  let lo = Infinity, hi = -Infinity, cu = 0, cw = 0;
+  const n = p.length / 3;
+  let minU = Infinity, maxU = -Infinity, minW = Infinity, maxW = -Infinity;
+  for (let i = 0; i < n; i++) {
+    lo = Math.min(lo, p[3 * i + axis]); hi = Math.max(hi, p[3 * i + axis]);
+    minU = Math.min(minU, p[3 * i + u]); maxU = Math.max(maxU, p[3 * i + u]);
+    minW = Math.min(minW, p[3 * i + w]); maxW = Math.max(maxW, p[3 * i + w]);
+  }
+  cu = (minU + maxU) / 2;
+  cw = (minW + maxW) / 2;
+  const cells = new Float64Array((bins + 1) * SECTORS);
+  for (let i = 0; i < n; i++) {
+    const b = Math.round(((p[3 * i + axis] - lo) / (hi - lo || 1)) * bins);
+    const du = p[3 * i + u] - cu, dw = p[3 * i + w] - cw;
+    const s = Math.min(SECTORS - 1, Math.floor(((Math.atan2(dw, du) + Math.PI) / (2 * Math.PI)) * SECTORS));
+    const k = b * SECTORS + s;
+    cells[k] = Math.max(cells[k], Math.hypot(du, dw));
+  }
+  const radius = new Float64Array(bins + 1);
+  let spread = 0, counted = 0;
+  for (let b = 0; b <= bins; b++) {
+    const row = Array.from(cells.subarray(b * SECTORS, (b + 1) * SECTORS)).filter((r) => r > 0).sort((a, c) => a - c);
+    if (row.length < SECTORS / 2) continue;
+    const med = row[Math.floor(row.length / 2)];
+    radius[b] = med;
+    const mean = row.reduce((a, c) => a + c, 0) / row.length;
+    spread += Math.sqrt(row.reduce((a, c) => a + (c - mean) ** 2, 0) / row.length) / (mean || 1);
+    counted++;
+  }
+  return { radius, roundness: counted ? spread / counted : Infinity, lo, hi };
+}
+
+/** A container's own 3D model, fitted to the sleeve: stood upright (the axis it is round about, whichever
+ *  way the file was exported: Y-up or Z-up), centred on that axis, scaled so its girth under the sleeve is the
+ *  print's, and its smoothed outline for the sleeve to be shrunk onto. */
+async function fittedModel(s: Sleeve): Promise<{ object: THREE.Object3D; height: number; top: number; radius: (y: number) => number }> {
+  if (!containerModels.has(s.model_url!)) containerModels.set(s.model_url!, gltf.loadAsync(s.model_url!).then((m) => m.scene));
+  const src = (await containerModels.get(s.model_url!)!).clone(true);
+  // which way is up: the axis whose slices are roundest (glTF says Y-up, but CAD and mesh tools often
+  // export Z-up: FGSL4090's ghee pot lay on its side and its sleeve came out shredded); Y wins a near tie
+  const corners = vertices(src);
+  if (!corners.length) throw new Error("The container's 3D model has no geometry");
+  const ext = new THREE.Box3().setFromArray(corners).getSize(new THREE.Vector3());
+  // (the outline is read in 200 slices; a detailed model's own vertices already reach every one, and sampling
+  // its edges too would run to tens of millions of points: only low-detail models are sampled along their
+  // edges. Same rule as the server's app/geometry/glb_shape.py.)
+  let tris = 0;
+  src.traverse((o) => { const g = (o as THREE.Mesh).isMesh ? (o as THREE.Mesh).geometry : null; if (g) tris += (g.index ? g.index.count : g.getAttribute("position").count) / 3; });
+  const step = tris > 60000 ? Infinity : Math.max(ext.x, ext.y, ext.z) / 300;
+  const raw = vertices(src, step);
+  const score = [0, 1, 2].map((a) => slices(raw, a, 40).roundness * (a === 1 ? 0.85 : 1));
+  const up = score.indexOf(Math.min(...score));
+  const holder = new THREE.Group();
+  holder.add(src);
+  if (up === 2) holder.rotation.x = -Math.PI / 2; // Z-up: +Z becomes +Y
+  if (up === 0) holder.rotation.z = Math.PI / 2; // X-up: +X becomes +Y
+  const pts = vertices(holder, step);
+  const N = 200;
+  const { radius: prof, lo, hi } = slices(pts, 1, N);
+  const h = hi - lo;
+  // heights with no reading take the line between their neighbours; then a moving average over 5 % of the
+  // height: shrunk film runs smooth over the mesh's facets and bumps
+  let first = -1, last = -1;
+  for (let i = 0; i <= N; i++) {
+    if (!prof[i]) continue;
+    if (last >= 0) for (let j = last + 1; j < i; j++) prof[j] = prof[last] + ((prof[i] - prof[last]) * (j - last)) / (i - last);
+    if (first < 0) first = i;
+    last = i;
+  }
+  if (first < 0) throw new Error("The container's 3D model is not a round container (no round cross-section found)");
+  for (let i = 0; i < first; i++) prof[i] = prof[first];
+  for (let i = last + 1; i <= N; i++) prof[i] = prof[last];
+  const average = (src: Float64Array, w: number) => src.map((_, i) => {
+    let sum = 0, cnt = 0;
+    for (let j = Math.max(0, i - w); j <= Math.min(N, i + w); j++) { sum += src[j]; cnt++; }
+    return sum / cnt;
+  });
+  // never inside the surface: averaging alone pulled the film into the pot's narrowing base (dark bands
+  // below the print on FGSL4090), so each pass keeps the larger of the average and the outline itself
+  const outer = (src: Float64Array) => src.map((v, i) => Math.max(v, prof[i]));
+  const smooth = outer(average(outer(average(prof, 5)), 2));
+  const at = (t: number) => smooth[Math.min(N, Math.max(0, Math.round(t * N)))];
+  // where a lid starts: above the widest part of the body, the neck (the narrowest point) after which the
+  // outline widens again by more than 4 %; a sleeve stops there (it ran up over the ghee pot's lid)
+  let widestAt = 0;
+  for (let i = 0; i <= N; i++) if (smooth[i] > smooth[widestAt]) widestAt = i;
+  let lidAt = N, neck = widestAt;
+  // (a neck is clearly narrower than the body: the ridges near a jar's base are not one, FGSL4090's clear
+  // jar stopped its sleeve between them)
+  for (let i = widestAt + 1; i <= N; i++) {
+    if (smooth[i] < smooth[neck]) neck = i;
+    // (a waisted bottle's middle is no lid; the ghee pot's rim is only 2.6 % wider than its neck; the same rule
+    // as the server's app/geometry/glb_shape.py, so the job's sizes and the model agree)
+    else if (smooth[i] > smooth[neck] * 1.015 && smooth[neck] < 0.88 * smooth[widestAt] && neck >= 0.55 * N) { lidAt = neck; break; }
+  }
+  // girth: the container's widest point is the print's (the server sizes the job the same way:
+  // app/geometry/glb_shape.py, so the job page's heights are the model's)
+  const k = (s.diameter_mm / 2) / Math.max(...smooth);
+  // centred on the axis the outline was measured about, standing on its base
+  const box = new THREE.Box3().setFromArray(pts);
+  holder.scale.setScalar(k);
+  holder.position.set(-((box.min.x + box.max.x) / 2) * k, -lo * k, -((box.min.z + box.max.z) / 2) * k);
+  // the job's height (the server sizes it: app/geometry/sleeve.py): the cap / lid keeps its modelled size and
+  // the body below it grows or shrinks to make up the rest (by default just enough to fit the sleeve)
+  const hn = h * k, lidY = (lidAt / N) * hn, cap = hn - lidY;
+  const body = Math.max(1, (s.container_height_mm || hn) - cap), sB = lidY > 0 ? body / lidY : 1;
+  const object = new THREE.Group();
+  const holderRoot = new THREE.Group();
+  holderRoot.add(holder);
+  holderRoot.updateMatrixWorld(true);
+  const n = new THREE.Vector3();
+  holder.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const geo = mesh.geometry.clone();
+    geo.applyMatrix4(mesh.matrixWorld); // (the model's own transforms baked in, then stretched in place)
+    const pos = geo.getAttribute("position"), nor = geo.getAttribute("normal");
+    for (let i = 0; i < pos.count; i++) {
+      const y = pos.getY(i), inBody = y < lidY;
+      pos.setY(i, inBody ? y * sB : y + (sB - 1) * lidY);
+      if (nor && inBody && sB !== 1) { n.fromBufferAttribute(nor, i); n.y /= sB; n.normalize(); nor.setXYZ(i, n.x, n.y, n.z); }
+    }
+    pos.needsUpdate = true;
+    if (nor) nor.needsUpdate = true;
+    geo.computeBoundingBox();
+    geo.computeBoundingSphere();
+    const copy = new THREE.Mesh(geo, mesh.material);
+    copy.name = mesh.name;
+    (copy.material as THREE.Material).name ||= "film"; // (measured as the model)
+    object.add(copy);
+  });
+  // the outline, in the stretched model: a height on it back to the model's own
+  const own = (y: number) => (y < body ? y / sB : y - (sB - 1) * lidY);
+  return { object, height: body + cap, top: body, radius: (y: number) => at(own(y) / hn) * k };
+}
+
 async function sleeveGroup(g: GeometrySpec, textures: Record<string, SceneTexture>): Promise<THREE.Group> {
   const s = g.sleeve!;
   const grp = new THREE.Group();
-  const H = s.container_height_mm, R = s.diameter_mm / 2, top = bodyTop(s);
-  const metal = s.shape === "tin" || s.shape === "can";
-  // the container body: a tin / can stands on a narrow ring with its base domed in (the wall's footer
-  // curves into it); other containers have a slightly domed base
-  const dome = Math.min(9, 0.07 * H);
-  const outline: [number, number][] = s.shape === "can"
-    ? [[0, dome], [0.5 * R, 0.75 * dome], [0.66 * R, 1.2], [0.71 * R, 0], [0.75 * R, 0.25]]
-    : s.shape === "tin" ? [[0, 2.6], [R - 1.2, 2.6], [R, 0.4]] : [[0, 1.2]];
-  for (let i = metal ? 1 : 0; i <= 120; i++) { const y = (top * i) / 120; outline.push([containerRadius(s, y), y]); }
-  // (a tin's / can's body closes below its recessed end, or its top would hide the tab / ring pull)
-  if (metal) outline.push([containerRadius(s, top) - 1.6, top - 3.4], [0, top - 6.5]);
-  else outline.push([0, top]);
-  const bodyMat = containerMaterial(g, s.body_color, s.material);
-  bodyMat.name = "film"; // (measured as the model)
-  grp.add(new THREE.Mesh(s.shape === "pot" ? faceted(lathe(outline), 12, 0) : lathe(outline), bodyMat));
-  if (s.material === "clear") {
-    // water inside a clear bottle, to its shoulder
-    const fill = outline.filter(([, y]) => y <= 0.62 * H).map(([r, y]) => [r * 0.95, y] as [number, number]);
-    const water = containerMaterial(g, "#cfe8f5", "clear");
-    grp.add(new THREE.Mesh(lathe([...fill, [0, fill[fill.length - 1][1]]]), water));
-  }
-  const cap = containerMaterial(g, s.cap_color, s.shape === "can" || s.shape === "tin" ? "metal" : "plastic");
-  if (s.shape === "tin") {
-    grp.add(...tinEnds(R, H, cap));
-  } else if (s.shape === "can") {
-    grp.add(...canEnd(containerRadius(s, H), H, cap));
-  } else if (s.shape === "pot") {
-    // the jar's lid, as measured: a band at its foot the neck's width (6 % of the jar's height), then the
-    // smooth lid at 89 % of the body's width, straight-sided with a well rounded top edge and a flat top
-    const rt = containerRadius(s, top), lidH = H - top;
-    const rl = R * 0.89, bandTop = top + 0.3 * lidH, er = Math.min(0.12 * lidH, 4); // edge radius
-    const band = containerMaterial(g, s.cap_color, "plastic");
-    if ("color" in band) band.color.multiplyScalar(0.85);
-    grp.add(new THREE.Mesh(lathe([[rt - 0.5, top - 1.2], [rt + 0.3, top - 0.6], [rt + 0.3, bandTop], [rt - 0.2, bandTop]], 160), band));
-    const lid: [number, number][] = [[rt - 0.2, bandTop], [rl - 0.6, bandTop], [rl, bandTop + 0.8], [rl, H - er]];
-    for (let i = 1; i <= 12; i++) { const a = (i / 12) * (Math.PI / 2); lid.push([rl - er + er * Math.cos(a), H - er + er * Math.sin(a)]); }
-    lid.push([0.6 * rl, H + 0.2], [0, H + 0.3]);
-    grp.add(new THREE.Mesh(lathe(lid, 200), cap));
-    const gap = containerMaterial(g, "#3a3a3a", "plastic");
-    const shadow = new THREE.Mesh(new THREE.TorusGeometry(rt + 0.4, 0.45, 8, 160), gap);
-    shadow.rotation.x = Math.PI / 2;
-    shadow.position.y = top - 1.2;
-    grp.add(shadow);
-  } else if (s.shape === "bottle") {
-    // a PET bottle's top: the neck's support flange, the tamper-evident band left on the neck, and the screw
-    // cap above it, finely knurled with a rounded top edge
-    const rn = containerRadius(s, top), rc = rn * 1.18, capH = H - top;
-    grp.add(new THREE.Mesh(lathe([[rn - 0.2, top - 2.2], [rn + 2.6, top - 1.9], [rn + 2.9, top - 1.2], [rn + 2.6, top - 0.5], [rn - 0.2, top - 0.3]], 160), bodyMat));
-    const band0 = top + 0.15 * capH, band1 = top + 0.3 * capH, cap0 = band1 + 0.6;
-    grp.add(new THREE.Mesh(knurled([[rn, top], [rc - 0.3, band0 - 0.4], [rc, band0], [rc, band1], [rc - 0.4, band1 + 0.2], [rn, band1 + 0.2]],
-      band0, band1, 60, 0.25), cap));
-    grp.add(new THREE.Mesh(knurled([[rn, cap0], [rc, cap0], [rc, cap0 + 0.5], [rc, H - 1.6], [rc - 0.5, H - 0.4], [rc - 1.6, H], [0.5 * rc, H - 0.2], [0, H - 0.2]],
-      cap0 + 0.8, H - 1.8, 96, 0.4), cap));
+  // (a model that cannot be loaded or read, gone from storage, corrupt, blocked: the drawn container instead,
+  // not a viewer that shows nothing)
+  const fit = s.model_url ? await fittedModel(s).catch((e) => { console.warn("container 3D model not used:", e); return null; }) : null;
+  const H = fit ? fit.height : s.container_height_mm, R = s.diameter_mm / 2, top = fit ? fit.height : bodyTop(s);
+  const radiusAt = fit ? fit.radius : (y: number) => containerRadius(s, y);
+  if (fit) {
+    if (unlit(g)) {
+      // "exact colours" has no lights: the model's own lit materials came out near black (FGSL4090's yellow
+      // cap); shaded from a picture instead, as the drawn containers are, so they keep their colours
+      fit.object.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        const old = mesh.material as THREE.MeshStandardMaterial;
+        const mat = new THREE.MeshMatcapMaterial({ matcap: matcap("plastic"), color: old.color, map: old.map, transparent: old.transparent,
+          opacity: old.opacity, side: old.side, alphaTest: old.alphaTest });
+        mat.name = old.name;
+        mesh.material = mat;
+      });
+    }
+    grp.add(fit.object);
   } else {
-    // a jar's lid above the body
-    const r = R * 0.97;
-    grp.add(new THREE.Mesh(lathe([[0, top - 0.5], [r, top - 0.5], [r, H - 1.2], [r - 1.2, H], [0, H]], 96), cap));
+    const metal = s.shape === "tin" || s.shape === "can";
+    // the container body: a tin / can stands on a narrow ring with its base domed in (the wall's footer
+    // curves into it); other containers have a slightly domed base
+    const dome = Math.min(9, 0.07 * H);
+    const outline: [number, number][] = s.shape === "can"
+      ? [[0, dome], [0.5 * R, 0.75 * dome], [0.66 * R, 1.2], [0.71 * R, 0], [0.75 * R, 0.25]]
+      : s.shape === "tin" ? [[0, 2.6], [R - 1.2, 2.6], [R, 0.4]] : [[0, 1.2]];
+    for (let i = metal ? 1 : 0; i <= 120; i++) { const y = (top * i) / 120; outline.push([containerRadius(s, y), y]); }
+    // (a tin's / can's body closes below its recessed end, or its top would hide the tab / ring pull)
+    if (metal) outline.push([containerRadius(s, top) - 1.6, top - 3.4], [0, top - 6.5]);
+    else outline.push([0, top]);
+    const bodyMat = containerMaterial(g, s.body_color, s.material);
+    bodyMat.name = "film"; // (measured as the model)
+    grp.add(new THREE.Mesh(s.shape === "pot" ? faceted(lathe(outline), 12, 0) : lathe(outline), bodyMat));
+    if (s.material === "clear") {
+      // water inside a clear bottle, to its shoulder
+      const fill = outline.filter(([, y]) => y <= 0.62 * H).map(([r, y]) => [r * 0.95, y] as [number, number]);
+      const water = containerMaterial(g, "#cfe8f5", "clear");
+      grp.add(new THREE.Mesh(lathe([...fill, [0, fill[fill.length - 1][1]]]), water));
+    }
+    const cap = containerMaterial(g, s.cap_color, s.shape === "can" || s.shape === "tin" ? "metal" : "plastic");
+    if (s.shape === "tin") {
+      grp.add(...tinEnds(R, H, cap));
+    } else if (s.shape === "can") {
+      grp.add(...canEnd(containerRadius(s, H), H, cap));
+    } else if (s.shape === "pot") {
+      // the jar's lid, as measured: a band at its foot the neck's width (6 % of the jar's height), then the
+      // smooth lid at 89 % of the body's width, straight-sided with a well rounded top edge and a flat top
+      const rt = containerRadius(s, top), lidH = H - top;
+      const rl = R * 0.89, bandTop = top + 0.3 * lidH, er = Math.min(0.12 * lidH, 4); // edge radius
+      const band = containerMaterial(g, s.cap_color, "plastic");
+      if ("color" in band) band.color.multiplyScalar(0.85);
+      grp.add(new THREE.Mesh(lathe([[rt - 0.5, top - 1.2], [rt + 0.3, top - 0.6], [rt + 0.3, bandTop], [rt - 0.2, bandTop]], 160), band));
+      const lid: [number, number][] = [[rt - 0.2, bandTop], [rl - 0.6, bandTop], [rl, bandTop + 0.8], [rl, H - er]];
+      for (let i = 1; i <= 12; i++) { const a = (i / 12) * (Math.PI / 2); lid.push([rl - er + er * Math.cos(a), H - er + er * Math.sin(a)]); }
+      lid.push([0.6 * rl, H + 0.2], [0, H + 0.3]);
+      grp.add(new THREE.Mesh(lathe(lid, 200), cap));
+      const gap = containerMaterial(g, "#3a3a3a", "plastic");
+      const shadow = new THREE.Mesh(new THREE.TorusGeometry(rt + 0.4, 0.45, 8, 160), gap);
+      shadow.rotation.x = Math.PI / 2;
+      shadow.position.y = top - 1.2;
+      grp.add(shadow);
+    } else if (s.shape === "bottle") {
+      // a PET bottle's top: the neck's support flange, the tamper-evident band left on the neck, and the screw
+      // cap above it, finely knurled with a rounded top edge
+      const rn = containerRadius(s, top), rc = rn * 1.18, capH = H - top;
+      grp.add(new THREE.Mesh(lathe([[rn - 0.2, top - 2.2], [rn + 2.6, top - 1.9], [rn + 2.9, top - 1.2], [rn + 2.6, top - 0.5], [rn - 0.2, top - 0.3]], 160), bodyMat));
+      const band0 = top + 0.15 * capH, band1 = top + 0.3 * capH, cap0 = band1 + 0.6;
+      grp.add(new THREE.Mesh(knurled([[rn, top], [rc - 0.3, band0 - 0.4], [rc, band0], [rc, band1], [rc - 0.4, band1 + 0.2], [rn, band1 + 0.2]],
+        band0, band1, 60, 0.25), cap));
+      grp.add(new THREE.Mesh(knurled([[rn, cap0], [rc, cap0], [rc, cap0 + 0.5], [rc, H - 1.6], [rc - 0.5, H - 0.4], [rc - 1.6, H], [0.5 * rc, H - 0.2], [0, H - 0.2]],
+        cap0 + 0.8, H - 1.8, 96, 0.4), cap));
+    } else {
+      // a jar's lid above the body
+      const r = R * 0.97;
+      grp.add(new THREE.Mesh(lathe([[0, top - 0.5], [r, top - 0.5], [r, H - 1.2], [r - 1.2, H], [0, H]], 96), cap));
+    }
   }
-  // the sleeve: the container's own outline over the band it covers, a hair outside it (it is shrunk on)
-  const y0 = s.sleeve_from * H, y1 = Math.min(s.sleeve_to * H, top);
+  // the sleeve: the container's own outline over the band it covers, a hair outside it (it is shrunk on);
+  // on an uploaded model it keeps the print's own height from where it starts
+  const y0 = s.sleeve_from * H, y1 = fit ? Math.min(y0 + s.sleeve_height_mm, fit.top) : Math.min(s.sleeve_to * H, top);
   const band: [number, number][] = [];
-  for (let i = 0; i <= 96; i++) { const y = y0 + ((y1 - y0) * i) / 96; band.push([containerRadius(s, y) + 0.25, y]); }
-  const geo = s.shape === "pot" ? faceted(lathe(band), 12, 0) : lathe(band); // (shrunk onto the pot's soft facets)
+  for (let i = 0; i <= 96; i++) { const y = y0 + ((y1 - y0) * i) / 96; band.push([radiusAt(y) + (fit ? 0.4 : 0.25), y]); }
+  const geo = s.shape === "pot" && !fit ? faceted(lathe(band), 12, 0) : lathe(band); // (shrunk onto the pot's soft facets)
   // v follows the film's length along the outline (a bottle's shoulder takes its share of the print)
   const lengths = [0];
   for (let i = 1; i < band.length; i++) lengths.push(lengths[i - 1] + Math.hypot(band[i][0] - band[i - 1][0], band[i][1] - band[i - 1][1]));
   const uv = geo.getAttribute("uv") as THREE.BufferAttribute;
-  for (let k = 0; k < uv.count; k++) uv.setY(k, lengths[k % band.length] / lengths[lengths.length - 1]);
+  // (on an uploaded model the band may be shorter than the print: its top is cut off, never squeezed)
+  const span = fit ? Math.max(lengths[lengths.length - 1], s.sleeve_height_mm) : lengths[lengths.length - 1];
+  for (let k = 0; k < uv.count; k++) uv.setY(k, lengths[k % band.length] / span);
   uv.needsUpdate = true;
   const tex = textures.sleeve ?? Object.values(textures)[0];
   const map = (await loadTexture(tex.url)).clone();
@@ -1262,6 +1463,16 @@ async function sleeveGroup(g: GeometrySpec, textures: Record<string, SceneTextur
   sleeve.name = "sleeve";
   sleeve.rotation.y = Math.PI; // the seam at the back
   grp.add(sleeve);
+  if (fit || s.material === "clear" || s.material === "glass") {
+    // seen through a see-through container, the sleeve's inside is its plain backing, not the print mirrored
+    film.side = THREE.FrontSide;
+    // (unlit in "exact colours", which has no lights: a lit backing came out dark grey through FGSL4001's clear can)
+    const backing = new THREE.Mesh(geo, unlit(g)
+      ? new THREE.MeshBasicMaterial({ color: "#eeebe3", side: THREE.BackSide, ...clear, toneMapped: false })
+      : new THREE.MeshStandardMaterial({ color: "#eeebe3", roughness: 0.7, side: THREE.BackSide, ...clear }));
+    backing.rotation.y = Math.PI;
+    grp.add(backing);
+  }
   return grp;
 }
 

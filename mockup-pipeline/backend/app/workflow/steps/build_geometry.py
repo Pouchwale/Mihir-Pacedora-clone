@@ -32,6 +32,20 @@ def choose_preset(ctx: StepContext, client: ClientSettings | None, item: ItemOve
     return key, presets[key]
 
 
+def _measured(ctx: StepContext):
+    """Measures an uploaded container model (app/geometry/glb_shape.py); None (with a warning) for one that
+    cannot be read: the container's drawn sizes are used."""
+    from app.geometry import glb_shape
+
+    def measure(key: str):
+        try:
+            return glb_shape.measure_stored(key)
+        except Exception as exc:  # noqa: BLE001 - a broken upload must not fail the job
+            ctx.log(f"The container's 3D model could not be measured ({exc}); its drawn sizes are used", "warning")
+            return None
+    return measure
+
+
 def with_sleeve(ctx: StepContext, geometry: geo.GeometrySpec, spec: dict, keyline: dict, panels: dict) -> geo.GeometrySpec:
     """The container the sleeve goes on (the job's choice, else the item name's words, else the default),
     sized from the sleeve; the model is that container, as wide as it and as tall."""
@@ -41,7 +55,7 @@ def with_sleeve(ctx: StepContext, geometry: geo.GeometrySpec, spec: dict, keylin
     text = " ".join(str(v) for v in (spec.get("item_name"), ctx.job.file.filename) if v)
     s = sleeve_geo.build(ctx.index.all("container"), ctx.inputs.get("container"), text, printed_w, height,  # type: ignore[arg-type]
                          float(keyline.get("sleeve_layflat_mm") or 0), float(keyline.get("sleeve_front_center_pct") or 50),
-                         ctx.inputs.get("container_style"))
+                         ctx.inputs.get("container_style"), measure_model=_measured(ctx))
     ctx.log(f"Shrink sleeve on a {s.name.lower()} ({'chosen for the job' if s.chosen_by == 'job' else 'by the item name' if s.chosen_by == 'words' else 'the default'}): "
             f"diameter {s.diameter_mm:g} mm x {s.container_height_mm:g} mm, sleeve {height:g} mm tall, seam {s.overlap_mm:g} mm", "audit")
     dims = [geo.Dimension(label="Diameter", value_mm=s.diameter_mm, kind="width"), geo.Dimension(label="Height", value_mm=s.container_height_mm, kind="height"),

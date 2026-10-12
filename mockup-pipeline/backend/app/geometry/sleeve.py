@@ -33,6 +33,8 @@ class Sleeve(BaseModel):
     body_color: str
     cap_color: str
     material: str
+    model: str | None = None  # the container's uploaded 3D model (storage key), drawn instead of its shape
+    model_top: float | None = None  # on a model: the share of its height where its lid starts (the sleeve stops there)
 
 
 def pick_container(containers: dict[str, Container], chosen: str | None, text: str) -> tuple[str, Container, str]:
@@ -54,7 +56,7 @@ BODY_TOP = {"bottle": 0.9, "jar": 0.88, "pot": 0.8}
 
 
 def build(containers: dict[str, Container], chosen: str | None, text: str, printed_width: float, height: float,
-          layflat: float, front_center_pct: float = 50.0, style: dict | None = None) -> Sleeve:
+          layflat: float, front_center_pct: float = 50.0, style: dict | None = None, measure_model=None) -> Sleeve:
     """`style`: the job's own look, set by the team on the job page (never on a share link): body_color,
     cap_color, material, sleeve_from (where the sleeve sits; it keeps its real height) and height_mm (the
     container's height; at least the sleeve's)."""
@@ -72,13 +74,34 @@ def build(containers: dict[str, Container], chosen: str | None, text: str, print
         total = max(float(style["height_mm"]), height / top)  # the team's height, never shorter than the sleeve
     band = min(1.0, height / total)
     start = min(max(0.0, float(style.get("sleeve_from", c.sleeve_from))), max(0.0, top - band))
+    measured = measure_model(c.model) if c.model and measure_model is not None else None
+    if measured:
+        # an uploaded model: its natural height for this girth, its cap / lid kept as modelled; the body below
+        # the lid grows (or shrinks) to the team's height, and by default just enough to fit the sleeve (a
+        # model a little squatter than the real jar cut the sleeve's top off). pouch.ts stretches the body alike.
+        aspect, lid_share = measured[:2]
+        natural = diameter * aspect
+        cap = (1 - lid_share) * natural
+        below = float(style.get("sleeve_from", c.sleeve_from)) * natural
+        total = max(natural, cap + below + height)
+        if style.get("height_mm"):
+            total = max(float(style["height_mm"]), cap + height)  # the team's height, never too short for the sleeve
+            below = float(style.get("sleeve_from", c.sleeve_from)) * total
+        model_top = (total - cap) / total
+        band = min(1.0, height / total)
+        start = min(max(0.0, below / total), max(0.0, model_top - band))
+        return Sleeve(container=key, name=c.name, shape=c.shape, chosen_by=how, diameter_mm=round(diameter, 2),
+                      container_height_mm=round(total, 2), sleeve_height_mm=height, printed_width_mm=printed_width, layflat_mm=layflat,
+                      circumference_mm=circumference, overlap_mm=round(max(0.0, printed_width - circumference), 2), sleeve_from=round(start, 4),
+                      sleeve_to=round(min(model_top, start + band), 4), front_center_pct=front_center_pct, lid=c.lid, neck_ratio=c.neck_ratio,
+                      body_color=c.body_color, cap_color=c.cap_color, material=c.material, model=c.model, model_top=round(model_top, 4))
     return Sleeve(container=key, name=c.name, shape=c.shape, chosen_by=how, diameter_mm=round(diameter, 2),
                   container_height_mm=round(total, 2), sleeve_height_mm=height,
                   printed_width_mm=printed_width, layflat_mm=layflat, circumference_mm=circumference,
                   overlap_mm=round(max(0.0, printed_width - circumference), 2), sleeve_from=round(start, 4),
                   sleeve_to=round(start + band if "sleeve_from" in style else min(c.sleeve_to, start + band), 4),
                   front_center_pct=front_center_pct, lid=c.lid, neck_ratio=c.neck_ratio, body_color=c.body_color, cap_color=c.cap_color,
-                  material=c.material)
+                  material=c.material, model=c.model)
 
 
 if __name__ == "__main__":  # the containers shipped in the seed pick these items' containers

@@ -10,6 +10,16 @@ export class ApiError extends Error {
   }
 }
 
+/** The session ended (signed out elsewhere, expired, the account deactivated): an open page went on polling
+ *  and failing every few seconds without a word. Back to the sign-in page, once. (Share links and the render
+ *  page work by token, never by session: left alone; a wrong password on the sign-in page is its own 401.) */
+let leaving = false;
+function sessionEnded(res: Response, url: string) {
+  if (res.status !== 401 || leaving || url.startsWith("/api/auth/") || /^\/(share|render)\//.test(window.location.pathname)) return;
+  leaving = true;
+  window.location.assign("/");
+}
+
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, {
     method,
@@ -20,6 +30,7 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+  sessionEnded(res, url);
   const type = res.headers.get("content-type") ?? "";
   const payload = type.includes("json") ? await res.json() : await res.text();
   if (!res.ok) {
@@ -42,6 +53,7 @@ async function upload<T>(url: string, files: Record<string, File>, fields: Recor
   for (const [k, v] of Object.entries(fields)) fd.append(k, v);
   for (const [k, f] of Object.entries(files)) fd.append(k, f, f.name);
   const res = await fetch(url, { method: "POST", credentials: "same-origin", headers: { "X-Requested-With": "fetch" }, body: fd });
+  sessionEnded(res, url);
   const type = res.headers.get("content-type") ?? "";
   const payload = type.includes("json") ? await res.json() : await res.text();
   if (!res.ok) {

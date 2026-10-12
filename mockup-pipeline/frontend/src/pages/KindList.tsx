@@ -3,6 +3,7 @@ import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { api, EntrySummary } from "../api";
 import { useSession } from "../App";
 import { formatTime } from "../util";
+import { GlbContainerAdd } from "../components/ContainerModel";
 
 type Dict = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -69,6 +70,9 @@ export default function KindList() {
           </label>
           <button className="primary" style={{ alignSelf: "flex-end" }} onClick={create} disabled={!newKey.trim()}>Continue</button>
         </div>
+      )}
+      {kind === "container" && editable && (
+        <GlbContainerAdd onAdded={() => api.get<EntrySummary[]>(`/api/index/${kind}?include_archived=${archived}`).then(setRows)} />
       )}
       {kind === "pouch_type" && catalog ? <CatalogGroups rows={rows} catalog={catalog} onOpen={(k) => navigate(`/index/${kind}/${k}`)} />
         : kind === "field" ? <FieldTable rows={rows} onOpen={(k) => navigate(`/index/${kind}/${k}`)} />

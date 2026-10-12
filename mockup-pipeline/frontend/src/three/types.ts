@@ -21,6 +21,7 @@ export interface Sleeve {
   diameter_mm: number; container_height_mm: number; sleeve_height_mm: number; printed_width_mm: number;
   layflat_mm: number; circumference_mm: number; overlap_mm: number; sleeve_from: number; sleeve_to: number;
   front_center_pct: number; lid: boolean; neck_ratio: number; body_color: string; cap_color: string; material: "metal" | "plastic" | "glass" | "clear";
+  model?: string | null; model_url?: string | null; model_top?: number | null; // an uploaded 3D model (GLB) of the container, drawn instead of the shape
 }
 
 export interface GeometrySpec {

@@ -69,6 +69,7 @@ const ICONS = {
   wand: "M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8 19 13M17.8 6.2 19 5M3 21l9-9M12.2 6.2 11 5",
   free: "M3 17c3-6 6-9 9-6s5 2 9-4",
   rect: "M4 4h16v16H4z",
+  video: "M23 7l-7 5 7 5V7zM1 5h15v14H1z",
   move: "M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20",
   trash: "M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6",
 };
@@ -79,6 +80,10 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
   const stageRef = useRef<Stage | null>(null);
   const controls = useRef<OrbitControls | null>(null);
   const spinRef = useRef(false);
+  // a 360 degree video being recorded: how far the model still has to turn, the sharpness to record at, and
+  // what to call when the turn is done
+  const recRef = useRef<{ left: number; ratio: number; done: () => void } | null>(null);
+  const [recording, setRecording] = useState(false);
   const [filled, setFilled] = useState(true);
   const [dims, setDims] = useState(false); // dimension lines: off until asked for
   const [look, setLook] = useState<Look>("realistic");
@@ -154,7 +159,10 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
     controls.current = oc;
     let raf = 0;
     let dirty = true; // render on demand: after a change, a resize, while easing or spinning
-    oc.addEventListener("change", () => { dirty = true; });
+    // while the model moves (drag, coasting, spin, zoom) frames are drawn at 1x, then sharp again at rest:
+    // a full-size canvas at 1.5x could not keep up with the pointer on an office PC
+    let movedAt = 0;
+    oc.addEventListener("change", () => { dirty = true; movedAt = performance.now(); });
     stage.invalidate = () => { dirty = true; };
 
     // drag to turn, with a little momentum after letting go
@@ -190,6 +198,7 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
       }
     };
     const down = (e: PointerEvent) => {
+      if (recRef.current) return; // (a video is being recorded: its turn is exactly once round)
       pointers.add(e.pointerId);
       autoView.current = null;
       const t = toolRef.current.tool;
@@ -239,6 +248,7 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
         keepPose.current(part);
         last = { x: e.clientX, y: e.clientY, t: performance.now() };
         dirty = true;
+        movedAt = last.t;
         return;
       }
       const dx = (e.clientX - last.x) * TURN_SPEED, dy = (e.clientY - last.y) * TURN_SPEED;
@@ -248,6 +258,7 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
       last = { x: e.clientX, y: e.clientY, t: now };
       stage.turn(dx, dy);
       dirty = true;
+      movedAt = now;
     };
     const up = (e: PointerEvent) => {
       pointers.delete(e.pointerId);
@@ -284,12 +295,27 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
     const loop = (now: number) => {
       const dt = Math.min(0.05, (now - prev) / 1000);
       prev = now;
-      if (spinRef.current) {
+      const rec = recRef.current;
+      if (rec) {
+        // the video's turn: exactly once round in 6 s, whatever the frame rate
+        const step = Math.min(rec.left, dt * ((2 * Math.PI) / 6));
+        stage.spin(step);
+        rec.left -= step;
+        dirty = true;
+        if (rec.left <= 1e-6) { recRef.current = null; window.setTimeout(rec.done, 150); } // (the last frames reach the recorder)
+      } else if (spinRef.current) {
         stage.spin(dt * 0.6); // a turn in ~10 s
         dirty = true;
+        movedAt = now;
       } else if (!last && (Math.abs(vel.x) > 1e-4 || Math.abs(vel.y) > 1e-4)) {
         stage.turn(vel.x, vel.y);
         vel = { x: vel.x * 0.9, y: vel.y * 0.9 };
+        dirty = true;
+        movedAt = now;
+      }
+      const ratio = rec ? rec.ratio : now - movedAt < 200 ? Math.min(1, window.devicePixelRatio) : Math.min(1.5, window.devicePixelRatio);
+      if (stage.renderer.getPixelRatio() !== ratio) {
+        stage.renderer.setPixelRatio(ratio); // (keeps the canvas's size on the page)
         dirty = true;
       }
       if (oc.update() || dirty) {
@@ -304,6 +330,9 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
     document.addEventListener("fullscreenchange", onFull);
     return () => {
       cancelAnimationFrame(raf);
+      const rec = recRef.current; // a video being recorded ends with the viewer (its recorder stops, nothing is saved)
+      recRef.current = null;
+      rec?.done();
       ro.disconnect();
       document.removeEventListener("fullscreenchange", onFull);
       el.removeEventListener("pointerdown", down);
@@ -312,6 +341,7 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
       el.removeEventListener("pointercancel", up);
       oc.dispose();
       stage.dispose();
+      if (stageRef.current === stage) stageRef.current = null;
     };
   }, [stageKey]);
 
@@ -498,6 +528,48 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
   };
 
   gotoRef.current = goto;
+
+  /** A 360 degree turntable video of the view as it is on screen (background, floor, every design in the frame),
+   *  recorded by the browser itself (MediaRecorder: no upload, no server): MP4 where the browser can, which
+   *  plays in WhatsApp; else WebM. About 1080 px on its long side whatever the screen. */
+  const recordVideo = async () => {
+    const stage = stageRef.current, el = canvas.current, box = wrap.current;
+    if (!stage || !el || !box || recording) return;
+    const mime = typeof MediaRecorder === "undefined" ? undefined
+      : ["video/mp4;codecs=avc1.42E01E", "video/mp4", "video/webm;codecs=vp9", "video/webm"].find((t) => MediaRecorder.isTypeSupported(t));
+    if (!mime) { setError("This browser cannot record video; use Chrome or Edge."); return; }
+    setSpin(false);
+    setRecording(true);
+    const bg = stage.scene.background, sel = stage.selected;
+    if (!bg) stage.scene.background = new THREE.Color("#ffffff"); // (a see-through background records as black)
+    stage.selected = null; // (no selection ring in the video)
+    const chunks: Blob[] = [];
+    try {
+      const rec = new MediaRecorder(el.captureStream(30), { mimeType: mime, videoBitsPerSecond: 10_000_000 });
+      rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+      const stopped = new Promise<void>((ok) => { rec.onstop = () => ok(); });
+      rec.start(250);
+      const ratio = Math.min(3, Math.max(1, 1080 / Math.max(box.clientWidth, box.clientHeight)));
+      await new Promise<void>((done) => { recRef.current = { left: 2 * Math.PI, ratio, done }; stage.invalidate(); });
+      rec.stop();
+      await stopped;
+      if (stageRef.current !== stage) return; // (the page was left mid-turn: nothing to save)
+      const url = URL.createObjectURL(new Blob(chunks, { type: mime.split(";")[0] }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${name ?? "mockup"}_360.${mime.startsWith("video/mp4") ? "mp4" : "webm"}`;
+      a.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (e) {
+      setError(`The video could not be recorded: ${(e as Error).message}`);
+    } finally {
+      recRef.current = null;
+      stage.scene.background = bg;
+      stage.selected = sel;
+      stage.invalidate();
+      setRecording(false);
+    }
+  };
 
   // A PNG of the view as it is on screen (turn, filled / flat, draft edits), at 2x, optionally transparent.
   const snapshot = (kind: "png" | "jpeg") => {
@@ -711,11 +783,15 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
           </div>
           <div className="seg">
             <button className={spin ? "on" : ""} onClick={() => setSpin(!spin)} title="Turn the pouch all the way round"><Icon d={ICONS.spin} /> {spin ? "Stop" : "Spin 360°"}</button>
+            <button onClick={recordVideo} disabled={busy || recording} title="A 360 degree turntable video of this view (MP4, about 1080 px; plays in WhatsApp)">
+              <Icon d={ICONS.video} /> {recording ? "Recording…" : "Video"}
+            </button>
             <button onClick={() => snapshot("png")} disabled={busy} title="The pouch alone on a transparent background (PNG, twice the screen size)"><Icon d={ICONS.download} /> PNG</button>
             <button onClick={() => snapshot("jpeg")} disabled={busy} title="This view with its background and floor (JPEG, twice the screen size)"><Icon d={ICONS.download} /> JPEG</button>
           </div>
         </div>
         {busy && <div className="viewer-note"><span className="spinner" /> Building 3D model…</div>}
+        {recording && <div className="viewer-note"><span className="spinner" /> Recording the 360° video… (6 s)</div>}
         {error && <div className="viewer-note msg bad">{error}</div>}
         <div className="viewer-hint">{tool && onWindows ? TOOL_HELP[tool]
           : chosen.length > 1 ? (selPart

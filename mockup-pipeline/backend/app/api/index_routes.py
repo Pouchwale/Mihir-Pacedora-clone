@@ -269,6 +269,41 @@ async def test_fields(file: UploadFile = File(...), fields: str = Form(""), sess
         shutil.rmtree(root, ignore_errors=True)
 
 
+MODEL_MAX_MB = 40
+
+
+@router.post("/container/model")
+async def upload_container_model(file: UploadFile = File(...), session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> dict:
+    """A container's 3D model: a binary glTF (.glb), self-contained (a .gltf points at other files and cannot
+    be stored alone). Kept by its SHA-256; the container entry names it in `model` once saved."""
+    import hashlib
+    import struct
+
+    from app.storage import get_storage
+
+    auth.require_kind(user, "container")
+    data = await file.read(MODEL_MAX_MB * 1024 * 1024 + 1)
+    if len(data) > MODEL_MAX_MB * 1024 * 1024:
+        raise HTTPException(413, f"The model is over {MODEL_MAX_MB} MB; reduce its polygons or texture sizes and try again")
+    # GLB header: "glTF", version 2, the file's length
+    if len(data) < 20 or data[:4] != b"glTF" or struct.unpack_from("<I", data, 4)[0] != 2 or struct.unpack_from("<I", data, 8)[0] != len(data):
+        raise HTTPException(422, "Not a GLB file (binary glTF 2.0). Export the model as .glb, with its textures embedded")
+    # read it now, as jobs and the 3D view will: a compressed model (Draco / meshopt, common from online
+    # converters) or one with no round outline used to save fine and then be silently left out of every job
+    from app.geometry import glb_shape
+
+    try:
+        required = set(json.loads(data[20:20 + struct.unpack_from("<I", data, 12)[0]]).get("extensionsRequired") or [])
+        if required:
+            raise ValueError(f"it needs {', '.join(sorted(required))} (a compressed model); export it again without compression")
+        glb_shape.measure(data)
+    except Exception as exc:  # noqa: BLE001 - any unreadable model is the uploader's to fix
+        raise HTTPException(422, f"This model cannot be used: {exc}") from exc
+    key = f"containers/{hashlib.sha256(data).hexdigest()}.glb"
+    get_storage().put_bytes(key, data, "model/gltf-binary")
+    return {"key": key, "size": len(data), "filename": file.filename}
+
+
 @router.get("/{kind}")
 def list_kind(kind: str, include_archived: bool = False, session: Session = Depends(get_session), _: User = Depends(auth.current_user)) -> list[EntrySummary]:
     out = []

@@ -438,6 +438,8 @@ def scene(job_id: int, request: Request, session: Session = Depends(get_session)
     files = {f.id: {"filename": f.filename, "kind": panel_art.kind_of(f.filename) or "pdf", "preview_url": f"/api/uploads/{f.id}/preview"}
              for f in session.scalars(select(UploadedFile).where(UploadedFile.id.in_(ids)))} if ids else {}
     geometry = steps["build_geometry"].output["geometry"]
+    if (geometry.get("sleeve") or {}).get("model"):  # the container's own 3D model, fetched like the textures
+        geometry = {**geometry, "sleeve": {**geometry["sleeve"], "model_url": url(geometry["sleeve"]["model"])}}
     printed = [t for t in steps["texture"].output["textures"].values() if not t.get("color") and not t.get("clear")]
     if geometry["preset"].get("lighting") == "exact" and printed and all(t.get("blank") for t in printed):
         # nothing printed (a plain pouch, FGPO7530): "exact colours" is unlit, and white film on the white
@@ -568,7 +570,8 @@ def adjust(job_id: int, body: AdjustIn, session: Session = Depends(get_session),
 @router.get("/jobs/{job_id}/file")
 def job_file(job_id: int, key: str, request: Request, session: Session = Depends(get_session)) -> Response:
     _authorized_for_job(request, session, job_id)
-    if not key.startswith(f"jobs/{job_id}/") or ".." in key:
+    # (containers/: the uploaded 3D models jobs' sleeves go on, shared by every job)
+    if not (key.startswith(f"jobs/{job_id}/") or key.startswith("containers/")) or ".." in key:
         raise HTTPException(403, "Not a file of this job")
     try:
         data = get_storage().get_bytes(key)
@@ -727,6 +730,10 @@ def set_container(job_id: int, body: ContainerIn, session: Session = Depends(get
     if job.status == "RUNNING":
         raise HTTPException(409, "The job is running (pause or cancel it first)")
     inputs = dict(job.inputs or {})
+    if (body.container or None) != inputs.get("container") and body.style is None and inputs.get("container_style"):
+        # another container: the height and the sleeve's place were the old one's (a 200 mm bottle came out
+        # squashed to the 87 mm jar it replaced); its colours and material stay the team's
+        inputs["container_style"] = {k: v for k, v in inputs["container_style"].items() if k not in ("height_mm", "sleeve_from")}
     if body.container:
         inputs["container"] = body.container
     else:
@@ -738,6 +745,9 @@ def set_container(job_id: int, body: ContainerIn, session: Session = Depends(get
         inputs["keyline_overrides"] = {**(inputs.get("keyline_overrides") or {}), "sleeve_front_center_pct": round(body.front_center_pct, 1)}
         step = "resolve_keyline"
     job.inputs, job.status, job.control, job.updated_at = inputs, "QUEUED", None, utcnow()
+    # the containers as they are now: the job page offers the current list, and a container added (or given
+    # a 3D model) after the job ran was not in the job's own index snapshot, so it was silently not used
+    job.index_snapshot = {**(job.index_snapshot or {}), "container": store.snapshot(session).get("container", {})}
     _event(session, job, f"Container set to {body.container or 'automatic'}"
            + (f", front at {body.front_center_pct:g} % of the print" if body.front_center_pct is not None else "")
            + (f", look {inputs['container_style'] or 'the container’s own'}" if body.style is not None else ""), user)

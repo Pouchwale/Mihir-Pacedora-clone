@@ -133,9 +133,7 @@ export class Stage {
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     this.shadowLight.castShadow = true;
-    this.shadowLight.shadow.mapSize.set(1024, 1024);
-    this.shadowLight.shadow.radius = 28;
-    this.shadowLight.shadow.blurSamples = 25;
+    this.shadowQuality(false);
     this.shadowLight.shadow.bias = -0.0005;
     for (const l of [this.key, this.fill, this.rim]) {
       l.target = this.target;
@@ -249,6 +247,19 @@ export class Stage {
     const r = Math.max(size.x, size.z) * 0.62 + 6;
     this.marker.scale.set(r, r, 1);
     this.marker.position.set(c.x, 0.3, c.z); // on the floor, under a floating pouch too
+  }
+
+  /** The soft contact shadow is blurred again every frame: a light one while the pouch is turned on screen
+   *  (half the frame time on an office PC: 23 -> 12 ms, so a drag keeps up with the pointer), the full one for
+   *  pictures and renders. Same softness either way (the blur radius follows the map size). */
+  private shadowQuality(high: boolean) {
+    const sh = this.shadowLight.shadow, size = high ? 1024 : 512;
+    if (sh.mapSize.x === size) return;
+    sh.map?.dispose();
+    sh.map = null; // (made again at the new size on the next render)
+    sh.mapSize.set(size, size);
+    sh.radius = high ? 28 : 14;
+    sh.blurSamples = high ? 25 : 10;
   }
 
   /** Viewer options: the background (studio white, gradient, dark, a colour, a picture or none = transparent)
@@ -536,6 +547,7 @@ export class Stage {
     this.renderer.setPixelRatio(1);
     this.renderer.setSize(w, h, false);
     this.frame(view, w / h);
+    this.shadowQuality(true);
     this.render();
     const url = this.renderer.domElement.toDataURL("image/png");
     this.scene.background = bg;
@@ -566,6 +578,7 @@ export class Stage {
     }
     this.renderer.setPixelRatio(scale);
     this.renderer.setSize(w, h, false);
+    this.shadowQuality(true);
     this.render();
     let url: string;
     if (kind === "png") url = el.toDataURL("image/png");
@@ -582,6 +595,7 @@ export class Stage {
     }
     this.renderer.setPixelRatio(ratio);
     this.renderer.setSize(w, h, false);
+    this.shadowQuality(false);
     this.scene.background = bg;
     this.floor.visible = floorVisible;
     this.renderer.setClearColor(clear, clearAlpha);

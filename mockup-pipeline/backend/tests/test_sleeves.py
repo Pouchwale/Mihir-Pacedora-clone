@@ -142,6 +142,12 @@ def test_sleeve_goes_on_its_container_through_phase4(app_client, monkeypatch):
     assert (s["cap_color"], s["material"], s["sleeve_from"]) == ("#ff0000", "clear", 0.1)
     assert abs((s["sleeve_to"] - s["sleeve_from"]) * s["container_height_mm"] - s["sleeve_height_mm"]) < 0.1
     assert c.post(f"/api/jobs/{job_id}/container", json={"style": {"cap_color": "red"}}, headers=H).status_code == 422
+    # another container: the old one's height does not go with it (its colours do)
+    style = {"cap_color": "#ff0000", "height_mm": 300}
+    assert c.post(f"/api/jobs/{job_id}/container", json={"container": "jar", "style": style}, headers=H).status_code == 200
+    assert c.post(f"/api/jobs/{job_id}/container", json={"container": "tin"}, headers=H).status_code == 200
+    s = c.get(f"/api/jobs/{job_id}").json()["outputs"]["build_geometry"]["geometry"]["sleeve"]
+    assert (s["container"], s["cap_color"]) == ("tin", "#ff0000") and s["container_height_mm"] < 250
 
     # a soda bottle by its name; and "these are pouches" keeps a sheet on the pouch route
     s = c.get(f"/api/jobs/{_upload(c, GOLI)}").json()["outputs"]["build_geometry"]["geometry"]["sleeve"]

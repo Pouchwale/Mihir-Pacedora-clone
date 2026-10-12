@@ -90,6 +90,9 @@ class Container(BaseModel):
     body_color: str = Field("#c9ccd1", pattern=r"^#[0-9a-fA-F]{6}$")
     cap_color: str = Field("#d9dce1", pattern=r"^#[0-9a-fA-F]{6}$")
     material: Literal["metal", "plastic", "glass", "clear"] = "metal"  # clear: transparent PET (a water bottle)
+    # an uploaded 3D model (GLB) of the real container: drawn instead of the turned shape, the sleeve shrunk
+    # onto its outline; `shape` still sets the defaults (where a cap sits, how squat it may be)
+    model: str | None = Field(None, pattern=r"^containers/[0-9a-f]{64}\.glb$", description="Uploaded 3D model (GLB)")
 
     @model_validator(mode="after")
     def _band(self) -> "Container":

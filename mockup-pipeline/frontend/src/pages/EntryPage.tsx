@@ -4,6 +4,7 @@ import { api, ApiError, Entry } from "../api";
 import { useSession } from "../App";
 import CatalogEditor from "../components/CatalogEditor";
 import FieldEditor from "../components/FieldEditor";
+import ContainerModel from "../components/ContainerModel";
 import History from "../components/History";
 import KeylineEditor from "../components/KeylineEditor";
 import MaterialEditor from "../components/MaterialEditor";
@@ -155,6 +156,8 @@ export default function EntryPage() {
           </div>
         )}
       </div>
+
+      {kind === "container" && !isNew && entry && <ContainerModel kind={kind} entryKey={key} data={entry.data} editable={editable} dirty={dirty} onSaved={load} />}
 
       <div className="tabs">
         {hasForm && <button className={tab === "form" ? "on" : ""} onClick={() => setTab("form")}>Edit</button>}

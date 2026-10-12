@@ -27,12 +27,20 @@ export default function SleeveControls({ jobId, sleeve, running, onPreview, onDo
   // the container round the sleeve, in mm: what shows below it and above it (its height is their sum with
   // the sleeve's own, which never changes); a cap or lid stays above the body, so a bottle / jar / pot keeps
   // at least that much above
+  // an uploaded 3D model keeps its cap / lid as modelled and its body grows or shrinks around the sleeve, so
+  // what shows above the sleeve is at least that cap; a drawn container's cap is a share of its height
+  const model = !!sleeve.model;
+  const cap = model ? sleeve.container_height_mm * (1 - (sleeve.model_top ?? 1)) : 0;
   const bodyTop = BODY_TOP[sleeve.shape] ?? 1;
   const sh = sleeve.sleeve_height_mm;
   const below = look.sleeve_from * look.container_height_mm;
   const above = look.container_height_mm - below - sh;
-  const minAbove = (b: number) => Math.max(0, (b + sh) / bodyTop - b - sh);
+  const minAbove = (b: number) => (model ? cap : Math.max(0, (b + sh) / bodyTop - b - sh));
   const maxGap = Math.max(40, Math.round(sh));
+  const total = look.container_height_mm;
+  // moving the sleeve on the container as it is (its height kept): from the base up to under the cap / lid
+  const highest = Math.max(0, model ? total - sh - cap : bodyTop * total - sh);
+  const move = (b: number) => edit({ sleeve_from: Math.min(highest, Math.max(0, b)) / total });
   const base = lookOf(sleeve);
   const lookChanged = (Object.keys(base) as (keyof Look)[]).some((k) => k !== "front_center_pct" && look[k] !== base[k]);
   const changed = container !== own || look.front_center_pct !== base.front_center_pct || lookChanged;
@@ -58,8 +66,12 @@ export default function SleeveControls({ jobId, sleeve, running, onPreview, onDo
       setBusy(false);
     }
   };
-  const apply = () => send(lookChanged ? { sleeve_from: look.sleeve_from, cap_color: look.cap_color, body_color: look.body_color, material: look.material,
-    height_mm: look.container_height_mm } : undefined,
+  // (on another container only what was changed here goes with it: the rest, its height above all, was the old one's)
+  const style = { sleeve_from: look.sleeve_from, cap_color: look.cap_color, body_color: look.body_color, material: look.material, height_mm: look.container_height_mm };
+  const moved = look.sleeve_from !== base.sleeve_from || look.container_height_mm !== base.container_height_mm;
+  const apply = () => send(!lookChanged ? undefined : container === own ? style : {
+    ...(look.cap_color !== base.cap_color && { cap_color: look.cap_color }), ...(look.body_color !== base.body_color && { body_color: look.body_color }),
+    ...(look.material !== base.material && { material: look.material }), ...(moved && { sleeve_from: look.sleeve_from, height_mm: look.container_height_mm }) },
     look.front_center_pct !== base.front_center_pct ? look.front_center_pct : null, "Sleeve updated; re-rendering…");
   const off = running || busy;
 
@@ -81,8 +93,12 @@ export default function SleeveControls({ jobId, sleeve, running, onPreview, onDo
         <input type="range" min={0} max={100} step={1} value={look.front_center_pct} disabled={off}
           onChange={(e) => edit({ front_center_pct: Number(e.target.value) })} aria-label="Front of the sleeve" />
       </label>
-      <h4 style={{ margin: "6px 0 0" }}>Height <span className="muted small" style={{ fontWeight: 400 }}>— {look.container_height_mm.toFixed(0)} mm overall, the sleeve {sh.toFixed(0)} mm</span></h4>
-      <label className="field">Above the sleeve <span className="muted small">— {above.toFixed(1)} mm to the top{bodyTop < 1 ? " (cap / lid included)" : ""}</span>
+      <h4 style={{ margin: "6px 0 0" }}>Height <span className="muted small" style={{ fontWeight: 400 }}>— {total.toFixed(0)} mm overall{model ? " (the 3D model: its body grows or shrinks, its cap stays as modelled)" : ""}, the sleeve {sh.toFixed(0)} mm</span></h4>
+      <label className="field">Move the sleeve <span className="muted small">— up or down on the container, its height kept: {below.toFixed(1)} mm from the base{highest <= 0 ? " (no room: the sleeve fills the body)" : ""}</span>
+        <input type="range" min={0} max={Math.round(highest * 2) / 2} step={0.5} value={Math.min(Math.round(below * 2) / 2, Math.round(highest * 2) / 2)} disabled={off || highest <= 0}
+          onChange={(e) => move(Number(e.target.value))} aria-label="Move the sleeve" />
+      </label>
+      <label className="field">Above the sleeve <span className="muted small">— {above.toFixed(1)} mm to the top{model ? ` (the cap / lid, at least ${cap.toFixed(1)} mm)` : bodyTop < 1 ? " (cap / lid included)" : ""}</span>
         <input type="range" min={Math.floor(minAbove(below) * 2) / 2} max={maxGap} step={0.5} value={Math.round(above * 2) / 2} disabled={off}
           onChange={(e) => resize(below, Number(e.target.value))} aria-label="Height above the sleeve" />
       </label>
