@@ -13,7 +13,7 @@ pytestmark = [needs_poppler, needs_tesseract]
 
 
 def _login_admin(c):
-    c.post("/api/auth/logout")
+    c.post("/api/auth/logout", headers={"X-Requested-With": "fetch"})
     c.post("/api/auth/login", json={"email": "admin@example.com", "password": "admin-password-1"}).raise_for_status()
 
 

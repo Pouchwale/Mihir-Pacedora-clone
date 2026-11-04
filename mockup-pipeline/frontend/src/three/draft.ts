@@ -3,6 +3,7 @@
 // POST /api/jobs/{id}/adjust, where the workflow applies them for real (renders, GLB, video).
 // Mirrors app/workflow/adjust.py.
 import type { GeometrySpec, Overlay, PanelBake, PanelTransform, SceneData, SceneFile, SceneTexture, WindowShape } from "./types";
+import { hangHoleOf, holeAsType } from "./hanghole";
 
 export interface PanelDraft extends PanelTransform {
   source: "auto" | "sheet" | "file" | "front" | "plain" | `sheet:${number}`;
@@ -138,13 +139,26 @@ export function applyDraft(scene: SceneData, draft: Draft | null): { geometry: G
   set("zipper_offset_from_top_mm", (v) => { g.zipper.enabled = true; g.zipper.y_from_top_mm = v; });
   set("zipper_ridge_height_mm", (v) => { g.zipper.ridge_height_mm = v; });
   set("tear_notch_offset_mm", (v) => { g.tear_notch.y_from_top_mm = v; });
+  set("tear_notch_depth_mm", (v) => { g.tear_notch.depth_mm = v; });
   set("corner_radius_mm", (v) => { g.corner_radius_mm = v; });
   set("gusset_depth_mm", (v) => { g.gusset_depth_mm = v; if (!gf) g.gusset_full_mm = 2 * v; });
   set("side_gusset_depth_mm", (v) => { g.side_gusset_depth_mm = v; g.side_gusset_full_mm = 2 * v; });
   set("body_bulge_percent", (v) => { g.body_bulge_percent = v; });
   set("fill_level_percent", (v) => { g.fill_level_percent = v; });
+  // hang hole: the type first (it sets that type's sizes), then the sizes typed on the page
+  {
+    const current = hangHoleOf(g, g.width_mm);
+    let type: string = current.type;
+    if (typeof k.hang_hole_type === "string") type = k.hang_hole_type;
+    else if (k.butterfly_notch === true && current.type === "none") type = "butterfly"; // ticking "butterfly": the sombrero hole
+    else if (k.butterfly_notch === false && current.type === "butterfly") type = "none";
+    g.hang_hole = holeAsType(current, type, g.width_mm);
+    g.butterfly_notch = g.hang_hole.type === "butterfly";
+  }
   set("hang_hole_size_mm", (v) => { g.hang_hole.size_mm = v; });
   set("hang_hole_offset_mm", (v) => { g.hang_hole.offset_mm = v; });
+  set("hang_hole_width_mm", (v) => { g.hang_hole.width_mm = v; });
+  set("hang_hole_height_mm", (v) => { g.hang_hole.height_mm = v; });
   set("window_x_mm", (v) => { g.window.x_mm = v; });
   set("window_y_mm", (v) => { g.window.y_mm = v; });
   set("window_width_mm", (v) => { g.window.width_mm = v; });
@@ -152,8 +166,6 @@ export function applyDraft(scene: SceneData, draft: Draft | null): { geometry: G
   set("window_corner_radius_mm", (v) => { g.window.radius_mm = v; });
   if (typeof k.tear_notch_type === "string") g.tear_notch.type = k.tear_notch_type;
   if (g.tear_notch.type === "v_notch" && centreSeal(g)) g.tear_notch.type = "none"; // mirrors geometry/spec.py
-  if (typeof k.hang_hole_type === "string") g.hang_hole.type = k.hang_hole_type;
-  if (typeof k.butterfly_notch === "boolean") g.butterfly_notch = k.butterfly_notch;
   if (typeof k.window_enabled === "boolean") g.window.enabled = k.window_enabled && g.window.width_mm > 0 && g.window.height_mm > 0;
   if (k.zipper_offset_from_top_mm === null) g.zipper.enabled = false;
   for (const d of g.dimensions) {

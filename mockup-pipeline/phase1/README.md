@@ -20,9 +20,8 @@ backend\.venv\Scripts\python phase1\run_phase1.py a.pdf b.pdf c.pdf
 ```
 
 If nothing answers on http://127.0.0.1:8765 the runner starts `backend/run_local.ps1` for you
-(first start: builds the UI, migrates the database, seeds the index). Sign-in defaults to the local
-admin (`admin@example.com` / `change-me-please-1`); pass `--email` / `--password` or set
-`ADMIN_EMAIL` / `ADMIN_PASSWORD` for another account.
+(first start: builds the UI, migrates the database, seeds the index). Sign-in uses `--email` / `--password`, or
+`ADMIN_EMAIL` / `ADMIN_PASSWORD` from the environment or `backend/.env` (no built-in account exists).
 
 ## What happens
 

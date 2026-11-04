@@ -132,7 +132,7 @@ def merge(reads: dict[str, FieldRead], cells: dict[str, tuple[str, str]], tpl: S
                 same = True
             if not same:
                 reads[field] = FieldRead(field, current.raw, current.value, min(current.confidence, 0.7), True, current.bbox,
-                                         f"table cell reads {cell_read.raw!r}", current.source, current.code_confidence)
+                                         f"table cell reads {cell_read.raw!r}", current.source, current.code_confidence)  # (table.DISAGREE)
     return taken
 
 

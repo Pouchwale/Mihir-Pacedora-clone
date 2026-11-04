@@ -1,6 +1,7 @@
 // Field dictionary entry (index kind field): what is printed, how it is read, what it means for a
 // job, and a tester that reads a PDF with the current dictionary plus this unsaved entry.
 import { useState } from "react";
+import { readBody } from "../api";
 import { useParams } from "react-router-dom";
 
 type Data = Record<string, unknown>;
@@ -95,9 +96,7 @@ export function FieldTester({ entryKey, entry }: { entryKey?: string; entry?: Da
     if (entryKey && entry && !entry.stop) form.append("fields", JSON.stringify({ [entryKey]: entry }));
     try {
       const res = await fetch("/api/index/test-fields", { method: "POST", body: form, headers: { "X-Requested-With": "fetch" }, credentials: "same-origin" });
-      const body = await res.json();
-      if (!res.ok) throw new Error(typeof body.detail === "string" ? body.detail : (body.detail?.problems ?? []).join("; ") || JSON.stringify(body.detail));
-      setOut(body);
+      setOut(await readBody<TestOut>(res, "/api/index/test-fields"));
     } catch (e) {
       setError(String((e as Error).message ?? e));
     } finally {

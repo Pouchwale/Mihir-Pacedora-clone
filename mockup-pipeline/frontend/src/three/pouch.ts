@@ -6,6 +6,7 @@
 // (arc-length placement): the body pulls in as it bulges instead of stretching the print, seals stay
 // flat, and the height stays the printed height. "Flat" is the pouch as manufactured.
 import * as THREE from "three";
+import { NGROK_HEADERS } from "../api";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { bakedTexture } from "./bake";
 import spoutCapUrl from "./spout_cap.glb?url";
@@ -14,12 +15,12 @@ import type { GeometrySpec, SceneTexture, Sleeve } from "./types";
 
 export interface BuildOptions {
   filled: boolean;
-  pouch?: boolean; // roll form: the formed pouch beside the roll (default shown)
+  pouch?: boolean; // roll form: the formed pouch beside the roll (default hidden: the roll alone)
 }
 
 const FILM = 0.12; // half film thickness: front and back never z-fight in the seals
 const loader = new THREE.TextureLoader();
-const gltf = new GLTFLoader();
+const gltf = new GLTFLoader().setRequestHeader(NGROK_HEADERS); // a container model on a share link
 
 // ---------------------------------------------------------------- helpers
 function smooth(e0: number, e1: number, x: number) {
@@ -125,41 +126,48 @@ interface FaceMaps {
 }
 
 // Artwork textures are large (up to 4096 px): load each URL once and share it between rebuilds.
+// The last MAX_CACHED are kept; older ones are freed (a long session walks through many jobs).
+const MAX_CACHED = 24;
 const textureCache = new Map<string, Promise<THREE.Texture>>();
 export const cachedTextures = new Set<THREE.Texture>();
 
-async function loadTexture(url: string): Promise<THREE.Texture> {
-  if (!textureCache.has(url)) {
-    textureCache.set(url, loader.loadAsync(url).then((t) => {
-      t.colorSpace = THREE.SRGBColorSpace;
-      t.anisotropy = 8;
-      cachedTextures.add(t);
-      return t;
-    }));
+function cached(key: string, load: () => Promise<THREE.Texture>): Promise<THREE.Texture> {
+  const hit = textureCache.get(key);
+  if (hit) { textureCache.delete(key); textureCache.set(key, hit); return hit; } // most recent last
+  const p = load().then((t) => { cachedTextures.add(t); return t; });
+  textureCache.set(key, p);
+  while (textureCache.size > MAX_CACHED) {
+    const oldest = textureCache.keys().next().value!;
+    textureCache.get(oldest)!.then((t) => { cachedTextures.delete(t); t.dispose(); }, () => undefined);
+    textureCache.delete(oldest);
   }
-  return textureCache.get(url)!;
+  return p;
+}
+
+async function loadTexture(url: string): Promise<THREE.Texture> {
+  return cached(url, () => loader.loadAsync(url).then((t) => {
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 8;
+    return t;
+  }));
 }
 
 /** A grayscale mask used as transparency (linear, not colour). */
 async function loadMask(url: string): Promise<THREE.Texture> {
-  const key = `mask:${url}`;
-  if (!textureCache.has(key)) {
-    textureCache.set(key, loader.loadAsync(url).then((t) => {
-      t.colorSpace = THREE.NoColorSpace;
-      cachedTextures.add(t);
-      return t;
-    }));
-  }
-  return textureCache.get(key)!;
+  return cached(`mask:${url}`, () => loader.loadAsync(url).then((t) => {
+    t.colorSpace = THREE.NoColorSpace;
+    return t;
+  }));
 }
 
 /** Free a replaced model's GPU resources (shared artwork textures are kept). */
 export function disposeObject(obj: THREE.Object3D) {
+  // every drawable: meshes, and the dimension overlay's lines and sprite labels (each label is a canvas texture)
   obj.traverse((o) => {
-    const mesh = o as THREE.Mesh;
-    if (!mesh.isMesh) return;
-    mesh.geometry.dispose();
-    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    const d = o as THREE.Object3D & { geometry?: THREE.BufferGeometry; material?: THREE.Material | THREE.Material[] };
+    d.geometry?.dispose?.();
+    if (!d.material) return;
+    const mats = Array.isArray(d.material) ? d.material : [d.material];
     for (const m of mats) {
       for (const v of Object.values(m)) {
         if (v instanceof THREE.Texture && !cachedTextures.has(v)) v.dispose();
@@ -739,18 +747,23 @@ function placeOnFace(face: THREE.Mesh, u: number, v: number, obj: THREE.Object3D
 async function rollGroup(g: GeometrySpec, textures: Record<string, SceneTexture>, filled: boolean, pouch = true): Promise<THREE.Group> {
   const roll = g.roll!;
   const grp = new THREE.Group();
-  const R = roll.outer_diameter_mm / 2, r = roll.core_diameter_mm / 2, L = roll.web_width_mm;
+  // A whole number of repeats goes round the roll: 10.47 repeats of FGPO0928's 90 mm on a 300 mm roll
+  // cut a panel off where the wrap met itself, right at the front. The radius moves (under half a
+  // repeat of circumference), never the print.
+  const around = Math.max(1, Math.round((Math.PI * roll.outer_diameter_mm) / roll.repeat_mm));
+  const R = (around * roll.repeat_mm) / (2 * Math.PI), r = Math.min(roll.core_diameter_mm / 2, R * 0.6), L = roll.web_width_mm;
   // The print repeat (repeat x web) wraps the roll and lies on the table; the formed sachet shows
   // the front and back cut from one pouch blank of that repeat (texture step).
   const tex = textures.roll ?? textures.front;
   const map = await loadTexture(tex.url);
   map.wrapS = THREE.RepeatWrapping;
-  const around = (2 * Math.PI * R) / roll.repeat_mm;
   const outer = new THREE.CylinderGeometry(R, R, L, 256, 1, true);
   const mapA = map.clone();
   mapA.needsUpdate = true;
   mapA.wrapS = THREE.RepeatWrapping;
   mapA.repeat.set(around, 1);
+  // a repeat ends where the film leaves the roll (bottom, u = 0.75), so the web starts a whole one
+  mapA.offset.x = -0.75 * around;
   const base = g.materials.surfaces.base ?? {};
   const film = unlit(g) ? new THREE.MeshBasicMaterial({ map: mapA, side: THREE.DoubleSide, toneMapped: false })
     : new THREE.MeshPhysicalMaterial({ map: mapA, roughness: base.roughness ?? 0.5, clearcoat: base.clearcoat ?? 0, side: THREE.DoubleSide });
@@ -778,6 +791,8 @@ async function rollGroup(g: GeometrySpec, textures: Record<string, SceneTexture>
   // the width (repeat (1, n) gave n copies of the lanes: 3 designs for FGPO7042's 2 ups).
   mapW.rotation = Math.PI / 2;
   mapW.repeat.set(webLen / roll.repeat_mm, 1);
+  // ...from the roll (z = 0), running on from it: no sliver of a cut repeat where the two meet
+  mapW.offset.x = -webLen / roll.repeat_mm;
   const webMesh = new THREE.Mesh(web, unlit(g) ? new THREE.MeshBasicMaterial({ map: mapW, side: THREE.DoubleSide, toneMapped: false })
     : new THREE.MeshPhysicalMaterial({ map: mapW, roughness: base.roughness ?? 0.5, side: THREE.DoubleSide }));
   webMesh.rotation.x = -Math.PI / 2;
@@ -1479,7 +1494,7 @@ async function sleeveGroup(g: GeometrySpec, textures: Record<string, SceneTextur
 export async function buildPouch(g: GeometrySpec, textures: Record<string, SceneTexture>, opts: BuildOptions): Promise<THREE.Group> {
   let grp: THREE.Group;
   if (g.template === "shrink_sleeve" && g.sleeve) grp = await sleeveGroup(g, textures);
-  else if (g.template === "roll_stock" && g.roll) grp = await rollGroup(g, textures, opts.filled, opts.pouch !== false);
+  else if (g.template === "roll_stock" && g.roll) grp = await rollGroup(g, textures, opts.filled, opts.pouch === true);
   else if (["center_seal_side_gusset", "quad_seal", "flat_bottom_box_pouch"].includes(g.shape)) grp = await boxGroup(g, textures, opts.filled, g.shape);
   else grp = await flatLikeGroup(g, textures, opts.filled, g.shape);
   if (g.valve) {

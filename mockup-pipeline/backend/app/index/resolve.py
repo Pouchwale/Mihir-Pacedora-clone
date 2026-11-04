@@ -48,7 +48,33 @@ def match_pouch_type(types: dict[str, PouchType], ctx: dict, item: ItemOverride 
 
 
 # ---------------------------------------------------------------- keyline resolution
-Source = Literal["item_override", "client_override", "pouch_type", "measured", "spec_table", "default", "disabled"]
+# Options the code supports even where an index entry saved before them does not list them yet
+# (an index seeded before the butterfly hang hole has hang_hole_type [none, round, euro]).
+CODE_OPTIONS: dict[str, tuple[str, ...]] = {"hang_hole_type": ("none", "round", "euro", "butterfly")}
+
+def seed_fields(template_key: str) -> dict[str, KeylineField]:
+    """The fields the shipped seed gives keyline template `template_key`. An index stored before a field
+    was added never gets it until `cli seed-apply`: the live index had no hang_hole_width_mm or
+    hang_hole_height_mm, so the job page's hole width and dome height were saved and silently ignored.
+    resolve_keyline adds the fields a stored template lacks from here (the stored ones always win)."""
+    if template_key not in _SEED_FIELDS:
+        from pathlib import Path
+
+        import yaml
+
+        try:
+            seed = yaml.safe_load((Path(__file__).parent / "seed" / "index.yaml").read_text(encoding="utf-8"))
+            raw = (seed.get("keyline_template") or {}).get(template_key, {}).get("fields") or {}
+            _SEED_FIELDS[template_key] = {k: KeylineField.model_validate(v) for k, v in raw.items()}
+        except Exception:  # noqa: BLE001 - no seed to fall back on: the stored template alone, as before
+            _SEED_FIELDS[template_key] = {}
+    return _SEED_FIELDS[template_key]
+
+
+_SEED_FIELDS: dict[str, dict[str, KeylineField]] = {}
+
+
+Source =Literal["item_override", "client_override", "pouch_type", "measured", "spec_table", "default", "disabled"]
 
 
 class ResolvedField(BaseModel):
@@ -79,12 +105,15 @@ def resolve_keyline(
     resolved: dict[str, ResolvedField] = {}
     issues: list[Issue] = []
     in_progress: set[str] = set()
+    fields = {**seed_fields(template_key), **template.fields}  # (stored fields win; shipped ones fill the gaps)
     client_values = {**(client.keyline_overrides.get("*", {}) if client else {}), **(client.keyline_overrides.get(pouch_type_key, {}) if client else {})}
     item_values = item.keyline_overrides if item else {}
 
     def lookup(ns: str, name: str) -> Any:
         if ns in ("spec", "measured"):
             return ctx.get(ns, {}).get(name)
+        if name not in fields:
+            raise formula.FormulaError(f"unknown keyline field {name!r} (spec.<field> or measured.<field>?)")
         return resolve(name).value
 
     def resolve(name: str) -> ResolvedField:
@@ -94,7 +123,7 @@ def resolve_keyline(
             raise formula.FormulaError(f"cycle at {name}")
         in_progress.add(name)
         try:
-            resolved[name] = _field(name, template.fields[name])
+            resolved[name] = _field(name, fields[name])
         finally:
             in_progress.discard(name)
         return resolved[name]
@@ -142,7 +171,7 @@ def resolve_keyline(
             return formula.evaluate(expr, lookup)
         except formula.MissingValue:
             return None  # not available for this job: fall through to the next source
-        except (formula.FormulaError, ZeroDivisionError, TypeError, ValueError) as exc:
+        except (formula.FormulaError, ArithmeticError, TypeError, ValueError, KeyError, AttributeError) as exc:  # (ArithmeticError: / 0, overflow)
             issues.append(Issue(code="keyline_formula", field=f"keyline.{name}", message=f"{what} {expr!r} failed: {exc}"))
             return None
 
@@ -162,7 +191,7 @@ def resolve_keyline(
                     issues.append(Issue(code="keyline_out_of_range", field=f"keyline.{name}", message=f"{value} {f.unit} is outside {f.min}..{f.max}"))
             elif f.type == "bool":
                 value = value if isinstance(value, bool) else norm(str(value)) in ("yes", "true", "1")
-            elif f.type == "enum" and value not in f.options:
+            elif f.type == "enum" and value not in f.options and value not in CODE_OPTIONS.get(name, ()):
                 issues.append(Issue(code="keyline_bad_option", field=f"keyline.{name}", message=f"{value!r} is not one of {f.options}"))
             elif f.type == "text":
                 value = str(value)
@@ -170,7 +199,7 @@ def resolve_keyline(
             issues.append(Issue(code="keyline_bad_value", field=f"keyline.{name}", message=f"{value!r} is not a {f.type}"))
         return value
 
-    for name in template.fields:
+    for name in fields:
         try:
             resolve(name)
         except formula.FormulaError as exc:

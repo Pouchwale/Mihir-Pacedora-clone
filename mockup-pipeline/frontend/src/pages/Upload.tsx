@@ -1,6 +1,8 @@
 import { DragEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, type WorkflowOut } from "../api";
+import { api, readBody, type WorkflowOut } from "../api";
+
+const MAX_MB = 200; // the server's max_upload_mb default
 
 interface UploadResult {
   batch_id: number;
@@ -39,6 +41,8 @@ export default function Upload() {
   };
 
   const upload = async () => {
+    const big = files.find((f) => f.size > MAX_MB * 1024 * 1024);
+    if (big) { setError(`${big.name} is ${(big.size / 1024 / 1024).toFixed(0)} MB; files over ${MAX_MB} MB cannot be uploaded.`); return; }
     setBusy(true);
     setError("");
     const form = new FormData();
@@ -48,8 +52,7 @@ export default function Upload() {
     if (product !== "pouch" && container) form.append("container", container);
     try {
       const res = await fetch("/api/uploads", { method: "POST", body: form, headers: { "X-Requested-With": "fetch" }, credentials: "same-origin" });
-      const body = await res.json();
-      if (!res.ok) throw new Error(typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail));
+      const body = await readBody<UploadResult>(res, "/api/uploads");
       setResult(body);
       setFiles([]);
       if (body.jobs.length === 1) navigate(`/jobs/${body.jobs[0]}`);

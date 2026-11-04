@@ -25,6 +25,7 @@ export default function KindList() {
   const editable = canEdit(kind);
   const info = kinds.find((k) => k.kind === kind);
   const [rows, setRows] = useState<EntrySummary[]>([]);
+  const [loadError, setLoadError] = useState("");
   const [catalog, setCatalog] = useState<Dict | null>(null);
   const [archived, setArchived] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -34,7 +35,7 @@ export default function KindList() {
 
   useEffect(() => {
     if (kind === "workflow") return;
-    api.get<EntrySummary[]>(`/api/index/${kind}?include_archived=${archived}`).then(setRows);
+    api.get<EntrySummary[]>(`/api/index/${kind}?include_archived=${archived}`).then(setRows).catch((e) => setLoadError(String(e.message ?? e)));
     setCreating(false);
     if (kind === "pouch_type") api.get<Dict>("/api/index/pouch_catalog/default").then((e) => setCatalog(e.data)).catch(() => setCatalog(null));
   }, [kind, archived]);
@@ -49,6 +50,7 @@ export default function KindList() {
 
   return (
     <>
+      {loadError && <div className="msg bad">{loadError}</div>}
       <div className="page-head">
         <div>
           <h1>{info?.label ?? kind}</h1>
@@ -72,7 +74,7 @@ export default function KindList() {
         </div>
       )}
       {kind === "container" && editable && (
-        <GlbContainerAdd onAdded={() => api.get<EntrySummary[]>(`/api/index/${kind}?include_archived=${archived}`).then(setRows)} />
+        <GlbContainerAdd onAdded={() => api.get<EntrySummary[]>(`/api/index/${kind}?include_archived=${archived}`).then(setRows).catch(() => undefined)} />
       )}
       {kind === "pouch_type" && catalog ? <CatalogGroups rows={rows} catalog={catalog} onOpen={(k) => navigate(`/index/${kind}/${k}`)} />
         : kind === "field" ? <FieldTable rows={rows} onOpen={(k) => navigate(`/index/${kind}/${k}`)} />

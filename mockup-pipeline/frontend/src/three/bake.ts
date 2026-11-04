@@ -10,6 +10,16 @@ const FONTS: Record<Overlay["font"], string> = { sans: "Arial, Helvetica, sans-s
 const imageCache = new Map<string, Promise<HTMLImageElement>>();
 
 export function loadImage(url: string): Promise<HTMLImageElement> {
+  if (url.startsWith("blob:") || url.startsWith("data:")) {
+    // one-off pictures (a fresh blob: URL per bake or export): never kept, the cache would only grow
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("cannot load the picture"));
+      img.src = url;
+    });
+  }
+  if (imageCache.size > 64) imageCache.delete(imageCache.keys().next().value!); // oldest first
   if (!imageCache.has(url)) {
     imageCache.set(url, new Promise((resolve, reject) => {
       const img = new Image();
@@ -109,8 +119,15 @@ export function bakedTexture(tex: SceneTexture, bake: PanelBake): Promise<THREE.
       t.colorSpace = THREE.SRGBColorSpace;
       t.anisotropy = 8;
       return t;
+    }).catch((e) => {
+      textureCache.delete(key); // a failed load (e.g. a picture briefly unreachable) is tried again next time
+      throw e;
     }));
-    if (textureCache.size > 12) textureCache.delete(textureCache.keys().next().value!);
+    if (textureCache.size > 12) {
+      const oldest = textureCache.keys().next().value!;
+      textureCache.get(oldest)!.then((t) => t.dispose(), () => undefined);
+      textureCache.delete(oldest);
+    }
   }
   return textureCache.get(key)!;
 }

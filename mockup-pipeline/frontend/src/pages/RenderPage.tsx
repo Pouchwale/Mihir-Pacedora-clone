@@ -47,10 +47,16 @@ export default function RenderPage() {
         stage.setObject(await buildPouch(data.geometry, data.textures, { filled: true }));
         const transparent = data.geometry.preset.background.type === "transparent";
         // Measured size of the built model, flat (as manufactured) and filled, for the job record.
-        const flatModel = await buildPouch(data.geometry, data.textures, { filled: false });
+        // (a roll's size is its formed pouch: built for measuring only, not shown in the renders)
+        const flatModel = await buildPouch(data.geometry, data.textures, { filled: false, pouch: true });
         const flat = measure(flatModel);
         disposeObject(flatModel);
-        const filled = measure(stage.object!);
+        let filled = measure(stage.object!);
+        if (data.geometry.template === "roll_stock") {
+          const filledModel = await buildPouch(data.geometry, data.textures, { filled: true, pouch: true });
+          filled = measure(filledModel);
+          disposeObject(filledModel);
+        }
         window.__render = {
           ready: true,
           measure: () => ({ flat, filled }),

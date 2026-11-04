@@ -1,3 +1,5 @@
+import time
+from collections import defaultdict, deque
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,23 +42,49 @@ class UserOut(BaseModel):
 class LoginIn(BaseModel):
     email: str
     password: str
+    admin_password: str | None = None  # a second place for an account that is signed in already (409 asks for it)
+
+
+# ponytail: per-address limit on FAILED sign-ins in process memory (20 per 5 minutes; a guessing script
+# gets 429 whatever accounts it tries); one Redis counter if the app ever runs on several web instances.
+# The per-account lock (auth.MAX_FAILED) stays underneath.
+_FAILED: dict[str, deque] = defaultdict(deque)
+_FAIL_WINDOW_S, _FAIL_LIMIT = 300, 20
+
+
+def _failures(request: Request) -> deque:
+    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "?")
+    if len(_FAILED) > 10000:  # (never grows without bound)
+        _FAILED.clear()
+    q = _FAILED[ip]
+    now = time.monotonic()
+    while q and now - q[0] > _FAIL_WINDOW_S:
+        q.popleft()
+    return q
 
 
 @router.post("/auth/login")
 def login(body: LoginIn, request: Request, response: Response, session: Session = Depends(get_session)) -> UserOut:
+    failures = _failures(request)
+    if len(failures) >= _FAIL_LIMIT:
+        raise HTTPException(429, "Too many failed sign-in attempts from this address; try again in a few minutes")
     try:
-        user, token = auth.login(session, body.email, body.password)
+        user, token = auth.login(session, body.email, body.password, body.admin_password)
     except HTTPException as exc:
-        activity.record("sign-in failed", None, request, email=body.email.strip().lower(), reason=exc.detail)
+        if exc.status_code != 409:  # (409 = "signed in elsewhere": a question, not a failed attempt)
+            failures.append(time.monotonic())
+            activity.record("sign-in failed", None, request, email=body.email.strip().lower(), reason=exc.detail)
         raise
     auth.set_cookie(response, token)
     request.state.user = SimpleNamespace(email=user.email, role=user.role)  # the request's log line names who signed in
-    activity.record("signed in", user, request)
+    activity.record("signed in", user, request, **({"second_place": True, "approved_by": "administrator password"} if body.admin_password else {}))
     return UserOut.of(user)
 
 
 @router.post("/auth/logout")
 def logout(request: Request, response: Response, session: Session = Depends(get_session)) -> dict:
+    if request.headers.get("x-requested-with") != "fetch":
+        raise HTTPException(403, "Missing X-Requested-With header")  # (a cross-site form must not sign anyone out)
     try:
         activity.record("signed out", auth.current_user(request, session), request)
     except HTTPException:

@@ -11,8 +11,9 @@ import Viewer from "../components/Viewer";
 import WorkflowCanvas, { nodeTitle } from "../components/WorkflowCanvas";
 import { draftFrom, type Draft } from "../three/draft";
 import type { SceneData, SceneFile, Sleeve } from "../three/types";
-import { formatTime, parseTime } from "../util";
+import { formatTime, parseTime, copyToClipboard } from "../util";
 import { JobControls, STATUS_BADGE } from "./Jobs";
+
 import { NodeRun } from "./WorkflowEditor";
 
 type Dict = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -33,7 +34,8 @@ export default function JobDetail() {
   const { can } = useSession();
   const [data, setData] = useState<Dict | null>(null);
   const [scene, setScene] = useState<SceneData | null>(null);
-  const [tab, setTab] = useState<Tab>("keyline_workspace");
+  // phones open on the 3D view; the keyline studio is a desktop tool (still one tap away)
+  const [tab, setTab] = useState<Tab>(() => (window.matchMedia?.("(max-width: 800px)").matches ? "results" : "keyline_workspace"));
   const [sleevePatch, setSleevePatch] = useState<Partial<Sleeve> | null>(null); // the sleeve changed on the page (turned, moved, recoloured), before it is applied
   const [msg, setMsg] = useState("");
   const [preset, setPreset] = useState("");
@@ -44,29 +46,50 @@ export default function JobDetail() {
   const [shareCopied, setShareCopied] = useState(false);
   // pictures / logos uploaded from the Adjust panel in this session (the scene lists them once applied)
   const [uploaded, setUploaded] = useState<Record<string, SceneFile>>({});
+  const [pollRun, setPollRun] = useState(0); // bumped after an action: the poller starts again
 
+  const [missing, setMissing] = useState(false); // 404: no such job, or another user's
   const load = useCallback(async () => {
-    const d = await api.get<Dict>(`/api/jobs/${jobId}`);
+    let d: Dict;
+    try {
+      d = await api.get<Dict>(`/api/jobs/${jobId}`);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) setMissing(true);
+      throw e;
+    }
+    setMissing(false);
     setData(d);
     return d;
   }, [jobId]);
 
+  // the one poll loop: every 2.5 s while the job works, 5 s after a failed call; ends with the page or the job
   useEffect(() => {
     let alive = true;
     let timer: number | undefined;
     const tick = async () => {
-      const d = await load().catch(() => null);
-      if (alive && d && ["QUEUED", "RUNNING"].includes(d.job.status)) timer = window.setTimeout(tick, 2500);
+      const d = await load().catch((e) => (e instanceof ApiError && e.status === 404 ? "gone" : null));
+      if (!alive || d === "gone") return; // (no such job: nothing to poll for)
+      if (!d) timer = window.setTimeout(tick, 5000);
+      else if (["QUEUED", "RUNNING"].includes(d.job.status)) timer = window.setTimeout(tick, 2500);
     };
     tick();
     return () => { alive = false; window.clearTimeout(timer); };
-  }, [load]);
+  }, [load, pollRun]);
 
   const hasScene = !!(data?.outputs.texture && data?.outputs.build_geometry);
   const textureStamp = data?.steps.find((s: Dict) => s.step === "texture")?.finished_at;
   useEffect(() => {
     if (!hasScene) { setScene(null); return; }
-    api.get<SceneData>(`/api/jobs/${jobId}/scene`).then((s) => { setScene(s); setDraft(draftFrom(s.adjust as Partial<Draft>)); }).catch(() => setScene(null));
+    let alive = true;
+    api.get<SceneData>(`/api/jobs/${jobId}/scene`).then((s) => {
+      if (!alive) return;
+      setScene((prev) => {
+        // a re-render that kept the saved adjust leaves an unsaved edit alone
+        if (!prev || JSON.stringify(prev.adjust ?? null) !== JSON.stringify(s.adjust ?? null)) setDraft(draftFrom(s.adjust as Partial<Draft>));
+        return s;
+      });
+    }).catch(() => alive && setScene(null));
+    return () => { alive = false; };
   }, [jobId, hasScene, textureStamp]);
   const savedDraft = scene ? JSON.stringify(draftFrom(scene.adjust as Partial<Draft>)) : "";
   const dirty = !!draft && JSON.stringify(draft) !== savedDraft;
@@ -86,6 +109,7 @@ export default function JobDetail() {
 
   const currentPreset = data?.outputs?.build_geometry?.geometry?.preset_key ?? "";
   if (data && !preset && currentPreset) setPreset(currentPreset);
+  if (!data && missing) return <div className="msg bad">Job #{jobId} does not exist, or it belongs to another user. <Link to="/jobs">Back to the jobs</Link></div>;
   if (!data) return <div className="muted">Loading…</div>;
   const job = data.job;
   const out: Dict = data.outputs;
@@ -97,8 +121,7 @@ export default function JobDetail() {
     try {
       await fn();
       setMsg(ok);
-      const poll = async () => { const d = await load(); if (["QUEUED", "RUNNING"].includes(d.job.status)) setTimeout(poll, 2500); };
-      poll();
+      setPollRun((n) => n + 1);
     } catch (err) {
       setMsg(err instanceof ApiError ? err.message : String(err));
     }
@@ -106,7 +129,7 @@ export default function JobDetail() {
   const rerun = (step: string, latest = false) => act(() => api.post(`/api/jobs/${jobId}/rerun`, { from_step: step, latest_index: latest }), `Rerunning from ${step}…`);
   const rerunNode = (node: string) => act(() => api.post(`/api/jobs/${jobId}/rerun`, { from_node: node }), `Rerunning from node ${node}…`);
   const wf: JobWorkflow | undefined = data?.workflow;
-  const applyDraft = (saveDefault: boolean) => {
+  const applyDraft = (saveDefault: boolean, saveTypeDefault = false) => {
     if (!draft) return;
     // Panel sources: the select stores "sheet:N" in `source`; the API takes source + sheet_panel.
     const panels = Object.fromEntries(Object.entries(draft.panels).map(([role, p]) => {
@@ -114,7 +137,7 @@ export default function JobDetail() {
       return [role, m ? { ...p, source: "sheet", sheet_panel: Number(m[1]) } : p];
     }));
     setAdjusting(true);
-    act(() => api.post(`/api/jobs/${jobId}/adjust`, { adjust: { ...draft, panels }, save_item_default: saveDefault }), "Adjustments applied; re-rendering…").finally(() => setAdjusting(false));
+    act(() => api.post(`/api/jobs/${jobId}/adjust`, { adjust: { ...draft, panels }, save_item_default: saveDefault, save_type_default: saveTypeDefault }), "Adjustments applied; re-rendering…").finally(() => setAdjusting(false));
   };
   const resetDraft = () => {
     setAdjusting(true);
@@ -143,23 +166,25 @@ export default function JobDetail() {
               className="btn"
               style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 5, background: shareCopied ? "var(--ok)" : undefined, color: shareCopied ? "#fff" : undefined }}
               onClick={async () => {
-                if (shareLink) {
-                  navigator.clipboard.writeText(shareLink);
-                  setShareCopied(true);
-                  setTimeout(() => setShareCopied(false), 2500);
-                  return;
+                let url = shareLink;
+                if (!url) {
+                  try {
+                    const res = await api.get<{ share_url: string; public: boolean; tunnel_error: string | null }>(`/api/jobs/${jobId}/share-token`);
+                    // the ngrok address when the tunnel is up; otherwise a link that opens on this PC only
+                    url = res.public ? res.share_url : window.location.origin + res.share_url;
+                    if (!res.public) setMsg(`This link opens on this PC only: the ngrok tunnel is not up. ${res.tunnel_error ?? "ngrok is not running or not installed."}`);
+                    else { setMsg(""); setShareLink(url); } // a public link is kept for the next click; a PC-only one is retried
+                  } catch (e) {
+                    setMsg("Could not generate share link: " + String(e));
+                    return;
+                  }
                 }
-                try {
-                  const res = await api.get<{ share_url: string; public: boolean }>(`/api/jobs/${jobId}/share-token`);
-                  // the ngrok address when the tunnel is up; otherwise a link that opens on this PC only
-                  const fullUrl = res.public ? res.share_url : window.location.origin + res.share_url;
-                  if (!res.public) setMsg("ngrok is not running or not installed: this link opens on this PC only.");
-                  setShareLink(fullUrl);
-                  navigator.clipboard.writeText(fullUrl);
+                const ok = await copyToClipboard(url);
+                if (ok) {
                   setShareCopied(true);
                   setTimeout(() => setShareCopied(false), 2500);
-                } catch (e) {
-                  setMsg("Could not generate share link: " + String(e));
+                } else {
+                  window.prompt("Share link (copy with Ctrl+C):", url);
                 }
               }}
             >
@@ -169,6 +194,14 @@ export default function JobDetail() {
           {job.status === "DONE" && can("approve") && !job.approved_by && <button className="primary" onClick={() => act(() => api.post(`/api/jobs/${jobId}/approve`), "Approved.")}>Approve</button>}
         </div>
       </div>
+      {shareLink && (
+        <div className="msg ok row" style={{ marginBottom: 12, justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+          <span style={{ wordBreak: "break-all" }}><b>Public share link:</b> <a href={shareLink} target="_blank" rel="noreferrer" style={{ color: "inherit", textDecoration: "underline" }}>{shareLink}</a></span>
+          <button className="small" onClick={async () => { const ok = await copyToClipboard(shareLink); if (ok) { setShareCopied(true); setTimeout(() => setShareCopied(false), 2500); } else { window.prompt("Share link:", shareLink); } }}>
+            {shareCopied ? "✓ Copied" : "Copy"}
+          </button>
+        </div>
+      )}
       {msg && <div className="msg warn" style={{ marginBottom: 12 }}>{msg}</div>}
       {job.status === "FAILED" && <div className="msg bad" style={{ marginBottom: 12 }}>Failed at {job.current_step}: {job.error} <button className="link" onClick={() => rerun(job.current_step)}>retry this step</button></div>}
       {job.status === "PAUSED" && <div className="msg warn" style={{ marginBottom: 12 }}>Paused after <code>{job.current_step}</code>. Everything done so far is kept; <b>Resume</b> continues with the next step, or rerun from any step on the Steps tab.</div>}
@@ -218,7 +251,7 @@ export default function JobDetail() {
                   onDone={(m) => act(async () => undefined, m)} />
               )}
               {draft && !running && !isSleeve && (
-                <AdjustPanel scene={liveScene} job={data} draft={draft} dirty={dirty} busy={adjusting} isAdmin={can("edit_index")}
+                <AdjustPanel scene={liveScene} job={data} draft={draft} dirty={dirty} busy={adjusting || running} isAdmin={can("edit_index")}
                   onChange={setDraft} onApply={applyDraft} onReset={resetDraft} onUpload={uploadArtwork} />
               )}
             </div>

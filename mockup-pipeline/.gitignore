@@ -9,3 +9,9 @@ backend/tests/.tmp/
 frontend/node_modules/
 frontend/dist/
 phase1/output/
+
+# local only: TLS key, logs, editor state, client sample PDFs
+backend/certs/
+/data/
+.claude/
+backend/tests/fixtures/*.pdf

@@ -146,6 +146,16 @@ class PdfProfile(BaseModel):
     spec_dpi: int = Field(300, ge=150, le=600)
     spec_template: SpecTemplate = Field(default_factory=SpecTemplate)
 
+    @field_validator("white_ink_patterns", "technical_ink_patterns", "varnish_ink_patterns")
+    @classmethod
+    def _patterns_compile(cls, v):
+        for pattern in v:  # (a bad regex saved here would fail every job's ink classification)
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(f"invalid pattern {pattern!r}: {exc}") from exc
+        return v
+
     def non_visible_inks(self) -> list[str]:
         return [*self.white_inks, *self.varnish_inks, *self.technical_inks]
 

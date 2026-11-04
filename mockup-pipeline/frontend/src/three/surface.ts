@@ -4,6 +4,7 @@
 // Coordinates: x from the panel's left edge, y from its top edge, as printed (front view).
 import * as THREE from "three";
 import type { GeometrySpec, WindowShape } from "./types";
+import { hangHoleOf, hangHolePath } from "./hanghole";
 
 export const PX_PER_MM = 4;
 const MAX_PX = 2048;
@@ -42,8 +43,9 @@ export function hasWindow(g: GeometrySpec, face?: "front" | "back"): boolean {
 
 /** Alpha mask of a front/back face. Returns null when nothing is cut and there is no window. */
 export function cutMask(g: GeometrySpec, wMm: number, hMm: number, o: CutOptions): THREE.CanvasTexture | null {
-  const notch = g.tear_notch.type !== "none" || g.butterfly_notch;
-  const any = (o.corners && g.corner_radius_mm > 0) || notch || g.hang_hole.type !== "none" || g.window.enabled || o.spoutCorner || o.outline || (o.face && hasWindow(g, o.face));
+  const notch = g.tear_notch.type !== "none";
+  const hole = hangHoleOf(g, wMm);
+  const any = (o.corners && g.corner_radius_mm > 0) || notch || hole.type !== "none" || g.window.enabled || o.spoutCorner || o.outline || (o.face && hasWindow(g, o.face));
   if (!any) return null;
   const { c, k } = canvasFor(wMm, hMm);
   const ctx = c.getContext("2d")!;
@@ -79,19 +81,9 @@ export function cutMask(g: GeometrySpec, wMm: number, hMm: number, o: CutOptions
     }
   };
   if (g.tear_notch.type !== "none") cutNotch(g.tear_notch.y_from_top_mm, g.tear_notch.depth_mm || 4, g.tear_notch.type);
-  if (g.butterfly_notch) cutNotch(g.tear_notch.y_from_top_mm + 6, 3, "v_notch");
-  if (g.hang_hole.type === "round") {
-    ctx.beginPath();
-    ctx.arc(wMm / 2, g.hang_hole.offset_mm, g.hang_hole.size_mm / 2, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (g.hang_hole.type === "euro") {
-    const s = g.hang_hole.size_mm;
-    roundRect(ctx, wMm / 2 - s * 1.6, g.hang_hole.offset_mm - s / 2, s * 3.2, s, s / 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(wMm / 2, g.hang_hole.offset_mm - s * 0.2, s * 0.55, 0, Math.PI * 2);
-    ctx.fill();
-  }
+  // (the butterfly is a hang hole, cut below; never a second notch)
+  const holePath = hangHolePath(hole, wMm);
+  if (holePath) ctx.fill(new Path2D(holePath));
   if (o.spoutCorner) {
     const cut = (g.spout?.cap_diameter_mm ?? 30) * 1.1;
     ctx.beginPath();

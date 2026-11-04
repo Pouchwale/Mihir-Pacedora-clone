@@ -90,7 +90,15 @@ def _eval(node: ast.AST, lookup: Lookup) -> Any:
     if isinstance(node, ast.Attribute):
         return _value(lookup(node.value.id, node.attr), f"{node.value.id}.{node.attr}")
     if isinstance(node, ast.BinOp):
-        return _BIN[type(node.op)](_eval(node.left, lookup), _eval(node.right, lookup))
+        left, right = _eval(node.left, lookup), _eval(node.right, lookup)
+        if isinstance(node.op, ast.Pow) and (not isinstance(right, (int, float)) or abs(right) > 64):
+            raise FormulaError("exponents above 64 are not allowed")  # (9**9**9 would hang the job thread)
+        if isinstance(node.op, ast.Mult) and (isinstance(left, (str, list)) or isinstance(right, (str, list))):
+            raise FormulaError("a text or list cannot be multiplied")  # ([1] * 10**9 would eat the memory)
+        result = _BIN[type(node.op)](left, right)
+        if isinstance(result, int) and abs(result) > 10**15:
+            raise FormulaError("the result is too large for a keyline value")
+        return result
     if isinstance(node, ast.UnaryOp):
         v = _eval(node.operand, lookup)
         return -v if isinstance(node.op, ast.USub) else +v if isinstance(node.op, ast.UAdd) else not v

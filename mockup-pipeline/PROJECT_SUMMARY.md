@@ -37,7 +37,7 @@ Rules given at the start:
 | 7 (25 Sept) | Visual workflow editor + graph runner + live job canvas; indexing rulebook (field dictionary, pouch catalog, size rules, panel rules, material preview) | done (section 8c) |
 
 Local run: `cd mockup-pipeline\backend; powershell -ExecutionPolicy Bypass -File run_local.ps1`,
-then http://127.0.0.1:8765 (admin@example.com / change-me-please-1, local only). Port 8765 because
+then http://127.0.0.1:8765 (the administrator from ADMIN_EMAIL / ADMIN_PASSWORD in backend/.env). Port 8765 because
 8000 is used by another program on this PC.
 
 ## 3. PDF formats handled (all automatic)

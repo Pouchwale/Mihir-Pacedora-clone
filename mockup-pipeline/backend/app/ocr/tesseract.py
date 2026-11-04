@@ -39,7 +39,9 @@ def _configure() -> None:
 def words(image: Image.Image, psm: int, lang: str = "eng", whitelist: str | None = None) -> list[Word]:
     _configure()
     config = f"--psm {psm}" + (f" -c tessedit_char_whitelist={whitelist}" if whitelist else "")
-    data = pytesseract.image_to_data(image, lang=lang, config=config, output_type=pytesseract.Output.DICT)
+    # timeout: a tesseract stuck on a huge or garbled crop fails this read (RuntimeError) instead of
+    # holding the single job thread for ever
+    data = pytesseract.image_to_data(image, lang=lang, config=config, output_type=pytesseract.Output.DICT, timeout=180)
     out = []
     for i, text in enumerate(data["text"]):
         text = text.strip()

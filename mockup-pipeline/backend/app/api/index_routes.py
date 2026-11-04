@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app import activity, auth
+from app.api.limits import read_limited
 from app.db import get_session
 from app.index import store
 from app.index.conditions import spec_context
@@ -210,15 +211,19 @@ async def test_fields(file: UploadFile = File(...), fields: str = Form(""), sess
             raise HTTPException(422, {"problems": [f"fields: {exc}"]}) from exc
     profile = compose_profile(index["pdf_profile"].get("default") or PdfProfile(), dictionary)  # type: ignore[arg-type]
     rules: ValidationRules = index["validation_rules"].get("default") or ValidationRules()  # type: ignore[assignment]
-    data = await file.read()
+    data = await read_limited(file)
     if not data.startswith(b"%PDF-"):
         raise HTTPException(422, f"{file.filename} is not a PDF")
     root = get_settings().work_dir / "field_tests" / uuid.uuid4().hex
     root.mkdir(parents=True, exist_ok=True)
     try:
-        pdf = root / (file.filename or "test.pdf")
+        pdf = root / "test.pdf"  # (never the client's own name: "..\\..\\app\\x.py" would write outside root)
         pdf.write_bytes(data)
-        if len(PdfReader(pdf).pages) > 1:
+        try:
+            pages = len(PdfReader(pdf).pages)
+        except Exception as exc:  # noqa: BLE001 - a damaged PDF is the sender's problem, not a server error
+            raise HTTPException(422, f"{file.filename} cannot be read as a PDF") from exc
+        if pages > 1:
             one = root / "page.pdf"
             single_page_copy(pdf, one, artwork_page(pdf))
             pdf = one

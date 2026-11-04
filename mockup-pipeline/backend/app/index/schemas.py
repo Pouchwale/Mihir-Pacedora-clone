@@ -362,6 +362,16 @@ class ItemOverride(BaseModel):
     notes: str = ""
 
 
+class StorageRules(BaseModel):
+    """Disk housekeeping for finished jobs (singleton `default`; app.storage_compact runs it once an hour).
+    Nothing is ever lost: every file keeps every pixel and every byte of meaning."""
+
+    compact_after_days: int = Field(0, ge=0, description="Jobs finished this many days ago have their PNG files recompressed "
+                                    "(same image, every pixel identical, about a third smaller). 0 = never")
+    pdf_cache_days: int = Field(7, ge=0, description="Working copies of uploaded PDFs (.work/cache) unused for this many days are "
+                               "deleted; the upload itself stays in storage and is copied back when needed. 0 = never")
+
+
 # ---------------------------------------------------------------- registry
 KINDS: dict[str, type[BaseModel]] = {
     "field": FieldDef,
@@ -377,13 +387,15 @@ KINDS: dict[str, type[BaseModel]] = {
     "validation_rules": ValidationRules,
     "workflow": WorkflowGraph,
     "container": Container,
+    "storage": StorageRules,
 }
-SINGLETONS = {"pdf_profile", "validation_rules", "pouch_catalog"}  # only key "default"
+SINGLETONS = {"pdf_profile", "validation_rules", "pouch_catalog", "storage"}  # only key "default"
 KIND_LABELS = {
     "field": "Field dictionary", "pouch_catalog": "Pouch catalog", "pouch_type": "Pouch types",
     "keyline_template": "Keyline templates", "standard_size": "Size rules", "pdf_profile": "PDF profile & panels",
     "material": "Materials", "output_preset": "Output presets", "client": "Clients", "item_override": "Item overrides",
     "validation_rules": "Validation rules", "workflow": "Workflows", "container": "Sleeve containers",
+    "storage": "Storage & cleanup",
 }
 # Kinds with their own editor page rather than the generic entry page.
 KIND_PAGES = {"workflow": "/workflows"}

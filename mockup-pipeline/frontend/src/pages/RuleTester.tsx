@@ -23,7 +23,7 @@ export default function RuleTester() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    api.get<unknown>("/api/index/sample-spec").then((s) => setSheet(JSON.stringify(s, null, 1)));
+    api.get<unknown>("/api/index/sample-spec").then((s) => setSheet(JSON.stringify(s, null, 1))).catch((e) => setError(String(e.message ?? e)));
   }, []);
 
   const run = async () => {

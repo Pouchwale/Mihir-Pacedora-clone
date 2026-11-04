@@ -35,8 +35,9 @@ cd mockup-pipeline\backend
 powershell -ExecutionPolicy Bypass -File run_local.ps1
 ```
 
-Open http://127.0.0.1:8765, sign in as `admin@example.com` / `change-me-please-1` (local only;
-set `ADMIN_EMAIL` / `ADMIN_PASSWORD` before the first start to choose your own), then
+Open http://127.0.0.1:8765 and sign in as the administrator you named in `ADMIN_EMAIL` /
+`ADMIN_PASSWORD` (environment or `backend/.env`, set before the first start; there is no built-in
+account: the server listens on the whole network), then
 **Upload** → drop the front PDF (and its back / gusset PDFs if you have them) → the job page
 shows each step live. A PDF whose sheet carries front, gusset and back together (e.g.
 FGPO7535) needs nothing else: the panels are cut from it. If linked panels are missing, the
@@ -44,7 +45,11 @@ review asks for them or offers substitutes. When the job is done: 3D viewer (orb
 renders, GLB, keyline previews, specs with confidence, and **Download all (ZIP)**.
 
 The run script uses SQLite and runs jobs in a background thread (no Redis). Port 8765 because
-another local service already uses 8000 on this PC.
+another local service already uses 8000 on this PC. When 8765 is taken too, the script says by
+which program and uses the next free port (8766, 8767, ...; `$env:PORT` sets the first one to try).
+It writes the port it used to `backend/.work/port`, and the share tunnel, the phase-1 runner and
+`npm run dev` all follow it. If the app is already running, the script says where and does not
+start a second copy (two copies would run the same jobs twice).
 
 ## Run Phase 1 locally (Windows)
 
@@ -76,7 +81,7 @@ $env:DATABASE_URL = "sqlite:///./.work/dev.db"      # or postgresql://user:pass@
 $env:ADMIN_EMAIL = "you@company.com"; $env:ADMIN_PASSWORD = "at-least-10-chars"
 .venv\Scripts\alembic upgrade head                   # migrations (also run on every deploy)
 .venv\Scripts\python -m app.cli bootstrap            # first admin + seed index (only if empty)
-.venv\Scripts\python -m uvicorn app.api.main:app --port 8765
+.venv\Scripts\python -m uvicorn app.api.main:app --port 8765   # another port: also set $env:INTERNAL_BASE_URL = "http://127.0.0.1:<port>" (share links forward there)
 
 cd ..\frontend
 npm install
@@ -330,6 +335,60 @@ override (*Item overrides* → the item code) with `window_enabled: true` and th
 `window_x_mm`, `window_y_mm`, `window_width_mm`, `window_height_mm` (from the finished top-left
 corner) and `window_corner_radius_mm`, or set the same values on the job page under *Keyline*.
 
+## Storage and cleanup (Indexing -> Storage & cleanup)
+
+Every job keeps its files for ever (renders, textures, GLB, the uploaded PDFs): a busy PC fills up.
+The index entry `storage/default` (sidebar **Storage & cleanup**, versioned like every entry) tells
+the server what to do with finished jobs; it runs once an hour inside the API process, on local
+storage only (on R2 / S3 use the bucket's lifecycle rules). Nothing is ever lost:
+
+| Setting | Does | Default |
+|---|---|---|
+| `compact_after_days` | A job finished that many days ago has every PNG under its folder rewritten at the strongest compression: the same file format, the same mode, ICC profile and dpi, and **every pixel identical** (the result is decoded and compared before the old file is replaced; a file that would not shrink is left alone). About a third smaller; the job's log records how much was freed. | 30 (seed); 0 = never |
+| `pdf_cache_days` | Working copies of uploaded PDFs in `.work/cache` older than that are deleted. The upload itself stays in storage and is copied back the next time a job needs it. | 7; 0 = never |
+
+Measured on this installation's own files: PNG recompression keeps 0.65 of the bytes; lossless WebP
+would keep 0.48 but changes the file type the customers download, so it is not done. The two folders
+of readable copies (`<data_dir>/uploads`, `<data_dir>/Output Mockups`) are duplicates kept for people
+to browse; delete them by hand whenever you like, the app never reads them back.
+
+## Session timeout
+
+`SESSION_HOURS` (default 12) is how long a sign-in lasts at most. `SESSION_IDLE_MINUTES` (default 0 =
+off) ends it earlier after that long without any request; every page view extends it, never past
+`SESSION_HOURS`. Both live in `backend/.env` (or the environment) and take effect on the next start.
+
+## One place per account
+
+`SINGLE_SESSION=true` (default): while an account has a live session, signing in with it from another PC
+or browser answers "signed in somewhere else" and the sign-in form asks for an administrator's password
+as well. With it the new place is signed in and the earlier one is signed out; the activity log records
+the sign-in as approved by the administrator password. The earlier session also ends by itself after
+`SESSION_IDLE_MINUTES` without activity, so a browser closed without signing out does not block the
+account for ever when an idle timeout is set. `SINGLE_SESSION=false` allows any number of places.
+
+## Why did the server stop? (logs/server)
+
+The server log (`<data_dir>/logs/server/<day>.log`, one JSON object per line) holds, besides the job
+steps and errors: `server started` with the process's memory and the machine's free memory and disk,
+a `load` line every 5 minutes (memory, free RAM, free disk, jobs queued / running), a WARNING as soon
+as free memory is below 700 MB or free disk below 3 GB, `uncaught exception in thread` with the
+traceback for a crash inside Python, and `server stopped (clean shutdown)`. A start that finds no
+clean stop before it logs `previous run ended without a clean shutdown` with the time the dead run
+started: look at the `load` lines just before the gap (memory and disk at the time) and at
+`logs/server/crash-faults.log`, where a crash inside a native library (PDF rendering, images) leaves
+its traceback. The most likely reasons for a stop, in order: the machine ran out of memory during a
+large render or OCR (the process is killed, the `load` lines show free RAM falling), the disk filled,
+the PC was restarted or lost power, or `autostart.ps1`'s own log (`logs/autostart-<day>.log`) shows the
+start-up failing (a missing `.venv`, a failed migration, port 8765 taken).
+
+## Share links through ngrok
+
+`PUBLIC_URL` set (autostart.ps1 does) keeps the tunnel up from start-up on; only `/share/...` pages
+and their API calls pass through it, everything else answers 404. On ngrok's free plan the first
+browser visit shows ngrok's own "You are about to visit ..." page; it is served before the request
+reaches this server, so nothing here can remove it. Any paid ngrok plan switches it off.
+
 ## Pausing and cancelling jobs
 
 Every job has **Pause** / **Resume** / **Cancel** (job page header and the jobs list). A queued job
@@ -445,6 +504,19 @@ found as a network or as a closed grid: FGPO7165's and FGPO7410's artwork copies
 their lines, the technical preview beside them has them all. Only lines inside the copy's box
 count (the ups beside it share its heights), and a cut edge drawn in pieces counts as one line as
 long as its pieces together (FGPO7165's right edge covers 51 % of its up beside the shared cut line).
+
+**Hang holes and "Butterfly Notch".** "Butterfly Notch: Yes" on the spec table is the butterfly
+(sombrero) hang hole punched at the top centre, never a second tear notch: a pouch gets one tear
+notch a side, at the keyline's notch position. When the hole is drawn on the dieline (a curved,
+centred outline near the top: round, euro slot or sombrero), `app.pdf.vector.hang_hole` measures
+its type, width, slot height and place (`measured.hang_hole_*`), and the 3D cut, the dieline view
+and the keyline preview all draw that one outline (`hang_hole_path` in `app/geometry/spec.py`,
+mirrored by `frontend/src/three/hanghole.ts`). Without a drawing, "Butterfly Notch: Yes" gives the
+usual sombrero (30 mm wide, 6 mm slot). An item / job value always wins (*Adjust* → Hang hole). The
+rule is in code, so an index seeded before it gets it too; `app.cli seed-apply` adds the new keyline
+fields (`hang_hole_width_mm`, `hang_hole_height_mm`, the measured sources) to an existing index.
+Jobs made before the fix show the hole in the viewer at once; rerun them from *extract_specs* to
+measure the drawn hole and refresh the PNG renders (FGPO7700, FGPO7570, FGPO0928).
 
 Remarks such as "Color match as per old code : FGPO3728" name a reference job
 (`reference_code_words`), not a panel. A dot right of "Value Additions" (e.g. "Fully MATT Finish

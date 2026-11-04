@@ -49,7 +49,18 @@ class Settings(BaseSettings):
     # First administrator, created at startup only while no active admin exists.
     admin_email: str = ""
     admin_password: str = ""
+    # Session timeout. A sign-in lasts session_hours at most; with session_idle_minutes > 0 it also ends
+    # after that long without a request (sliding: every page view extends it, never past session_hours).
     session_hours: int = 12
+    session_idle_minutes: int = 0
+    # One place at a time: while an account has a live session, signing in again (another PC, another
+    # browser) needs an administrator's password as well; the earlier session is then signed out.
+    single_session: bool = True
+    # Nightly backup (app.backup): the database and the stored files, at this hour (local time; -1 = off),
+    # into backup_dir (empty = <data_dir>/backups; better another disk or a synced cloud folder).
+    backup_dir: str = ""
+    backup_hour: int = 2
+    backup_keep_days: int = 14
     cookie_secure: bool = False  # True on Render (HTTPS)
     # Built React app served by the API service; empty disables static serving (Vite dev server).
     frontend_dist: str = "../frontend/dist"
@@ -63,9 +74,10 @@ class Settings(BaseSettings):
     # Where the headless renderer reaches this app. The worker starts its own local server; in
     # thread mode it is the API itself.
     internal_base_url: str = "http://127.0.0.1:8765"
-    # Share links for people outside this PC: the ngrok address customers open (your free static
-    # domain, e.g. "https://name.ngrok-free.app"). Empty = whatever address ngrok hands out. The first
-    # "Share" click starts ngrok when it is not running (app.api.tunnel).
+    # Share links for people outside this PC: the ngrok address customers open (your static domain,
+    # e.g. "https://name.ngrok-free.app"). Set, ngrok is started with the server and kept running (the
+    # tunnel is open all the time; only share pages pass through it). Empty = ngrok is started on the
+    # first "Share" click with whatever address it hands out (app.api.tunnel).
     public_url: str = ""
     render_timeout_s: int = 600
     # Browser for the headless renderer: empty = Playwright's own Chromium (`playwright install

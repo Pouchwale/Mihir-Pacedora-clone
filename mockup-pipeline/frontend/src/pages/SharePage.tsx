@@ -4,13 +4,30 @@
  */
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
+import { NGROK_HEADERS } from "../api";
 import Viewer from "../components/Viewer";
 import { draftFrom } from "../three/draft";
 import type { SceneData } from "../three/types";
+import { copyToClipboard } from "../util";
 
 type Dict = Record<string, any>;
 
 const getToken = () => new URLSearchParams(window.location.search).get("token") ?? "";
+
+/** What to tell a customer when the 3D view does not load: the server's own words for a bad link
+ *  (expired / not valid), plain ones for the rest. */
+async function shareError(r: Response): Promise<string> {
+  let detail = "";
+  try {
+    const body = await r.json();
+    if (typeof body?.detail === "string") detail = body.detail;
+  } catch { /* not JSON (an ngrok or proxy page) */ }
+  if (r.status === 401 || r.status === 403) return detail || "This share link has expired or is not valid. Ask the sender for a new link.";
+  if (r.status === 404) return "This mockup no longer exists, or the link is incomplete. Ask the sender for a new link.";
+  if (r.status === 409) return "This mockup is still being prepared. Try again in a few minutes.";
+  if (r.status >= 500) return "The server could not load this mockup right now. Try again in a few minutes.";
+  return detail || `Unexpected error (${r.status}).`;
+}
 
 export default function SharePage() {
   const { jobId } = useParams();
@@ -24,18 +41,17 @@ export default function SharePage() {
     if (!jobId) return;
     const tk = getToken();
     const suffix = tk ? `?token=${encodeURIComponent(tk)}` : "";
-    fetch(`/api/jobs/${jobId}/scene${suffix}`, { credentials: "include" })
+    const headers = NGROK_HEADERS;
+    fetch(`/api/jobs/${jobId}/scene${suffix}`, { credentials: "include", headers })
       .then(async (r) => {
-        if (!r.ok) {
-          const text = await r.text();
-          throw new Error(r.status === 401 ? "This share link has expired or is invalid." : `Error ${r.status}: ${text}`);
-        }
+        if (!r.ok) throw new Error(await shareError(r));
         return r.json() as Promise<SceneData>;
       })
       .then(setScene)
-      .catch((e) => setError(String(e?.message ?? e)))
+      .catch((e) => setError(e instanceof TypeError ? "Could not reach the server. Check your connection and try again." : String(e?.message ?? e)))
       .finally(() => setLoading(false));
-    fetch(`/api/jobs/${jobId}${suffix}`, { credentials: "include", headers: { "X-Requested-With": "fetch" } })
+    // item code, client and approval for the header and cards (a customer's view: no sign-in needed)
+    fetch(`/api/jobs/${jobId}/share-info${suffix}`, { credentials: "include", headers })
       .then((r) => r.ok ? r.json() : null)
       .then((d) => d && setJob(d.job))
       .catch(() => undefined);
@@ -43,11 +59,14 @@ export default function SharePage() {
 
   const draft = scene ? draftFrom(scene.adjust as any) : null;
 
-  const copyLink = () => {
-    navigator.clipboard.writeText(window.location.href).then(() => {
+  const copyLink = async () => {
+    const ok = await copyToClipboard(window.location.href);
+    if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    });
+    } else {
+      window.prompt("Share link:", window.location.href);
+    }
   };
 
   return (
@@ -57,7 +76,7 @@ export default function SharePage() {
       display: "flex", flexDirection: "column",
       fontFamily: "'Inter', system-ui, sans-serif",
     }}>
-      <header style={{
+      <header className="share-head" style={{
         padding: "14px 24px", display: "flex", alignItems: "center", justifyContent: "space-between",
         borderBottom: "1px solid rgba(255,255,255,0.08)", background: "rgba(15,23,42,0.7)",
         backdropFilter: "blur(12px)", position: "sticky", top: 0, zIndex: 100,
@@ -70,7 +89,7 @@ export default function SharePage() {
           </div>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <div style={{ background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 20, padding: "4px 12px", color: "#10b981", fontSize: 11, fontWeight: 700 }}>
+          <div className="share-live" style={{ background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 20, padding: "4px 12px", color: "#10b981", fontSize: 11, fontWeight: 700 }}>
             ● Live 3D
           </div>
           <button onClick={copyLink} style={{ background: copied ? "rgba(16,185,129,0.15)" : "rgba(255,255,255,0.08)", border: `1px solid ${copied ? "rgba(16,185,129,0.4)" : "rgba(255,255,255,0.15)"}`, borderRadius: 8, padding: "6px 14px", color: copied ? "#10b981" : "rgba(255,255,255,0.85)", fontSize: 12, fontWeight: 600, cursor: "pointer", transition: "all 0.2s" }}>
@@ -79,7 +98,7 @@ export default function SharePage() {
         </div>
       </header>
 
-      <main style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", padding: "32px 24px" }}>
+      <main className="share-main" style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center" }}>
         {loading && (
           <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 14, marginTop: 80, textAlign: "center" }}>
                         Loading 3D mockup…
@@ -99,7 +118,7 @@ export default function SharePage() {
               {job?.pouch_type && <InfoCard label="Pouch type" value={job.pouch_type.replace(/_/g, " ")} />}
               {job?.item_code && <InfoCard label="Item code" value={job.item_code} />}
               {job?.client_name && <InfoCard label="Client" value={job.client_name} />}
-              {job?.approved_by && <InfoCard label="Approved" value={job.approved_by} />}
+              {job?.approved && <InfoCard label="Status" value={job.approved_at ? `Approved ${new Date(job.approved_at).toLocaleDateString()}` : "Approved"} />}
             </div>
           </div>
         )}

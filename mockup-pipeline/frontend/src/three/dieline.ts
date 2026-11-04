@@ -4,6 +4,7 @@
 // (pouch.ts panelMap: the texture matrix), so the flat view and the 3D model always agree.
 import * as THREE from "three";
 import type { GeometrySpec, Overlay, SceneTexture, WindowShape } from "./types";
+import { hangHoleExtent, hangHoleOf } from "./hanghole";
 
 export const GAP_MM = 30; // between panels on the sheet
 export const MARGIN_MM = 28; // around the sheet: dimension lines and labels
@@ -156,6 +157,8 @@ export function checks(g: GeometrySpec, textures: Record<string, SceneTexture>, 
   const face = panels.find((p) => p.face);
   if (face) {
     const s = g.seals, top = s.top || s.crimp;
+    const hole = hangHoleOf(g, face.w);
+    const [holeTop, holeBottom] = hangHoleExtent(hole, face.w);
     windows.forEach((w, i) => {
       const p = panels.find((q) => q.role === w.face);
       if (!p || w.kind === "wand") return;
@@ -167,10 +170,11 @@ export function checks(g: GeometrySpec, textures: Record<string, SceneTexture>, 
       if (zy <= top) out.push({ level: "bad", role: face.role, message: `The zipper (${zy} mm) is inside the top seal (${top} mm)`, target: { kind: "line", key: "zipper_offset_from_top_mm" } });
       if (zy > face.h / 2) out.push({ level: "warn", role: face.role, message: `The zipper is more than half way down the pouch (${zy} mm)`, target: { kind: "line", key: "zipper_offset_from_top_mm" } });
       if (g.tear_notch.type !== "none" && g.tear_notch.y_from_top_mm >= zy) out.push({ level: "warn", role: face.role, message: "The tear notch is below the zipper: the pouch would tear open under it", target: { kind: "line", key: "tear_notch_offset_mm" } });
-      if (g.hang_hole.type !== "none" && Math.abs(g.hang_hole.offset_mm - zy) < g.hang_hole.size_mm / 2 + 2) out.push({ level: "bad", role: face.role, message: "The hang hole cuts through the zipper", target: { kind: "line", key: "hang_hole_offset_mm" } });
+      if (hole.type !== "none" && holeTop - 2 < zy && zy < holeBottom + 2) out.push({ level: "bad", role: face.role, message: "The hang hole cuts through the zipper", target: { kind: "line", key: "hang_hole_offset_mm" } });
     }
     if (g.tear_notch.type !== "none" && g.tear_notch.y_from_top_mm > face.h - (s.bottom || s.crimp)) out.push({ level: "warn", role: face.role, message: "The tear notch is in the bottom seal", target: { kind: "line", key: "tear_notch_offset_mm" } });
-    if (g.hang_hole.type !== "none" && g.hang_hole.offset_mm + g.hang_hole.size_mm / 2 > top && !g.zipper.enabled) out.push({ level: "warn", role: face.role, message: "The hang hole reaches below the top seal: it would open the pouch", target: { kind: "line", key: "hang_hole_offset_mm" } });
+    if (hole.type !== "none" && holeTop < 0.5) out.push({ level: "bad", role: face.role, message: "The hang hole runs off the top edge", target: { kind: "line", key: "hang_hole_offset_mm" } });
+    if (hole.type !== "none" && holeBottom > top && !g.zipper.enabled) out.push({ level: "warn", role: face.role, message: "The hang hole reaches below the top seal: it would open the pouch", target: { kind: "line", key: "hang_hole_offset_mm" } });
   }
   return out;
 }

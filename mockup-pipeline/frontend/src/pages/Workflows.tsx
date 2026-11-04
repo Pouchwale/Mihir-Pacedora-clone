@@ -8,10 +8,11 @@ export default function Workflows() {
   const { canEdit } = useSession();
   const editable = canEdit("workflow");
   const [rows, setRows] = useState<WorkflowOut[]>([]);
+  const [loadError, setLoadError] = useState("");
   const [newKey, setNewKey] = useState("");
   const navigate = useNavigate();
 
-  useEffect(() => { api.get<WorkflowOut[]>("/api/workflows").then(setRows); }, []);
+  useEffect(() => { api.get<WorkflowOut[]>("/api/workflows").then(setRows).catch((e) => setLoadError(String(e.message ?? e))); }, []);
 
   const create = () => {
     const key = newKey.trim().toLowerCase().replace(/\s+/g, "_");
@@ -20,6 +21,7 @@ export default function Workflows() {
 
   return (
     <>
+      {loadError && <div className="msg bad">{loadError}</div>}
       <div className="page-head">
         <div>
           <h1>Workflows</h1>

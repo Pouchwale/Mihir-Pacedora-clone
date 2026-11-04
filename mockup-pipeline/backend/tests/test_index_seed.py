@@ -25,7 +25,7 @@ def test_seed_has_all_pouch_types(seeded):
     }
     assert index["pouch_type"]["stand_up_bottom_gusset"].required_panels == ["front", "back", "gusset"]
     assert index["pouch_type"]["flat_bottom_box_pouch"].required_panels == ["front", "back", "side_left", "side_right", "bottom"]
-    assert index["pouch_type"]["shrink_sleeve"].required_panels == ["sleeve"] and set(index["container"]) == {"drink_can", "tin", "bottle", "jar", "ghee_pot"}
+    assert index["pouch_type"]["shrink_sleeve"].required_panels == ["sleeve"] and set(index["container"]) == {"drink_can", "tin", "bottle", "jar", "ghee_pot", "ghee_special_shape"}
 
 
 def test_sample_matches_stand_up(seeded, sample_sheet):

@@ -19,3 +19,31 @@ export const STARTERS: Record<string, Record<string, unknown>> = {
   field: { name: "", label: "", aliases: [], kind: "text", options: [], synonyms: {}, unit: "", min: null, max: null, required: false, optional: true, min_confidence: null, section: false, multiline: false, stop: false, source: "spec_table", order: 100, description: "" },
   standard_size: { name: "", pouch_type: null, width_mm: 240, height_mm: 312, gusset_mm: null, tolerance_mm: 2, notes: "" },
 };
+
+/** Robust clipboard copy that works in both secure contexts (HTTPS/localhost) and insecure contexts (HTTP on LAN IP). */
+export async function copyToClipboard(text: string): Promise<boolean> {
+  if (navigator?.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fallback below
+    }
+  }
+  try {
+    const el = document.createElement("textarea");
+    el.value = text;
+    el.setAttribute("readonly", "");
+    el.style.position = "fixed";
+    el.style.left = "-9999px";
+    el.style.top = "-9999px";
+    document.body.appendChild(el);
+    el.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(el);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+

@@ -17,6 +17,7 @@ Everything downstream works on `Sheet.trim` exactly like on an ArtPro+ TrimBox. 
 names the file really uses are classed (white / varnish / technical) once, in `Sheet.inks`.
 """
 
+import re
 import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -26,7 +27,7 @@ from app.errors import NeedsReview
 from app.pdf.layers import PT_TO_MM, Box, PdfFacts, read_facts, write_layer_copy
 from app.pdf.paint import separations
 from app.pdf.profile import InkClasses, PdfProfile
-from app.pdf.vector import COPY_FRAC, dashed_lines, copy_offset, dieline, dieline_grids, grid_repeats, line_networks, painted_extent, same_size, typical_network
+from app.pdf.vector import COPY_FRAC, dashed_lines, copy_offset, dieline, dieline_grids, grid_repeats, line_networks, mirror_edges, painted_extent, same_size, typical_network
 
 Mode = Literal["layers", "separation", "page"]
 
@@ -243,6 +244,44 @@ def check_layers_pdf(facts: PdfFacts, profile: PdfProfile, strict: bool = False)
             {"problems": problems, "layers_found": facts.layers},
         )
     return [w["message"] for w in warnings]
+
+
+def _is_dimension_layer(name: str, profile: PdfProfile) -> bool:
+    return name in profile.dimension_layers or any(re.search(p, name.lower()) for p in profile.technical_ink_patterns)
+
+
+def _dimension_layer_box(pdf: Path, facts: PdfFacts, profile: PdfProfile, min_mm: float = 15.0) -> Box | None:
+    """The rectangle the dimension arrows of a dimension layer span: the horizontal arrows give its width,
+    the vertical ones its height. Extension ticks (shorter than `min_mm`) are left out. None when the file
+    has no such layer, when its arrows do not all measure one area (every row of horizontal arrows the same
+    width, every column of vertical ones the same height: FGSL3423 measures its artwork and two plate
+    previews separately), or when that area is not clearly inside the page."""
+    from app.pdf.vector import _drawings, _segments
+
+    names = [n for n in facts.layers if _is_dimension_layer(n, profile)]
+    if not names:
+        return None
+    drawings, inv = _drawings(pdf)
+    hs, vs = _segments([d for d in drawings if d.get("layer") in names], inv, min_mm / PT_TO_MM)
+    tol = 3 / PT_TO_MM
+
+    def extents(lines) -> list[tuple[float, float]]:
+        """One (start, end) per row / column of arrows: pieces split by their labels join up."""
+        rows: dict[float, list] = {}
+        for pos, a, b in lines:
+            key = next((k for k in rows if abs(k - pos) <= tol), pos)
+            rows.setdefault(key, []).append((a, b))
+        return [(min(a for a, _ in r), max(b for _, b in r)) for r in rows.values()]
+
+    xs, ys = extents(hs), extents(vs)
+    if not xs or not ys or any(abs(e[0] - xs[0][0]) > tol or abs(e[1] - xs[0][1]) > tol for e in xs) \
+            or any(abs(e[0] - ys[0][0]) > tol or abs(e[1] - ys[0][1]) > tol for e in ys):
+        return None
+    box = Box(xs[0][0], ys[0][0], xs[0][1], ys[0][1])
+    page = facts.media_box
+    if box.width_mm < 20 or box.height_mm < 20 or box.width_mm * box.height_mm > 0.9 * page.width_mm * page.height_mm:
+        return None
+    return box
 
 
 def mode_for(facts: PdfFacts, profile: PdfProfile) -> Literal["layers", "separation"]:
@@ -517,8 +556,22 @@ def _analyse(pdf: Path, profile: PdfProfile) -> Sheet:
                                     f"{web.height_mm:.2f} mm web drawn as one network of lines: the web is used")
                     dx, dy = offset  # the keyline is read on the fullest copy, this far from the artwork copy
                     best, technical = web, painted_extent(only, Box(web.x0 + dx, web.y0 + dy, web.x1 + dx, web.y1 + dy))
+            if best is not None and offset == (0.0, 0.0):
+                mirrored = mirror_edges(only, best)
+                if mirrored != best:
+                    warnings.append(f"Dieline grid {best.height_mm:.2f} mm tall stopped at a band line: its ends mirror each other "
+                                    f"at {mirrored.height_mm:.2f} mm, used")
+                    best, technical = mirrored, painted_extent(only, mirrored)
     if best is not None:
         return Sheet("separation", best, technical, facts, inks, repeats=repeats, warnings=tuple(warnings), drawing_offset=offset)
+    arrows = _dimension_layer_box(pdf, facts, profile)
+    if arrows is not None:
+        # No dieline at all, but a dimension layer (FGPO0928: "Artwork / Dimensions / KLD", TrimBox = the whole
+        # page): the rectangle its arrows measure is the artwork. Read as the whole page, the spec table
+        # beside it went onto the roll as artwork.
+        return Sheet("separation", arrows, None, facts, inks, warnings=(
+            f"No dieline: the artwork is the {arrows.width_mm:.2f} x {arrows.height_mm:.2f} mm area the dimension arrows of layer(s) "
+            f"{', '.join(n for n in facts.layers if _is_dimension_layer(n, profile))} measure",))
     if not profile.page_fallback:
         code = "no_dieline" if inks.technical else "no_technical_ink"
         raise NeedsReview(code, "No dieline (closed grid of technical-ink lines) found around the artwork" if inks.technical else

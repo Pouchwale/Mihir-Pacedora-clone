@@ -10,6 +10,16 @@ from pypdf import PdfReader
 from app.config import get_settings
 
 Image.MAX_IMAGE_PIXELS = 400_000_000  # 1 m pouch at 600 dpi still fits
+# Above this a render plus the float copies the trim makes of it (4-5 x the pixels) goes past the
+# memory of a 2 GB worker and kills the whole process; the job fails with a clear message instead.
+MAX_RENDER_PIXELS = 150_000_000  # a 1000 x 700 mm sheet at 300 dpi is 97 Mpx
+
+
+def check_render_size(width_pt: float, height_pt: float, dpi: int) -> None:
+    px = round(width_pt / 72 * dpi) * round(height_pt / 72 * dpi)
+    if px > MAX_RENDER_PIXELS:
+        raise ValueError(f"the page is {width_pt * 25.4 / 72:.0f} x {height_pt * 25.4 / 72:.0f} mm: {px / 1e6:.0f} Mpx at {dpi} dpi "
+                         f"is more than this server renders ({MAX_RENDER_PIXELS // 1_000_000} Mpx); lower texture_dpi / spec_dpi in the PDF profile")
 
 
 _SRGB_ICC_BYTES: bytes | None = None
@@ -36,6 +46,7 @@ def _mupdf_render(pdf: Path, dpi: int) -> Image.Image:
     try:
         page = doc[0]
         box = page.rect  # (the CropBox, in page space: MuPDF renders exactly that)
+        check_render_size(box.width, box.height, dpi)
         w, h = max(1, round(box.width / 72 * dpi)), max(1, round(box.height / 72 * dpi))
         # Supersampled without anti-aliasing: shapes laid edge to edge are each anti-aliased on their own
         # otherwise, and the paper shows through where they meet (a pale hairline seam down FGSL4089's

@@ -271,20 +271,20 @@ export class Stage {
     if (!floor.moves) this.floor.rotation.z = 0;
     this.lift = Math.max(0, floor.float_mm);
     if (bg.kind === "none") {
-      this.scene.background = null;
+      this.setBackground(null);
       this.renderer.setClearColor(0x000000, 0);
     } else if (bg.kind === "gradient") {
-      this.scene.background = gradientTexture(["#fdfdfe", "#e6e9ef", "#c9ced8"]);
+      this.setBackground(gradientTexture(["#fdfdfe", "#e6e9ef", "#c9ced8"]));
     } else if (bg.kind === "image" && bg.image) {
       const t = new THREE.Texture(bg.image);
       t.colorSpace = THREE.SRGBColorSpace;
       t.wrapS = THREE.MirroredRepeatWrapping; // a moving picture pans on without a seam
       t.needsUpdate = true;
-      this.scene.background = t;
+      this.setBackground(t);
       this.bgImage = { w: bg.image.naturalWidth, h: bg.image.naturalHeight };
       this.fitBackground();
     } else {
-      this.scene.background = new THREE.Color(bg.kind === "dark" ? "#20242c" : bg.kind === "color" ? bg.color : "#ffffff");
+      this.setBackground(new THREE.Color(bg.kind === "dark" ? "#20242c" : bg.kind === "color" ? bg.color : "#ffffff"));
     }
     const mat = this.floor.material as THREE.MeshStandardMaterial;
     this.floor.visible = floor.kind !== "none";
@@ -419,12 +419,12 @@ export class Stage {
     this.rest();
     const bg = p.background;
     if (bg.type === "transparent") {
-      this.scene.background = null;
+      this.setBackground(null);
       this.renderer.setClearColor(0x000000, 0);
     } else if (bg.type === "gradient" && bg.colors.length >= 2) {
-      this.scene.background = gradientTexture(bg.colors);
+      this.setBackground(gradientTexture(bg.colors));
     } else {
-      this.scene.background = new THREE.Color("#ffffff");
+      this.setBackground(new THREE.Color("#ffffff"));
     }
   }
 
@@ -558,13 +558,15 @@ export class Stage {
   }
 
   /** The current view (as the operator left it) at `scale` x the canvas size, as a data URL:
-   *  "png" is the pouch alone on a transparent background (no backdrop, no floor; its shadow stays),
+   *  "png" is the pouch alone on a transparent background: no backdrop, no floor and no shadow (a shadow on
+   *  nothing reads as a grey floor patch once the picture is placed on a page),
    *  "jpeg" is the view with its background and floor (white where the view itself is transparent). */
   capture(scale = 2, kind: "png" | "jpeg" = "png"): string {
     const el = this.renderer.domElement;
     const w = el.clientWidth || el.width, h = el.clientHeight || el.height;
     const ratio = this.renderer.getPixelRatio();
     const overlayVisible = this.overlay.visible, floorVisible = this.floor.visible;
+    const catcherVisible = this.catcher.visible, blobVisible = this.blob.visible;
     const bg = this.scene.background;
     const clear = this.renderer.getClearColor(new THREE.Color()), clearAlpha = this.renderer.getClearAlpha();
     this.overlay.visible = false;
@@ -574,6 +576,8 @@ export class Stage {
     if (kind === "png") {
       this.scene.background = null;
       this.floor.visible = false;
+      this.catcher.visible = false;
+      this.blob.visible = false;
       this.renderer.setClearColor(0x000000, 0);
     }
     this.renderer.setPixelRatio(scale);
@@ -598,6 +602,8 @@ export class Stage {
     this.shadowQuality(false);
     this.scene.background = bg;
     this.floor.visible = floorVisible;
+    this.catcher.visible = catcherVisible;
+    this.blob.visible = blobVisible;
     this.renderer.setClearColor(clear, clearAlpha);
     this.overlay.visible = overlayVisible;
     this.selected = sel;
@@ -620,22 +626,63 @@ export class Stage {
     return result as ArrayBuffer;
   }
 
+  /** Replace the background, freeing a texture it no longer uses (a picture background is a full-size upload). */
+  private setBackground(bg: THREE.Color | THREE.Texture | null) {
+    const old = this.scene.background as THREE.Texture | null;
+    if (old && old !== bg && (old as THREE.Texture).isTexture) old.dispose();
+    this.scene.background = bg;
+  }
+
+  /** Empty the dimension overlay, freeing its lines and labels. */
+  clearOverlay() {
+    for (const child of [...this.overlay.children]) disposeObject(child);
+    this.overlay.clear();
+  }
+
+  /** Free everything this stage put on the GPU. The canvas (and its GL context) is reused by the next
+   *  stage, and renderer.dispose() alone deletes no texture or buffer, so each Apply / job switch kept
+   *  the whole previous model. Order matters: textures and buffers first, then the renderer. */
   dispose() {
+    if (this.object) {
+      this.inner.remove(this.object);
+      disposeObject(this.object);
+      this.object = null;
+    }
+    disposeObject(this.scene); // floor, blob, marker, shadow catcher, overlay (shared artwork textures are kept)
+    this.setBackground(null);
+    this.scene.environment?.dispose();
+    this.scene.environment = null;
+    this.shadowLight.shadow.dispose();
+    this.renderer.renderLists.dispose();
     this.renderer.dispose();
+    this.renderer.forceContextLoss();
   }
 }
 
-/** glTF has no separate alpha map: bake the cut mask into the colour map's alpha (alphaMode MASK). */
-function bakeForExport(mat: THREE.MeshPhysicalMaterial): THREE.Material {
-  if (!mat || !(mat as THREE.MeshPhysicalMaterial).isMeshPhysicalMaterial || !mat.alphaMap || !mat.map?.image) return mat;
+/** glTF has no separate alpha map: bake the cut mask into the colour map's alpha (alphaMode MASK).
+ *  Any material with a map and a cut mask: "exact" lighting uses unlit MeshBasicMaterial, and its GLB
+ *  came out with no corners, notch or hang hole cut. The artwork is drawn in the face's own (surface)
+ *  space through the map's texture matrix, so an operator's turn / flip / move / scale is kept and
+ *  the cut lines up with the print (the alpha map is in surface space). */
+function bakeForExport(mat: THREE.MeshPhysicalMaterial | THREE.MeshBasicMaterial): THREE.Material {
+  if (!mat || !mat.alphaMap || !mat.map?.image || !mat.alphaMap.image) return mat;
   const img = mat.map.image as HTMLImageElement | HTMLCanvasElement;
   const alpha = mat.alphaMap.image as HTMLCanvasElement;
-  const w = Math.min(2048, img.width), h = Math.round((w * img.height) / img.width);
+  const iw = (img as HTMLImageElement).naturalWidth || img.width, ih = (img as HTMLImageElement).naturalHeight || img.height;
+  if (!iw || !ih) return mat;
+  const w = Math.min(2048, iw), h = Math.max(1, Math.round((w * ih) / iw));
   const c = document.createElement("canvas");
   c.width = w;
   c.height = h;
   const x = c.getContext("2d")!;
-  x.drawImage(img, 0, 0, w, h);
+  if (mat.map.matrixAutoUpdate) mat.map.updateMatrix();
+  // image px -> texture uv -> (inverse texture matrix) surface uv -> canvas px
+  const toUv = new THREE.Matrix3().set(1 / iw, 0, 0, 0, -1 / ih, 1, 0, 0, 1);
+  const toCanvas = new THREE.Matrix3().set(w, 0, 0, 0, -h, h, 0, 0, 1);
+  const m = toCanvas.multiply(mat.map.matrix.clone().invert()).multiply(toUv).elements; // column-major
+  x.setTransform(m[0], m[1], m[3], m[4], m[6], m[7]);
+  x.drawImage(img, 0, 0);
+  x.setTransform(1, 0, 0, 1, 0, 0);
   const a = document.createElement("canvas");
   a.width = w;
   a.height = h;

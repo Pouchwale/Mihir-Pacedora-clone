@@ -225,7 +225,9 @@ async def test_run(key: str, file: UploadFile = File(...), graph: str = Form(...
     problems = _problems(session, _key(key), g)
     if problems:
         raise HTTPException(422, {"problems": problems})
-    pdf = await file.read()
+    from app.api.limits import read_limited
+
+    pdf = await read_limited(file)
     f = register_file(session, file.filename or "test.pdf", pdf, None, user)
     job = Job(file_id=f.id, item_code=f.item_code, status="QUEUED", current_step=STEPS[0], kind="test", workflow_key=key,
               inputs={"workflow_graph": g.model_dump(mode="json"), "workflow_key": key}, created_by_id=user.id)

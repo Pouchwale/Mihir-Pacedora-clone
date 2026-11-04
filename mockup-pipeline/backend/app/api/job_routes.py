@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app import activity, auth
 from app.api import tunnel
+from app.api.limits import max_bytes, read_limited
 from app.config import get_settings
 from app.db import get_session
 from app.index import store
@@ -24,7 +25,7 @@ from app.models import Batch, Job, JobEvent, JobStep, UploadedFile, User, utcnow
 from app.render import tokens
 from app.storage import get_storage
 from app.workflow import auto_review, panel_art, queue, runner
-from app.workflow.adjust import Adjustments, adjustments
+from app.workflow.adjust import Adjustments, adjustments, earlier
 from app.workflow.engine import STEPS
 
 def job_scope(request: Request, session: Session = Depends(get_session)) -> None:
@@ -34,7 +35,11 @@ def job_scope(request: Request, session: Session = Depends(get_session)) -> None
     job_id = request.path_params.get("job_id")
     if job_id is None:
         return
-    if tokens.check(request.query_params.get("token"), int(job_id)):
+    if not str(job_id).isdigit() or len(str(job_id)) > 12:  # (runs before FastAPI's own int check: no 500 on "abc")
+        raise HTTPException(404, "No such job")
+    # A share / render token opens the job's 3D view only (tunnel.SHARE_API, GET): never adjust, rerun,
+    # cancel, download or a fresh share token on someone else's job.
+    if request.method == "GET" and tunnel.SHARE_API.match(request.url.path) and tokens.check(request.query_params.get("token"), int(job_id)):
         return
     try:
         user = auth.current_user(request, session)
@@ -78,11 +83,24 @@ def _event(session: Session, job: Job, message: str, user: User | None, level: s
 def _pdfs_from(upload_name: str, data: bytes) -> list[tuple[str, bytes]]:
     if upload_name.lower().endswith(".zip"):
         out = []
-        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        limit, total = max_bytes(), 0
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(data))
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(422, f"{upload_name} is not a readable ZIP file") from exc
+        with zf:
             for info in zf.infolist():
                 name = info.filename.rsplit("/", 1)[-1]
                 if not info.is_dir() and name.lower().endswith(".pdf") and not name.startswith(("._", "__MACOSX")):
-                    out.append((name, zf.read(info)))
+                    # The unpacked size counts, not the ZIP's: a few MB can unpack to gigabytes.
+                    total += info.file_size
+                    if info.file_size > limit or total > 4 * limit:
+                        raise HTTPException(413, f"{upload_name}: the PDFs inside unpack to more than the upload limit")
+                    with zf.open(info) as member:
+                        body = member.read(limit + 1)
+                    if len(body) > limit:  # (a ZIP whose header understates the size)
+                        raise HTTPException(413, f"{name} inside {upload_name} is larger than {get_settings().max_upload_mb} MB")
+                    out.append((name, body))
         return out
     if upload_name.lower().endswith(".pdf") or data[:5] == b"%PDF-":
         return [(upload_name, data)]
@@ -90,6 +108,8 @@ def _pdfs_from(upload_name: str, data: bytes) -> list[tuple[str, bytes]]:
 
 
 def register_file(session: Session, name: str, data: bytes, batch: Batch | None, user: User) -> UploadedFile:
+    if len(data) > get_settings().max_upload_mb * 1024 * 1024:  # (every upload route lands here)
+        raise HTTPException(413, f"{name} is larger than {get_settings().max_upload_mb} MB")
     if not data.startswith(b"%PDF-"):
         raise HTTPException(422, f"{name} is not a PDF")
     sha = hashlib.sha256(data).hexdigest()
@@ -167,10 +187,8 @@ async def upload(
     xml_items: dict[str, dict[str, str]] = {}
 
     for up in files:
-        data = await up.read()
+        data = await read_limited(up, limit)
         filename = up.filename or "upload"
-        if len(data) > limit:
-            raise HTTPException(413, f"{filename} is larger than {get_settings().max_upload_mb} MB")
 
         if filename.lower().endswith(".xml"):
             # An SAP item-master export: its items' specs fill those jobs' spec tables (app.services.xml_spec_parser)
@@ -215,7 +233,7 @@ async def upload(
         _event(session, job, f"Job created from {f.filename}" + (" with its item master XML specs" if fields else ""), user, data={"sha256": f.sha256})
         jobs.append(job)
 
-    resumed = _resume_waiting(session, {f.item_code for f in registered if f.item_code}, exclude={j.id for j in jobs})
+    resumed = _resume_waiting(session, {f.item_code for f in registered if f.item_code}, exclude={j.id for j in jobs}, user=user)
     session.commit()
     activity.record("uploaded", user, request, batch=batch.id, files=[up.filename for up in files], jobs=[j.id for j in jobs])
     for job in jobs:
@@ -252,31 +270,42 @@ def _relink_panels(session: Session, files: list[UploadedFile], user: User) -> l
             continue
         for back in (1, 2):
             code = f"{m.group(1)}{int(m.group(2)) - back:0{len(m.group(2))}d}"
-            job = session.scalar(select(Job).join(UploadedFile, Job.file_id == UploadedFile.id)
-                                 .where(Job.item_code == code, Job.kind == "job", Job.status != "CANCELLED").order_by(Job.id.desc()))
+            job = session.scalar(may_see(user, select(Job).join(UploadedFile, Job.file_id == UploadedFile.id)
+                                 .where(Job.item_code == code, Job.kind == "job", Job.status != "CANCELLED")).order_by(Job.id.desc()))
             if job is None or not is_job_root(job.file.filename):
                 continue
-            if job.id not in out and job.status != "RUNNING":
+            if job.id not in out and job.status not in ("RUNNING", "QUEUED"):
                 job.control = None
                 job.inputs = drop_auto_answers(job.inputs, "link_panels")
-                job.status, job.updated_at = "QUEUED", utcnow()
+                _requeue(job)
                 _event(session, job, f"Panel PDF {f.filename} uploaded for this pouch; linking its panels again", user, "info")
                 out.append(job.id)
             break
     return out
 
 
-def _resume_waiting(session: Session, codes: set[str], exclude: set[int]) -> list[int]:
-    """Jobs paused for missing panels whose codes were just uploaded."""
+def _resume_waiting(session: Session, codes: set[str], exclude: set[int], user: User) -> list[int]:
+    """Jobs (of this uploader's) paused for missing panels whose codes were just uploaded."""
     out = []
-    for job in session.scalars(select(Job).where(Job.status == "NEEDS_REVIEW")):
+    for job in session.scalars(may_see(user, select(Job).where(Job.status == "NEEDS_REVIEW"))):
         review = job.review or {}
         missing = {m.get("code") for m in (review.get("details") or {}).get("missing", [])}
         if job.id not in exclude and review.get("code") == "missing_panels" and missing & codes:
-            job.status = "QUEUED"
+            _requeue(job)
             _event(session, job, "Missing panel uploaded; resuming", None, "info")
             out.append(job.id)
     return out
+
+
+def _requeue(job: Job) -> None:
+    """Back into the queue: a job whose mockups are made again is no longer the approved result."""
+    job.status, job.updated_at = "QUEUED", utcnow()
+    job.approved_by = job.approved_at = None
+
+
+def _not_busy(job: Job) -> None:
+    if job.status in ("QUEUED", "RUNNING"):  # (a second queue entry would run the job twice)
+        raise HTTPException(409, "The job is running (pause or cancel it first)" if job.status == "RUNNING" else "The job is already queued")
 
 
 # ---------------------------------------------------------------- jobs
@@ -380,9 +409,15 @@ def get_job(job_id: int, session: Session = Depends(get_session), _: User = Depe
 
 
 def _authorized_for_job(request: Request, session: Session, job_id: int) -> None:
-    if tokens.check(request.query_params.get("token"), job_id):
+    token = request.query_params.get("token")
+    if (problem := tokens.problem(token, job_id)) is None:
         return
-    auth.current_user(request, session)  # raises 401 when neither a token nor a session is present
+    try:
+        auth.current_user(request, session)  # raises 401 when neither a token nor a session is present
+    except HTTPException:
+        if token:  # a share link that no longer works: say whether it expired or is broken
+            raise HTTPException(401, problem) from None
+        raise
 
 
 
@@ -394,7 +429,18 @@ def share_token(job_id: int, session: Session = Depends(get_session), _: User = 
     token = tokens.make(job_id, ttl_s=7 * 24 * 3600)  # 7-day share link
     share_url = f"/share/{job_id}?token={token}"
     base = tunnel.public_base()  # the ngrok address (started on the first share); None = this PC only
-    return {"token": token, "share_url": (base or "") + share_url, "public": bool(base), "expires_in_days": 7}
+    return {"token": token, "share_url": (base or "") + share_url, "public": bool(base), "expires_in_days": 7,
+            "tunnel_error": None if base else tunnel.last_error()}
+
+
+@router.get("/jobs/{job_id}/share-info")
+def share_info(job_id: int, request: Request, session: Session = Depends(get_session)) -> dict:
+    """The share page's header and cards. Only what a customer may see: never the job's inputs, history or
+    the staff's email addresses (GET /jobs/{id} has all that, and stays behind sign-in)."""
+    _authorized_for_job(request, session, job_id)
+    job = _job(session, job_id)
+    return {"job": {"item_code": job.item_code, "client_name": job.client_name, "pouch_type": job.pouch_type,
+                    "approved": bool(job.approved_by), "approved_at": job.approved_at}}
 
 
 
@@ -435,7 +481,8 @@ def scene(job_id: int, request: Request, session: Session = Depends(get_session)
         textures = designs[int(want) - 1]["textures"]
     # The uploads the adjustments refer to (panel pictures, logos): name and preview for the job page.
     ids = {p.file_id for p in adj.panels.values() if p.file_id} | {o.file_id for p in adj.panels.values() for o in p.overlays if o.file_id}
-    files = {f.id: {"filename": f.filename, "kind": panel_art.kind_of(f.filename) or "pdf", "preview_url": f"/api/uploads/{f.id}/preview"}
+    # (through the job's own route, so a share link's token opens them too: the customer's view bakes them in)
+    files = {f.id: {"filename": f.filename, "kind": panel_art.kind_of(f.filename) or "pdf", "preview_url": f"/api/jobs/{job_id}/preview/{f.id}?v=0{suffix}"}
              for f in session.scalars(select(UploadedFile).where(UploadedFile.id.in_(ids)))} if ids else {}
     geometry = steps["build_geometry"].output["geometry"]
     if (geometry.get("sleeve") or {}).get("model"):  # the container's own 3D model, fetched like the textures
@@ -464,9 +511,7 @@ async def artwork_upload(job_id: int, file: UploadFile = File(...), session: Ses
     """A picture or PDF for the job page's editing: a panel's new artwork or a logo overlay. Only
     registered here; the adjust call that places it reruns the job."""
     job = _job(session, job_id)
-    data = await file.read()
-    if len(data) > get_settings().max_upload_mb * 1024 * 1024:
-        raise HTTPException(413, f"{file.filename} is larger than {get_settings().max_upload_mb} MB")
+    data = await read_limited(file)
     f = register_artwork(session, file.filename or "artwork.png", data, user)
     try:
         img = panel_art.open_upload(data, dpi=72, max_side=4096)
@@ -476,6 +521,50 @@ async def artwork_upload(job_id: int, file: UploadFile = File(...), session: Ses
     session.commit()
     return ArtworkOut(file_id=f.id, filename=f.filename, kind=panel_art.kind_of(f.filename) or "pdf", width_px=img.width, height_px=img.height,
                       preview_url=f"/api/uploads/{f.id}/preview")
+
+
+def _job_file_ids(job: Job) -> set[int]:
+    """Upload ids the job already uses (its adjustments, panel choices; an item default may bring an
+    admin's logo): sending them back is no access to anything new."""
+    found: set[int] = set()
+
+    def walk(v: Any) -> None:
+        if isinstance(v, dict):
+            for k, x in v.items():
+                if k == "file_id" and isinstance(x, int):
+                    found.add(x)
+                else:
+                    walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+    walk(job.inputs or {})
+    if job.file_id:
+        found.add(job.file_id)
+    return found
+
+
+def _check_file_ids(session: Session, user: User, job: Job, payload: Any) -> None:
+    """Every file_id in an adjust / review payload must be one the user may open (404 otherwise), so
+    nobody bakes another user's upload into their own job and downloads it from there."""
+    known = _job_file_ids(job)
+    wanted: set[int] = set()
+
+    def walk(v: Any) -> None:
+        if isinstance(v, dict):
+            for k, x in v.items():
+                if k == "file_id" and x is not None:
+                    if not isinstance(x, int):
+                        raise HTTPException(422, "file_id must be a number")
+                    wanted.add(x)
+                else:
+                    walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+    walk(payload)
+    for fid in wanted - known:
+        _upload_file(session, user, fid)
 
 
 def _upload_file(session: Session, user: User, file_id: int) -> UploadedFile:
@@ -491,7 +580,23 @@ def _upload_file(session: Session, user: User, file_id: int) -> UploadedFile:
 @router.get("/uploads/{file_id}/preview")
 def upload_preview(file_id: int, session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> Response:
     """A PNG (at most 2048 px) of an upload for the job page's live preview; pictures small enough are served as they are."""
-    f = _upload_file(session, user, file_id)
+    return _preview(_upload_file(session, user, file_id))
+
+
+@router.get("/jobs/{job_id}/preview/{file_id}")
+def job_preview(job_id: int, file_id: int, request: Request, session: Session = Depends(get_session)) -> Response:
+    """The preview of a picture / PDF placed on this job (a panel's artwork, a logo), for whoever may see
+    the job: its share token is enough, so shared pages show the pouch with its edits."""
+    _authorized_for_job(request, session, job_id)
+    adj = job_adjustments(session, _job(session, job_id))
+    ids = {p.file_id for p in adj.panels.values()} | {o.file_id for p in adj.panels.values() for o in p.overlays}
+    f = session.get(UploadedFile, file_id) if file_id in ids else None
+    if f is None:
+        raise HTTPException(404, "No such file on this job")
+    return _preview(f)
+
+
+def _preview(f: UploadedFile) -> Response:
     storage = get_storage()
     try:
         data = storage.get_bytes(f.storage_key)
@@ -517,6 +622,7 @@ def job_adjustments(session: Session, job: Job) -> Adjustments:
 class AdjustIn(BaseModel):
     adjust: Adjustments = Adjustments()
     save_item_default: bool = False  # admin: also store panels / material / scene / keyline on the item
+    save_type_default: bool = False  # admin: the hang hole / notch sizes become the defaults of every pouch of this keyline template
     reset: bool = False  # back to the automatic result (item default kept)
     note: str = ""
 
@@ -525,8 +631,7 @@ class AdjustIn(BaseModel):
 def adjust(job_id: int, body: AdjustIn, session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> JobSummary:
     """Apply job-page adjustments and rerun the job from the first step they change."""
     job = _job(session, job_id)
-    if job.status == "RUNNING":
-        raise HTTPException(409, "The job is running (pause or cancel it first)")
+    _not_busy(job)
     job.control = None
     inputs = dict(job.inputs or {})
     if body.reset:
@@ -536,13 +641,19 @@ def adjust(job_id: int, body: AdjustIn, session: Session = Depends(get_session),
         _event(session, job, "Adjustments reset to the automatic result", user)
     else:
         adj = body.adjust
+        _check_file_ids(session, user, job, adj.model_dump(mode="json"))
         windows_before = (inputs.get("adjust") or {}).get("windows") or None
+        try:
+            previous = Adjustments.model_validate(inputs.get("adjust") or {})
+        except ValueError:
+            previous = Adjustments()
         inputs["adjust"] = adj.model_dump(mode="json", exclude_unset=False)
         if adj.specs:
             inputs["spec_corrections"] = {**inputs.get("spec_corrections", {}), **{f"spec_table.{k}": v for k, v in adj.specs.items()}}
         if adj.keyline:
             inputs["keyline_overrides"] = {**inputs.get("keyline_overrides", {}), **adj.keyline}
-        from_step = adj.earliest_step(windows_changed=windows_before != (inputs["adjust"].get("windows") or None))
+        from_step = earlier(adj.earliest_step(windows_changed=windows_before != (inputs["adjust"].get("windows") or None)),
+                            adj.changed_step(previous))  # (undoing something redoes its step too)
         _event(session, job, "Adjustments applied" + (f": {body.note}" if body.note else ""), user, data=adj.model_dump(exclude_defaults=True))
         if body.save_item_default:
             auth.require_kind(user, "item_override")
@@ -561,10 +672,47 @@ def adjust(job_id: int, body: AdjustIn, session: Session = Depends(get_session),
             snapshot.setdefault("item_override", {})[key] = version.version
             job.index_snapshot = snapshot
             _event(session, job, f"Adjustments saved as the default for {job.item_code} (item_override v{version.version})", user)
-    job.inputs, job.status, job.updated_at = drop_auto_answers(inputs, from_step), "QUEUED", utcnow()
+        if body.save_type_default:
+            _save_feature_defaults(session, job, adj.keyline, user, body.note)
+    job.inputs = drop_auto_answers(inputs, from_step)
+    _requeue(job)
     session.commit()
     queue.enqueue(job.id, from_step)
     return _summary(job)
+
+
+# The hole and notch sizes and places a pouch type can default to. The types themselves follow each pouch's
+# own PDF (a drawn hole, "Butterfly Notch", "Tear Notch" on its table), so a default type would never apply.
+FEATURE_DEFAULT_KEYS = ("hang_hole_size_mm", "hang_hole_width_mm", "hang_hole_height_mm", "hang_hole_offset_mm",
+                        "tear_notch_offset_mm", "tear_notch_depth_mm")
+
+
+def _save_feature_defaults(session: Session, job: Job, keyline: dict, user: User, note: str) -> None:
+    """The job page's hang hole / notch sizes as the defaults of its keyline template: every pouch of that
+    template whose PDF does not draw or state them gets them (a drawn hole keeps its measured size)."""
+    from app.index.resolve import seed_fields
+
+    if not auth.can(user, "edit_keyline"):
+        raise HTTPException(403, "Your role may not change pouch type defaults; ask a Head of Designer")
+    values = {k: keyline[k] for k in FEATURE_DEFAULT_KEYS if isinstance(keyline.get(k), (int, float)) and not isinstance(keyline.get(k), bool)}
+    if not values:
+        raise HTTPException(422, "Nothing to save as the pouch type default: change a hang hole or notch size first")
+    key = job.keyline_template
+    current = store.get_version(session, "keyline_template", key) if key else None
+    if current is None:
+        raise HTTPException(422, "The job has no keyline template yet; run it first")
+    data = {**current.data, "fields": {k: dict(v) for k, v in current.data["fields"].items()}}
+    shipped = seed_fields(key)
+    for k, v in values.items():
+        if k not in data["fields"]:
+            if k not in shipped:
+                continue
+            data["fields"][k] = shipped[k].model_dump(exclude_none=True)
+        data["fields"][k]["default"] = v
+    version = store.save(session, "keyline_template", key, data, store.Author.of(user),
+                         note or f"job #{job.id}: hang hole / notch sizes saved as the {key} default")
+    _event(session, job, "Hang hole / notch defaults for every " + key.replace("_", " ") + f" pouch: "
+           + ", ".join(f"{k} {v:g}" for k, v in values.items()) + f" (keyline_template v{version.version})", user)
 
 
 @router.get("/jobs/{job_id}/file")
@@ -590,7 +738,11 @@ def job_file(job_id: int, key: str, request: Request, session: Session = Depends
 @router.get("/uploads/{file_id}/pdf")
 def original_pdf(file_id: int, session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> Response:
     f = _upload_file(session, user, file_id)
-    return Response(get_storage().get_bytes(f.storage_key), media_type="application/pdf",
+    try:
+        data = get_storage().get_bytes(f.storage_key)
+    except (FileNotFoundError, OSError, KeyError) as exc:
+        raise HTTPException(404, "The stored file is missing") from exc
+    return Response(data, media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="{f.filename}"'})
 
 
@@ -625,6 +777,7 @@ def review(job_id: int, body: ReviewIn, session: Session = Depends(get_session),
         choices = {c["edge"] for c in ((job.review or {}).get("details") or {}).get("choices", [])}
         if len(choices) > 1 and body.edge not in choices:
             raise HTTPException(422, "Pick one of the branches")
+    _check_file_ids(session, user, job, body.panel_choices)
     step = auto_review.submit(session, job, body.model_dump(), user.email, STEPS)
     _event(session, job, f"Review '{body.action}' submitted" + (f": {body.note}" if body.note else ""), user,
            data=body.model_dump(exclude_defaults=True))
@@ -637,10 +790,15 @@ def review(job_id: int, body: ReviewIn, session: Session = Depends(get_session),
 async def panel_file(job_id: int, role: str = Form(...), file: UploadFile = File(...), session: Session = Depends(get_session),
                      user: User = Depends(auth.current_user)) -> JobSummary:
     job = _job(session, job_id)
-    f = register_file(session, file.filename or f"{role}.pdf", await file.read(), None, user)
+    _not_busy(job)
+    if job.status in ("PAUSED", "CANCELLED"):
+        # (like a review answer: a paused / cancelled job is not silently restarted)
+        raise HTTPException(409, f"The job is {job.status.lower()}: resume or rerun it first")
+    f = register_file(session, file.filename or f"{role}.pdf", await read_limited(file), None, user)
     inputs = dict(job.inputs or {})
     inputs["panel_choices"] = {**inputs.get("panel_choices", {}), role: {"file_id": f.id}}
-    job.inputs, job.status = inputs, "QUEUED"
+    job.inputs = inputs
+    _requeue(job)
     _event(session, job, f"{role} panel uploaded: {f.filename}", user, data={"sha256": f.sha256})
     session.commit()
     queue.enqueue(job.id, "link_panels")
@@ -665,8 +823,7 @@ def rerun(job_id: int, body: RerunIn, session: Session = Depends(get_session), u
             raise HTTPException(422, f"Node {body.from_node!r} is not in this job's workflow")
     if body.from_step is None and body.from_node is None:
         raise HTTPException(422, "Say which step or node to rerun from")
-    if job.status == "RUNNING":
-        raise HTTPException(409, "The job is running (pause or cancel it first)")
+    _not_busy(job)
     job.control = None  # a rerun of a paused / cancelled job starts it again
     if body.latest_index:
         if not auth.can(user, "edit_index"):
@@ -694,7 +851,7 @@ def rerun(job_id: int, body: RerunIn, session: Session = Depends(get_session), u
             job.inputs = {**(job.inputs or {}), "spec_corrections": corrections}
             _event(session, job, f"{len(stale)} confirmed keyline measurement(s) dropped: the drawing is measured again", user, data={"dropped": stale})
     job.inputs = drop_auto_answers(job.inputs, from_step)
-    job.status, job.updated_at = "QUEUED", utcnow()
+    _requeue(job)
     _event(session, job, f"Rerun from {from_step or 'node ' + str(body.from_node)}", user)
     session.commit()
     queue.enqueue(job.id, from_step, body.from_node)
@@ -821,7 +978,7 @@ def audit_record(session: Session, job: Job) -> dict:
     for role, p in panels.items():
         if role != "front" and p.get("file_id"):
             f = session.get(UploadedFile, p["file_id"])
-            entry = {"role": role, "filename": f.filename, "sha256": f.sha256}
+            entry = {"role": role, "filename": f.filename if f else "(upload removed)", "sha256": f.sha256 if f else None}
             if p.get("source") in ("sheet", "blank"):  # printed on the job's own sheet, cut out of it
                 entry["from_sheet"] = True
             files.append(entry)
@@ -860,7 +1017,10 @@ def download_zip(job_id: int, session: Session = Depends(get_session), _: User =
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in row.output["files"]:
-            zf.writestr(f["name"], storage.get_bytes(f["key"]))
+            try:
+                zf.writestr(f["name"], storage.get_bytes(f["key"]))
+            except Exception as exc:  # noqa: BLE001 - a blob gone from storage (S3 ClientError, OSError): the rest still downloads
+                zf.writestr(f["name"] + ".missing.txt", f"{f['key']} is no longer in storage: {exc}")
         zf.writestr("data/audit.json", json.dumps(audit_record(session, job), indent=1, default=str))
     buf.seek(0)
     name = f"{job.item_code or 'job'}_{job.id}_mockups.zip"

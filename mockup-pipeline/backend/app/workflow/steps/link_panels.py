@@ -175,6 +175,19 @@ def _front_colour(ctx: StepContext, trim: trim_impl.TrimArtworkOutput) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
+def roll_orientation(tw: float, th: float, rep: float, web: float) -> tuple[int, bool]:
+    """(rotation, exact) of a roll's print repeat drawn `tw` x `th` mm against the table's repeat x web: 0 when
+    its width runs along the roll, 90 when its height does. Neither way exact (FGPO0928: four 90 mm sachets
+    side by side, 360 x 90 mm, table repeat 90.49 x web 320): the way that comes closest to the table. Taken
+    as drawn, the 360 mm row became the repeat and the 90 mm sachet the web: a tall narrow strip."""
+    fits = lambda a, b: abs(tw - a) <= SIZE_TOL_MM and abs(th - b) <= SIZE_TOL_MM  # noqa: E731
+    if fits(rep, web):
+        return 0, True
+    if fits(web, rep):
+        return 90, True
+    return (90 if abs(th - rep) + abs(tw - web) < abs(tw - rep) + abs(th - web) else 0), False
+
+
 def run(ctx: StepContext) -> Output:
     sheet = ctx.output("validate", ValidateOutput).sheet
     type_key = ctx.output("match_pouch_type", MatchOutput).pouch_type
@@ -237,11 +250,11 @@ def run(ctx: StepContext) -> Output:
         # the texture step, so no other panel PDF is needed.
         rep, web = sizes["roll"]
         tw, th = front_trim.trim_width_mm, front_trim.trim_height_mm
-        fits = lambda a, b: abs(tw - a) <= SIZE_TOL_MM and abs(th - b) <= SIZE_TOL_MM  # noqa: E731
-        rotation = 0 if fits(rep, web) or not fits(web, rep) else 90
-        if not fits(rep, web) and not fits(web, rep):
-            ctx.log(f"roll: the dieline is {tw} x {th} mm, the table implies a repeat of {rep:g} x web {web:g} mm; the dieline is used", "warning")
-            sizes["roll"] = (tw, th)
+        rotation, exact = roll_orientation(tw, th, rep, web)
+        if not exact:
+            ctx.log(f"roll: the dieline is {tw} x {th} mm, the table implies a repeat of {rep:g} x web {web:g} mm; the dieline is used, "
+                    + ("turned: its height runs along the roll" if rotation else "as drawn"), "warning")
+            sizes["roll"] = (th, tw) if rotation else (tw, th)
         panels["roll"] = Panel(role="roll", source="sheet", expected_mm=sizes["roll"], file_id=ctx.job.file_id, item_code=ctx.job.item_code,
                                filename=ctx.job.file.filename, trim=front_trim.model_copy(update={"panel": "roll"}), bleed=Sides.uniform(0),
                                bleed_source="sheet", rotation=rotation)
@@ -281,6 +294,11 @@ def run(ctx: StepContext) -> Output:
                 # No dieline found and the whole page is far bigger than the panel: the page is an approval
                 # sheet (spec table, ink dots, keyline drawing beside the artwork, FGPO5635). Never wrap the
                 # sheet round the pouch: cut out its artwork, the largest solid block of print.
+                box = _art_box(ctx, front_trim, expected)
+                strip = _strip_panels(ctx, front_trim, box, sizes, profile.spec_template) if box is not None else None
+                if strip:
+                    panels.update({r: p for r, p in strip.items() if r in wanted})
+                    continue
                 trim = _art_block(ctx, front_trim, expected) or front_trim
             panels[role] = Panel(role=role, source="file", expected_mm=expected, file_id=ctx.job.file_id, item_code=ctx.job.item_code,
                                  filename=ctx.job.file.filename, trim=trim)
@@ -386,6 +404,15 @@ def run(ctx: StepContext) -> Output:
 
 
 def _art_block(ctx: StepContext, trim: trim_impl.TrimArtworkOutput, expected: tuple[float, float]) -> trim_impl.TrimArtworkOutput | None:
+    box = _art_box(ctx, trim, expected)
+    if box is None:
+        return None
+    ctx.log(f"front: no dieline on the {trim.trim_width_mm:.0f} x {trim.trim_height_mm:.0f} mm page, which is an approval sheet; its artwork "
+            f"block {box.width_mm:.0f} x {box.height_mm:.0f} mm is used for the {expected[0]:g} x {expected[1]:g} mm panel", "warning")
+    return trim_impl.crop_panel(trim, "front", box, ctx.storage)
+
+
+def _art_box(ctx: StepContext, trim: trim_impl.TrimArtworkOutput, expected: tuple[float, float]) -> Box | None:
     """The artwork on a whole-page render: the largest connected block of solid print (colour or dark ink)
     on a grid of 3 mm cells. A spec table (thin lines and text on white), ink dots, a keyline drawing and a
     grey white-separation preview are not solid print and drop out."""
@@ -421,10 +448,97 @@ def _art_block(ctx: StepContext, trim: trim_impl.TrimArtworkOutput, expected: tu
     t = Box(*trim.trim_box_pt)
     px, py = (t.x1 - t.x0) / img.width, (t.y1 - t.y0) / img.height  # pt per px
     x0, y0, x1, y1 = (v * cell for v in best[1])
-    box = Box(t.x0 + x0 * px, t.y1 - y1 * py, t.x0 + x1 * px, t.y1 - y0 * py)
-    ctx.log(f"front: no dieline on the {trim.trim_width_mm:.0f} x {trim.trim_height_mm:.0f} mm page, which is an approval sheet; its artwork "
-            f"block {box.width_mm:.0f} x {box.height_mm:.0f} mm is used for the {expected[0]:g} x {expected[1]:g} mm panel", "warning")
-    return trim_impl.crop_panel(trim, "front", box, ctx.storage)
+    # the 3 mm grid is coarse on a sheet printed small (FGPO7570: a 1:4 print): tighten to the rows and
+    # columns that are mostly print, so a strip of panels can be cut along its true edges
+    pad = cell
+    x0, y0, x1, y1 = max(0, x0 - pad), max(0, y0 - pad), min(img.width, x1 + pad), min(img.height, y1 + pad)
+    sub = np.asarray(img.crop((x0, y0, x1, y1))).astype(np.int16)
+    ink = ((sub.max(axis=2) - sub.min(axis=2)) > 40) | (sub.mean(axis=2) < 90)
+    cols, rows = np.nonzero(ink.mean(axis=0) > 0.5)[0], np.nonzero(ink.mean(axis=1) > 0.5)[0]
+    if len(cols) and len(rows):
+        x0, x1, y0, y1 = x0 + cols[0], x0 + cols[-1] + 1, y0 + rows[0], y0 + rows[-1] + 1
+    return Box(t.x0 + x0 * px, t.y1 - y1 * py, t.x0 + x1 * px, t.y1 - y0 * py)
+
+
+def strip_topology(length: float, w: float, h: float, g: float) -> str | None:
+    """How a face / gusset / face strip of `length` mm is laid out, from its proportions alone:
+    "bottom" - the faces meet at their bottoms, the gusset between them (FGPO7838: 190 + 60 + 190 = 440);
+    "top" - the faces meet at their tops (hang holes and zipper in the middle), each carrying half the
+    gusset at its outer end (FGPO7570: 220 + 220 = 440 for a 220 mm pouch with an 80 mm gusset)."""
+    fits = {"bottom": abs(length - (2 * h + g)), "top": abs(length - 2 * h)}
+    best = min(fits, key=fits.get)
+    return best if fits[best] <= 0.04 * length else None
+
+
+def _strip_panels(ctx: StepContext, trim: trim_impl.TrimArtworkOutput, box: Box, sizes: dict[str, tuple[float, float]],
+                  tpl) -> dict[str, "Panel"] | None:
+    """An approval sheet printed small with its artwork as one strip of both faces and the bottom gusset
+    (FGPO7570, a "Print to PDF" of the whole sheet). Wrapped round the pouch whole it stretched the strip
+    into the front. The strip is cut by its layout (strip_topology): the face whose bottom points at the
+    strip's middle stands upright, the other is upside down. The front is the face with less small print."""
+    if not all(r in sizes for r in ("front", "back", "gusset")):
+        return None
+    (w, h), g = sizes["front"], sizes["gusset"][1]
+    if not (w and h and g) or box.width_mm <= 0:
+        return None
+    length = box.height_mm / box.width_mm * w  # the strip in pouch mm (its bleed scales with it)
+    topo = strip_topology(length, w, h, g)
+    if topo is None:
+        return None
+    from app.steps.extract_specs import _word_count
+
+    k = (box.y1 - box.y0) / length  # pt of the strip per pouch mm, from its top
+    # the strip's width holds its bleed too, so it reads a little short (FGPO7570: 431 for 440 mm): what it
+    # falls short by is that bleed, trimmed off each side (it carries the dimension marks)
+    drawn = 2 * h + g if topo == "bottom" else 2 * h
+    side = max(0.0, (drawn / length - 1) / 2) * box.width_mm / (drawn / length)  # page mm per side
+    edge = Sides(left=side, right=side, top=0, bottom=0)
+    cut = lambda a, b: Box(box.x0, box.y1 - b * k, box.x1, box.y1 - a * k)  # noqa: E731
+    face = (length - g) / 2 if topo == "bottom" else length / 2
+    faces = {"top": cut(0, face), "bottom": cut(length - face, length)}
+    turn = {"top": 0, "bottom": 180} if topo == "bottom" else {"top": 180, "bottom": 0}
+    images, words = {}, {}
+    for n, b in faces.items():
+        crop = trim_impl.crop_panel(trim, f"strip_{n}", b, ctx.storage)
+        images[n] = Image.open(io.BytesIO(ctx.storage.get_bytes(crop.bleed_key))).convert("RGB").rotate(turn[n])
+        words[n] = _word_count(images[n], tpl)
+    front = "top" if words["top"] <= words["bottom"] else "bottom"
+    back = "bottom" if front == "top" else "top"
+    out = {}
+    # (the dieline printed into the picture stays: at ~3 px per mm, filling it smeared the lettering)
+    clean = lambda crop, image=None: crop if image is None else _turned(ctx, crop, image)  # noqa: E731
+
+    for role, n in (("front", front), ("back", back)):
+        out[role] = Panel(role=role, source="sheet", expected_mm=sizes[role], file_id=ctx.job.file_id, item_code=ctx.job.item_code,
+                          filename=ctx.job.file.filename, trim=clean(trim_impl.crop_panel(trim, role, faces[n], ctx.storage)),
+                          bleed=edge, bleed_source="strip", rotation=turn[n])
+    if topo == "bottom":
+        gus = trim_impl.crop_panel(trim, "gusset", cut(face, face + g), ctx.storage)
+        pic = Image.open(io.BytesIO(ctx.storage.get_bytes(gus.bleed_key))).convert("RGB")
+        gus = clean(gus, pic.rotate(180) if front == "bottom" else pic)  # (the gusset's front half next to the front)
+    else:
+        # each face's outer end is its half of the gusset: front half on top, back half turned below it
+        half = lambda im: im.crop((0, round(im.height * (1 - g / 2 / face)), im.width, im.height))  # noqa: E731
+        fh, bh = half(images[front]), half(images[back]).rotate(180)
+        joined = Image.new("RGB", (fh.width, fh.height + bh.height))
+        joined.paste(fh, (0, 0))
+        joined.paste(bh.resize((fh.width, bh.height)), (0, fh.height))
+        gus = clean(trim_impl.crop_panel(trim, "gusset", cut(0, g), ctx.storage), joined)
+    out["gusset"] = Panel(role="gusset", source="sheet", expected_mm=sizes["gusset"], file_id=ctx.job.file_id, item_code=ctx.job.item_code,
+                          filename=ctx.job.file.filename, trim=gus, bleed=edge, bleed_source="strip", rotation=0)
+    ctx.log(f"Approval sheet printed small: its artwork strip ({length:.0f} mm long) holds both faces and the gusset, the faces joined at "
+            f"their {topo}s; front at the {front}" + (" (upside down)" if turn[front] else "") + f", back at the {back}"
+            + (" (upside down)" if turn[back] else "") + f". It is a small print ({images['top'].width / w:.1f} px per mm) with its "
+            "dieline drawn in: upload the original artwork PDF on the job page for a sharp, clean mockup", "warning", {"words": words})
+    return out
+
+
+def _turned(ctx: StepContext, crop: trim_impl.TrimArtworkOutput, image: Image.Image) -> trim_impl.TrimArtworkOutput:
+    """`crop` with its stored picture replaced by `image` (same size in mm)."""
+    buf = io.BytesIO()
+    image.convert("RGB").save(buf, "PNG")
+    ctx.storage.put_bytes(crop.bleed_key, buf.getvalue(), "image/png")
+    return crop.model_copy(update={"bleed_px": image.size})
 
 
 def _other_designs(ctx: StepContext, layout: SheetLayout, sheet_box: tuple, front_trim: trim_impl.TrimArtworkOutput,

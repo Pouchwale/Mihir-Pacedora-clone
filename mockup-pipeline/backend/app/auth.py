@@ -59,7 +59,10 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def login(session: Session, email: str, password: str) -> tuple[User, str]:
+SESSION_ELSEWHERE = "This account is signed in somewhere else. To sign in here as well, an administrator must enter their password; the other place is then signed out."
+
+
+def login(session: Session, email: str, password: str, admin_password: str | None = None) -> tuple[User, str]:
     user = session.scalar(select(User).where(User.email == email.strip().lower()))
     now = utcnow()
     if user and user.locked_until and _aware(user.locked_until) > now:
@@ -72,13 +75,31 @@ def login(session: Session, email: str, password: str) -> tuple[User, str]:
                 user.failed_logins = 0
             session.commit()
         raise HTTPException(401, "Wrong email or password")
+    live = [s for s in session.scalars(select(UserSession).where(UserSession.user_id == user.id)) if _aware(s.expires_at) > now]
+    if live and get_settings().single_session:
+        if admin_password is None:
+            raise HTTPException(409, SESSION_ELSEWHERE)
+        admins = session.scalars(select(User).where(User.role == "admin", User.active.is_(True))).all()
+        if not any(check_password(admin_password, a.password_hash) for a in admins):
+            raise HTTPException(401, "The administrator password is wrong")
+        for s in live:  # the other place is signed out
+            session.delete(s)
     user.failed_logins = 0
     user.locked_until = None
     user.last_login_at = now
     token = secrets.token_urlsafe(32)
-    session.add(UserSession(token_hash=_token_hash(token), user_id=user.id, expires_at=now + timedelta(hours=get_settings().session_hours)))
+    session.add(UserSession(token_hash=_token_hash(token), user_id=user.id, created_at=now, expires_at=_expiry(now, now)))
     session.commit()
     return user, token
+
+
+def _expiry(created_at, now):
+    """When a session ends: session_hours after sign-in, or session_idle_minutes after this request if sooner."""
+    s = get_settings()
+    end = _aware(created_at) + timedelta(hours=s.session_hours)
+    if s.session_idle_minutes > 0:
+        end = min(end, now + timedelta(minutes=s.session_idle_minutes))
+    return end
 
 
 def logout(session: Session, token: str | None) -> None:
@@ -109,10 +130,16 @@ def current_user(request: Request, session: Session = Depends(get_session)) -> U
     if not token:
         raise HTTPException(401, "Not signed in")
     s = session.get(UserSession, _token_hash(token))
-    if s is None or _aware(s.expires_at) < utcnow() or not s.user.active:
+    now = utcnow()
+    if s is None or _aware(s.expires_at) < now or not s.user.active:
         raise HTTPException(401, "Session expired")
     if request.method not in ("GET", "HEAD", "OPTIONS") and request.headers.get("x-requested-with") != "fetch":
         raise HTTPException(403, "Missing X-Requested-With header")
+    if get_settings().session_idle_minutes > 0:
+        end = _expiry(s.created_at, now)
+        if (end - _aware(s.expires_at)).total_seconds() > 60:  # extend once a minute, not on every poll
+            s.expires_at = end
+            session.commit()
     request.state.user = SimpleNamespace(email=s.user.email, role=s.user.role)  # for the activity log
     return s.user
 

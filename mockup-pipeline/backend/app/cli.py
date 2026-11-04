@@ -68,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     sa = sub.add_parser("seed-apply", help="write the seed YAML's new and changed entries as new index versions "
                                            "(an admin edit of the same entry is superseded; its history stays)")
     sa.add_argument("--reason", default="seed update")
+    sub.add_parser("backup", help="back up the database and the stored files now (app.backup; the server also does it every night)")
     args = parser.parse_args(argv)
     if args.cmd == "phase1":
         from app.pdf import raise_stream_limits
@@ -80,13 +81,46 @@ def main(argv: list[str] | None = None) -> int:
         return seed_diff()
     if args.cmd == "seed-apply":
         return seed_apply(args.reason)
+    if args.cmd == "backup":
+        from app import backup
+
+        print(backup.run_once())
+        return 0
     return 1
 
 
 SEED = Path(__file__).parent / "index" / "seed" / "index.yaml"
+SEED_MODELS = SEED.parent / "containers"  # 3D models (GLB) of the seed's containers, named containers/<sha256>.glb
+
+
+def seed_models() -> list[str]:
+    """Put the seed containers' 3D models into storage where it lacks them (a fresh install, another PC,
+    a new S3 bucket): a container entry pointing at a model storage does not have showed no container."""
+    import hashlib
+
+    from app.storage import get_storage
+
+    storage, added = get_storage(), []
+    for path in sorted(SEED_MODELS.glob("*.glb")):
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != path.stem:
+            print(f"Seed model {path.name} skipped: its name is not its SHA-256")
+            continue
+        key = f"containers/{path.name}"
+        if not storage.exists(key):
+            storage.put_bytes(key, data, "model/gltf-binary")
+            added.append(key)
+    if added:
+        print("Container models added to storage: " + ", ".join(added))
+    return added
 
 
 def bootstrap() -> int:
+    seed_models()
+    return _bootstrap_index()
+
+
+def _bootstrap_index() -> int:
     from sqlalchemy import func, select
     from sqlalchemy.orm import Session
 
@@ -156,6 +190,7 @@ def seed_apply(reason: str) -> int:
     from app.db import get_engine
     from app.index import store
 
+    seed_models()
     with Session(get_engine()) as session:
         plan = store.plan_import(session, SEED.read_text(encoding="utf-8"))
         store.apply_import(session, plan, store.Author(None, "system"), reason, action="seed")

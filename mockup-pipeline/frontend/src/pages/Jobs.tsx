@@ -153,7 +153,8 @@ export default function Jobs() {
         if (!alive) return;
         setJobs(r.jobs); setCounts(r.counts); setTypes(r.types ?? {}); setTotal(r.total); setLoaded(true);
         if (r.jobs.length === 0 && page > 0) setPage(Math.max(0, Math.ceil(r.total / PAGE_SIZE) - 1)); // the last page emptied (jobs removed)
-      });
+      })
+      .catch(() => undefined); // API down: keep the last list, try again next tick
     load();
     const t = setInterval(load, 4000);
     return () => { alive = false; clearInterval(t); };

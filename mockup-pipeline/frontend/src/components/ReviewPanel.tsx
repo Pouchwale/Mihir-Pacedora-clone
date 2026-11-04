@@ -287,16 +287,20 @@ function PanelsForm({ jobId, d, onDone }: { jobId: number; d: Dict; onDone: () =
   const [choices, setChoices] = useState<Record<string, Dict>>(() =>
     Object.fromEntries(missing.map((m) => [m.role, m.role === "back" ? { substitute: "front" } : { substitute: "plain", color: d.default_color ?? "#dddddd" }])));
   const [uploading, setUploading] = useState("");
+  const [uploadError, setUploadError] = useState("");
   const { busy, error, submit } = useSubmit(jobId, onDone);
 
   const uploadPanel = async (role: string, file: File) => {
     setUploading(role);
-    const form = new FormData();
-    form.append("role", role);
-    form.append("file", file);
-    const res = await fetch(`/api/jobs/${jobId}/panel-file`, { method: "POST", body: form, headers: { "X-Requested-With": "fetch" }, credentials: "same-origin" });
-    setUploading("");
-    if (res.ok) onDone();
+    setUploadError("");
+    try {
+      await api.upload(`/api/jobs/${jobId}/panel-file`, { file }, { role });
+      onDone();
+    } catch (e) {
+      setUploadError(String((e as Error).message ?? e));
+    } finally {
+      setUploading("");
+    }
   };
 
   return (
@@ -326,7 +330,7 @@ function PanelsForm({ jobId, d, onDone }: { jobId: number; d: Dict; onDone: () =
         </tbody>
       </table>
       <div className="row"><button className="primary" disabled={busy} onClick={() => submit({ action: "panels", panel_choices: choices, note: "substitutes for missing panels" })}>Continue with substitutes</button></div>
-      {error && <div className="msg bad">{error}</div>}
+      {(error || uploadError) && <div className="msg bad">{error || uploadError}</div>}
     </div>
   );
 }

@@ -6,3 +6,7 @@
 **/.pytest_cache
 frontend/dist
 **/.env
+# users' data and test output never go into the image
+backend/data
+backend/tests/.tmp
+**/MockupData

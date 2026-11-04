@@ -37,9 +37,9 @@ export interface GeometrySpec {
   seals: { top: number; bottom: number; side: number; fin: number; crimp: number };
   zipper: { enabled: boolean; y_from_top_mm: number; ridge_height_mm: number };
   tear_notch: { type: string; y_from_top_mm: number; depth_mm: number };
-  butterfly_notch: boolean;
+  butterfly_notch: boolean; // the hang hole is the spec's butterfly (sombrero) hole; never a second notch
   corner_radius_mm: number;
-  hang_hole: { type: string; size_mm: number; offset_mm: number };
+  hang_hole: { type: string; size_mm: number; offset_mm: number; width_mm?: number; height_mm?: number }; // see hanghole.ts
   window: { enabled: boolean; x_mm: number; y_mm: number; width_mm: number; height_mm: number; radius_mm: number; shapes?: WindowShape[] };
   spout: { position: string; diameter_mm: number; cap_diameter_mm: number; cap_height_mm: number } | null;
   valve?: { panel: "front" | "back"; x_mm: number; y_from_top_mm: number; diameter_mm: number } | null;

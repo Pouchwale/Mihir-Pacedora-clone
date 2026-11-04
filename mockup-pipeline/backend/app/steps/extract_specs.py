@@ -17,6 +17,7 @@ import io
 import logging
 import re
 import tempfile
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -37,7 +38,7 @@ from app.pdf.profile import PdfProfile
 from app.pdf.render import pdftoppm_png
 from app.pdf import sheet as sheet_impl
 from app.pdf.sheet import Sheet, analyse, non_technical_copy, technical_copy
-from app.pdf.vector import corner_cut, corner_cut_at, dashed_lines, dieline, dieline_grids, horizontal_rules
+from app.pdf.vector import HangHoleShape, corner_cut, corner_cut_at, dashed_lines, dieline, dieline_grids, hang_hole, horizontal_rules
 from app.specs.schema import CellRead, MeasuredKeyline, Num, NumList, SpecSheet, Str
 from app.specs.validate import ValidationReport, ValidationRules, validate
 from app.storage import Storage
@@ -174,10 +175,10 @@ def _table_rules(non_technical: Path, box: Box, page_width_pt: float) -> int:
 
     drawings, inv = _drawings(non_technical)
     key = (id(drawings), len(drawings))  # (each side of the sheet is scored on the same lines: found once)
-    if key not in _RULES:
+    if key not in _RULES or _RULES[key][0] is not drawings:  # (a reused id after the list was freed: not a hit)
         _RULES.clear()
-        _RULES[key] = _segments(drawings, inv, 40 / PT_TO_MM)[0]
-    hs = _RULES[key]
+        _RULES[key] = (drawings, _segments(drawings, inv, 40 / PT_TO_MM)[0])
+    hs = _RULES[key][1]
     return sum(1 for y, x0, x1 in hs
                if box.y0 <= y <= box.y1 and x0 >= box.x0 - 1 and x1 <= box.x1 + 1 and (x1 - x0) < 0.95 * page_width_pt)
 
@@ -235,8 +236,10 @@ def measure_panel(pdf_path: Path, profile: PdfProfile, expected_width_mm: float,
         else:
             technical_copy(pdf_path, tmp_dir / "dims.pdf", sheet.inks.technical, crop=d)
         dims = pdftoppm_png(tmp_dir / "dims.pdf", tmp_dir / "dims.png", profile.spec_dpi, icc)
-        labels = dimension_labels(pdf_path, dims, d, sheet.trim, profile)
-        measured, _ = keyline.measure(vec.pdf, vec.layers, sheet.trim, labels, expected_width_mm, expected_height_mm,
+        # the copy of the drawing that carries the whole keyline, as run() measures it (FGPO7165 / 7410 type sheets)
+        box = sheet.drawing_box(sheet.trim)
+        labels = dimension_labels(pdf_path, dims, d, box, profile)
+        measured, _ = keyline.measure(vec.pdf, vec.layers, box, labels, expected_width_mm, expected_height_mm,
                                       tol_mm=profile.finished_size_tolerance_mm, label_tol_mm=profile.label_tolerance_mm, size_tol_mm=size_tol_mm)
     return measured
 
@@ -584,6 +587,59 @@ def _turned(m: MeasuredKeyline) -> MeasuredKeyline:
     })
 
 
+def _with_hang_hole(m: MeasuredKeyline, hole: HangHoleShape, turned: bool, height_mm: float | None) -> MeasuredKeyline:
+    """The hang hole found on the face's dieline, as mm from the finished top edge of the upright
+    face. `hole` is measured from the searched box's top edge as drawn; a face read upside down
+    (`turned`) has its finished top at the box's bottom. A hole that does not end up near the top
+    (or has an implausible size) is not a hang hole and is dropped."""
+    finished = sum(m.height_segments_mm.value) or (height_mm or 0.0)
+    if turned:
+        drawn_top_bleed = m.bleed_bottom_mm.value or 0.0  # (_turned swapped the bleeds)
+        top, bottom = hole.top_mm - drawn_top_bleed, hole.bottom_mm - drawn_top_bleed
+        if finished <= 0:
+            return m
+        top, bottom = finished - bottom, finished - top
+        dome = {"top": "bottom", "bottom": "top"}.get(hole.dome or "")
+    else:
+        bleed = m.bleed_top_mm.value or 0.0
+        top, bottom, dome = hole.top_mm - bleed, hole.bottom_mm - bleed, hole.dome
+    if hole.kind == "butterfly":
+        y = bottom - hole.slot_mm / 2 if dome == "top" else top + hole.slot_mm / 2
+    else:
+        y = (top + bottom) / 2
+    if not (2.0 <= hole.slot_mm <= 40 and hole.width_mm <= 80 and 3.0 <= y <= 60 and top >= -0.5):
+        return m
+    return m.model_copy(update={
+        "hang_hole_type": hole.kind, "hang_hole_width_mm": round(hole.width_mm, 2), "hang_hole_size_mm": round(hole.slot_mm, 2),
+        "hang_hole_height_mm": round(bottom - top, 2), "hang_hole_y_mm": round(y, 2),
+    })
+
+
+def size_from_dieline(xs: list[float], ys: list[float], labelled: list[float]) -> tuple[float, float, float, bool] | None:
+    """(closed width, open width, height, pillow) of one pouch from the dieline's cut lines (mm), for a
+    file without a spec table. The lines repeated down or across the sheet are several pouches (FGPO7846:
+    1.4375 / 10 / 120 / 10 / 1.4375 twice): one copy is kept. Equal narrow segments at both ends are the
+    bleed. Fin / back / front / back / fin with the backs half the front is a centre-seal pillow blank.
+    Every segment kept must be a printed dimension label: lines alone are not a pouch (an unread sheet stays unread)."""
+    def one(lines: list[float]) -> list[float]:
+        seg = [round(b - a, 4) for a, b in zip(lines, lines[1:])]
+        n = len(seg)
+        for p in range(1, n):
+            if n % p == 0 and all(abs(seg[i] - seg[i % p]) < 0.05 for i in range(n)):
+                seg = seg[:p]
+                break
+        if len(seg) >= 3 and seg[0] <= 5 and abs(seg[0] - seg[-1]) < 0.05:
+            seg = seg[1:-1]
+        return seg
+    w, h = one(sorted(xs)), one(sorted(ys))
+    if not w or not h or min(sum(w), sum(h)) < 20:
+        return None
+    if not all(any(abs(v - n) <= 0.05 for n in labelled) for v in (*w, *h)):
+        return None
+    pillow = len(w) == 5 and abs(w[0] - w[4]) < 0.05 and abs(w[1] - w[3]) < 0.05 and abs(2 * w[1] - w[2]) < 0.5
+    return (w[2] if pillow else sum(w)), sum(w), sum(h), pillow
+
+
 def run(
     inp: ExtractSpecsInput,
     profile: PdfProfile,
@@ -647,10 +703,24 @@ def run(
             sheet.mode == "separation" and can_ocr
             and "spout" in " ".join(str(reads[k].value or "") for k in ("sealing_type", "raw_remarks") if k in reads).lower()
             and _top_spout_label(_ocr_words(vec.pdf, sheet.trim, tpl.tesseract_lang))))
+        drawn_pillow = False
+        if not (width and height) and not roll and sheet.mode in ("separation", "layers"):
+            # No size in a table (FGPO7846 carries only its dieline): the labelled drawing gives it, or the
+            # whole sheet (two designs and the bleed) became one pouch.
+            drawn = dieline(vec.pdf, vec.layers, sheet.drawing_box(sheet.trim))
+            guess = size_from_dieline(drawn.x_mm, drawn.y_mm, list(labels.numbers))
+            if guess:
+                g_closed, g_open, g_height, drawn_pillow = guess
+                width, height, open_w = width or g_closed, height or g_height, open_w or g_open
+                got = lambda v: Num(value=round(v, 3), confidence=0.9)  # noqa: E731 - vector geometry
+                table = table.model_copy(update={"pouch_closed_width_mm": got(width), "pouch_height_mm": got(height),
+                                                 "pouch_open_width_mm": got(open_w),
+                                                 **({"sealing_type": Str(value="Center Seal", confidence=0.9)}
+                                                    if drawn_pillow and not table.sealing_type.value else {})})
         if width and height and not roll and sheet.mode in ("separation", "layers"):
             # (a layered export may carry a whole web too: FGPO5149 is a front + back web on one TrimBox)
             lines = dieline(vec.pdf, vec.layers, sheet.drawing_box(sheet.trim))
-            pillow = any(k in str(reads["sealing_type"].value or "").lower() for k in ("center", "centre", "pillow", "back seal")) if "sealing_type" in reads else False
+            pillow = drawn_pillow or (any(k in str(reads["sealing_type"].value or "").lower() for k in ("center", "centre", "pillow", "back seal")) if "sealing_type" in reads else False)
             layout = detect(sheet.trim.width_mm, sheet.trim.height_mm, lines.x_mm, lines.y_mm, width, height, gusset,
                             gap_max=profile.sheet_panel_gap_max_mm, tol=profile.finished_size_tolerance_mm, open_width=open_w,
                             prefer_blank=pillow)
@@ -725,6 +795,14 @@ def run(
             tol_mm=profile.finished_size_tolerance_mm, exact_bleed=front_box is not None or roll,
             label_tol_mm=profile.label_tolerance_mm, size_tol_mm=rules.dimension_tolerance_mm,
         )
+        # A hang hole drawn on the face's dieline (a sombrero for "Butterfly Notch: Yes", FGPO7700)
+        hole = None
+        if not roll and not on_side and sheet.mode in ("separation", "layers"):
+            try:
+                hole = hang_hole(vec.pdf, vec.layers, sheet.drawing_box(front_box or sheet.trim))
+            except Exception:  # noqa: BLE001 - a drawing it cannot read must not fail the job: no hole measured
+                hole = None
+    turned = False  # the face was measured upside down and is now read upright
     if on_side:
         clockwise = layout.blank().rotation == 270  # type: ignore[union-attr]
         measured = _upright_from_side(measured, clockwise)
@@ -733,6 +811,7 @@ def run(
     if front_face is not None:
         if front_face.rotation == 180:
             measured = _turned(measured)
+            turned = not turned
         drawn_zipper = measured.zipper_y_mm if measured.zipper_line_drawn.value and not measured.zipper_from_band else None
         if _drawn_upside_down(measured.height_segments_mm.value, drawn_zipper) or (
                 not drawn_zipper and _reads_upside_down(layout, image, (sheet.trim.width_mm, sheet.trim.height_mm), profile)):
@@ -743,10 +822,12 @@ def run(
                 if p.kind == "face":
                     p.rotation = (p.rotation + 180) % 360
             measured = _turned(measured)
+            turned = not turned
     if front_box is not None and sheet.mode != "page" and not measured.width_segments_mm.value:
         # A panel cut from the sheet is cut on its dieline lines: when the dimension labels across it
         # cannot be read (FGPO7152), the drawn lines give its width, zero bleed and the segments.
-        measured = _from_drawn_lines(measured, lines_x, fb_w)
+        mirrored = front_face is not None and front_face.rotation == 180  # read as drawn: turn to the upright face
+        measured = _from_drawn_lines(measured, [fb_w - x for x in lines_x] if mirrored else lines_x, fb_w)
     if front_box is not None and sheet.mode != "page" and not measured.height_segments_mm.value:
         h = fb_h
         upside_down = front_face is not None and front_face.rotation == 180  # read as drawn: turn to the upright face
@@ -789,14 +870,18 @@ def run(
         elif layout.kind != "multi":
             measured = measured.model_copy(update={"valve_panel": "front",
                                                    "valve_x_mm": round(valve_x - (measured.bleed_left_mm.value or 0), 1)})
+    if hole is not None:
+        measured = _with_hang_hole(measured, hole, turned, exp_h)
 
     if pending is not None:
         # the quick OCR of an outlined table (started with the XML read, done while the drawing was measured)
         try:
-            words, spec_image = pending.result()
+            words, spec_image = pending.result(timeout=PREFETCH_WAIT_S + 60)
         except Exception:  # noqa: BLE001 - the background read failed: read it here
             words, spec_image = _table_ocr(inp.pdf_path, renders.spec_box, tpl)
         storage.put_bytes(spec_key, _png(spec_image), "image/png")
+        # the reads kept so far were positioned on the 300 dpi words, the stored image is this OCR's render
+        _scale_bboxes(reads, spec_image.width / max(1, round(renders.spec_box.width_mm / PT_TO_MM * profile.spec_dpi / 72)))
         for name, r in read_fields(words, tpl, spec_image.width).items():
             if reads[name].source != "xml" and r.value is not None:
                 reads[name] = r
@@ -849,7 +934,15 @@ def _sleeve_out(inp: "ExtractSpecsInput", profile: PdfProfile, rules: Validation
             pass
     table = assemble.spec_table(reads, inks, tpl)
     width, height = table.pouch_open_width_mm.value, table.pouch_height_mm.value
+    named = sleeve_impl.size_from_filename(inp.filename)  # "...SLEEVE_134.9375 X 176 mm..." = (height, printed width)
     box = sleeve_impl.artwork_box(inp.pdf_path, sheet.trim, width, height)
+    if named and (box is sheet.trim or not (width and height)):
+        # The size read matched no drawn rectangle (FGSL4031: the "size" was the page's own, no table on it
+        # gave one), so the whole page, spec table and separations included, became the sleeve: the file
+        # name states the sleeve's size, try that.
+        again = sleeve_impl.artwork_box(inp.pdf_path, sheet.trim, named[1], named[0])
+        if again is not sheet.trim:
+            box = again
     exact = lambda v: Num(value=round(v, 3), confidence=0.99)  # noqa: E731
     lay = sleeve_impl.layflat(box.width_mm, float(inp.xml_fields.get("sleeve_layflat_mm") or 0) or None)
     text = lambda v: Str(value=v, confidence=1.0)  # noqa: E731
@@ -944,7 +1037,18 @@ def _xml_table(pdf_path: Path, profile: PdfProfile, sheet: Sheet, fields: dict[s
         spec = None
     else:
         spec = Image.fromarray(render_gray(pdf_path, spec_box, XML_PREVIEW_DPI))
+        _scale_bboxes(reads, XML_PREVIEW_DPI / profile.spec_dpi)  # the stored preview is smaller than the words' render
     return Renders(spec=spec, spec_box=spec_box, dims=dims, dims_box=dims_box), reads, live, "xml", pending, inks
+
+
+def _scale_bboxes(reads: dict[str, FieldRead], factor: float) -> None:
+    """Cell boxes are pixels of the stored spec_table.png (the review form crops each cell from it):
+    words positioned at one dpi, an image stored at another, are brought onto the stored image."""
+    if abs(factor - 1) < 1e-6:
+        return
+    for r in reads.values():
+        if r.bbox is not None:
+            r.bbox = tuple(int(round(v * factor)) for v in r.bbox)  # type: ignore[assignment]
 
 
 def _table_ocr(pdf_path: Path, spec_box: Box, tpl) -> tuple[list, Image.Image]:
@@ -955,6 +1059,7 @@ def _table_ocr(pdf_path: Path, spec_box: Box, tpl) -> tuple[list, Image.Image]:
 
 
 _PREFETCH: dict[tuple, Future] = {}
+PREFETCH_WAIT_S = 120  # longest wait for the trim step's sheet analysis before the prefetch gives up
 
 
 def _prefetch_key(pdf_path: Path, profile: PdfProfile) -> tuple:
@@ -968,20 +1073,30 @@ def prefetch_table_ocr(pdf_path: Path, profile: PdfProfile) -> None:
     sheet analysis (two threads must not build the same cached page copies)."""
     key = _prefetch_key(pdf_path, profile)
 
-    def job():
-        deadline = time.time() + 300
-        while not sheet_impl.analysed(pdf_path, profile):
-            if time.time() > deadline:
-                raise TimeoutError("sheet not analysed")
-            time.sleep(0.2)
-        sheet = analyse(pdf_path, profile)
-        spec_box = _spec_box(sheet, profile, _dims_box(sheet, profile), pdf_path)
-        return _table_ocr(pdf_path, spec_box, profile.spec_template)
+    def job(future: Future) -> None:
+        # Its own thread, not the shared _BACKGROUND worker: when the trim step fails (a page-count or
+        # layer review), the analysis never comes, and polling on the one shared worker held every other
+        # XML job's table OCR behind it for the whole wait.
+        try:
+            deadline = time.time() + PREFETCH_WAIT_S
+            while not sheet_impl.analysed(pdf_path, profile):
+                if time.time() > deadline:
+                    raise TimeoutError("sheet not analysed (the trim step did not finish)")
+                time.sleep(0.2)
+            sheet = analyse(pdf_path, profile)
+            spec_box = _spec_box(sheet, profile, _dims_box(sheet, profile), pdf_path)
+            future.set_result(_table_ocr(pdf_path, spec_box, profile.spec_template))
+        except BaseException as exc:  # noqa: BLE001 - handed to whoever reads the result (it then reads the table itself)
+            if not future.done():
+                future.set_exception(exc)
 
     if key not in _PREFETCH and profile.ocr != "off":
         while len(_PREFETCH) >= 4:
             _PREFETCH.pop(next(iter(_PREFETCH)))
-        _PREFETCH[key] = _BACKGROUND.submit(job)
+        future: Future = Future()
+        future.set_running_or_notify_cancel()
+        _PREFETCH[key] = future
+        threading.Thread(target=job, args=(future,), name="xml-ocr-prefetch", daemon=True).start()
 
 
 def apply_xml(reads: dict[str, FieldRead], fields: dict[str, str], tpl) -> None:

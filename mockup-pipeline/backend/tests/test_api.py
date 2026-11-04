@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import auth
 from app.api import main
+from app.config import get_settings
 from app.db import get_session
 from app.models import User
 
@@ -21,6 +22,9 @@ def client(engine, seeded, monkeypatch):
             yield s
 
     main.app.dependency_overrides[get_session] = override
+    from app.api import auth_routes
+
+    auth_routes._FAILED.clear()  # (every test starts with a clean sign-in throttle)
     monkeypatch.setattr(main, "get_engine", lambda: engine)
     seeded.add_all([
         User(email="admin@example.com", role="admin", password_hash=auth.hash_password("admin-password-1")),
@@ -47,8 +51,25 @@ def test_login_logout_and_me(client):
     assert login(client)["role"] == "admin"
     assert client.get("/api/auth/session").json()["user"]["email"] == "admin@example.com"
     assert client.get("/api/auth/me").json()["email"] == "admin@example.com"
-    client.post("/api/auth/logout")
+    client.post("/api/auth/logout", headers={"X-Requested-With": "fetch"})
     assert client.get("/api/auth/me").status_code == 401
+
+
+def test_second_place_needs_the_admin_password(client, monkeypatch):
+    monkeypatch.setattr(get_settings(), "single_session", True)
+    login(client, "op@example.com", "operator-password-1")
+    first = client.cookies.get(auth.COOKIE)
+    client.cookies.clear()  # another browser
+    r = client.post("/api/auth/login", json={"email": "op@example.com", "password": "operator-password-1"})
+    assert r.status_code == 409 and "administrator" in r.json()["detail"]
+    wrong = client.post("/api/auth/login", json={"email": "op@example.com", "password": "operator-password-1", "admin_password": "not-the-admin-1"})
+    assert wrong.status_code == 401
+    ok = client.post("/api/auth/login", json={"email": "op@example.com", "password": "operator-password-1", "admin_password": "admin-password-1"})
+    assert ok.status_code == 200
+    assert client.get("/api/auth/me").status_code == 200
+    client.cookies.clear()
+    client.cookies.set(auth.COOKIE, first)
+    assert client.get("/api/auth/me").status_code == 401  # the first place was signed out
 
 
 def test_wrong_password_and_lockout(client):
@@ -63,7 +84,7 @@ def test_write_needs_csrf_header_and_admin(client):
     assert client.get("/api/index/pouch_type").status_code == 200  # managers can read
     body = {"data": {"client_name": "X"}, "reason": "r"}
     assert client.put("/api/index/client/x", json=body, headers=H).status_code == 403  # managers do not edit the index
-    client.post("/api/auth/logout")
+    client.post("/api/auth/logout", headers={"X-Requested-With": "fetch"})
     login(client)
     assert client.put("/api/index/client/x", json=body).status_code == 403  # no CSRF header
     assert client.put("/api/index/client/x", json=body, headers=H).status_code == 200

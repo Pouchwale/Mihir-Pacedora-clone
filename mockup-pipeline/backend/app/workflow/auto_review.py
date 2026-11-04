@@ -165,12 +165,14 @@ def _pouch_type_answer(details: dict, ctx) -> dict | None:
         want = "stand_up_bottom_gusset"
     elif gusset == "side":
         want = "center_seal_side_gusset"
-    else:
+    elif "3 side" in text or "three side" in text or "3-side" in text:
         want = "three_side_seal"
+    else:
+        want = None  # the table says nothing about the shape: a guess would build the wrong pouch silently
     pick = want if (want in candidates or not candidates) and want in types else (candidates[0] if candidates else None)
     if pick is None or pick not in types:
-        pick = "three_side_seal" if "three_side_seal" in types else next(iter(types), None)
-    return {"action": "pouch_type", "pouch_type": pick, "note": f"nearest type to the table's sealing / gusset: {pick}"} if pick else None
+        return None  # waits for a person (try_answer logs "no automatic answer")
+    return {"action": "pouch_type", "pouch_type": pick, "note": f"nearest type to the table's sealing / gusset: {pick}"}
 
 
 def _panels_answer(details: dict) -> dict:
@@ -184,14 +186,22 @@ def _panels_answer(details: dict) -> dict:
             "note": ", ".join(f"{r}: {'same artwork as the front' if c['substitute'] == 'front' else 'plain film ' + c['color']}" for r, c in choices.items())}
 
 
-def _keyline_answer(details: dict, ctx) -> dict:
+def _keyline_answer(details: dict, ctx) -> dict | None:
     overrides = {}
-    template = ctx.index.get("keyline_template", ctx.job.keyline_template) if ctx.job.keyline_template else None
+    # The template key from the review itself: job.keyline_template is set by resolve_keyline just
+    # before it raises, and the step's rollback reloads it as None on a first run, which made every
+    # value None (the zipper vanished, seals became 0). Else the pouch type's template.
+    key = (details.get("keyline") or {}).get("template") or ctx.job.keyline_template
+    if not key and ctx.job.pouch_type:
+        pouch = ctx.index.get("pouch_type", ctx.job.pouch_type)
+        key = getattr(pouch, "keyline_template", None)
+    template = ctx.index.get("keyline_template", key) if key else None
     for issue in details.get("issues") or []:
         name = issue.get("field", "").split(".", 1)[-1]
         field = template.fields.get(name) if template is not None else None
-        overrides[name] = field.default if field is not None else None
-    return {"action": "keyline", "keyline_overrides": {k: v for k, v in overrides.items() if k}, "note": "out-of-range keyline values set to their defaults"}
+        if name and field is not None and field.default is not None:  # (None would be stored as a real value)
+            overrides[name] = field.default
+    return {"action": "keyline", "keyline_overrides": overrides, "note": "out-of-range keyline values set to their defaults"} if overrides else None
 
 
 def answer(job: Job, review: dict, ctx) -> dict | None:

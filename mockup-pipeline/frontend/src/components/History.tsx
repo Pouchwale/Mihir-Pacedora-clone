@@ -14,13 +14,13 @@ export default function History({ kind, entryKey, current, onRestored }: { kind:
   const [error, setError] = useState("");
 
   useEffect(() => {
-    api.get<VersionMeta[]>(`/api/index/${kind}/${entryKey}/history`).then(setVersions);
+    api.get<VersionMeta[]>(`/api/index/${kind}/${entryKey}/history`).then(setVersions).catch((e) => setError(String(e.message ?? e)));
   }, [kind, entryKey, current]);
 
   useEffect(() => {
     if (selected === null) return;
     const base = selected === current ? Math.max(1, current - 1) : selected;
-    api.get<string>(`/api/index/${kind}/${entryKey}/diff?a=${base}&b=${current}`).then(setDiff);
+    api.get<string>(`/api/index/${kind}/${entryKey}/diff?a=${base}&b=${current}`).then(setDiff).catch((e) => setError(String(e.message ?? e)));
   }, [selected, kind, entryKey, current]);
 
   const restore = async () => {

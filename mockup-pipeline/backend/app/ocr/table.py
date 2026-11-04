@@ -258,8 +258,10 @@ def _digits(text: str) -> str:
 
 
 def normalize_codes(text: str) -> str:
-    """'FGP07216' / 'FGPO7216' -> 'FGPO7216': the 4th letter of the prefix is always the letter O."""
-    return re.sub(r"\bFGP[O0](?=[\dOo])", "FGPO", text, flags=re.IGNORECASE)
+    """'FGP07216' / 'F@PO7216' -> 'FGPO7216': the 4th letter of the prefix is always the letter O, and OCR
+    reads its G as @, 6 or C at small sizes (FGPO7215's 'Back Code F@PO7216' left the back unlinked).
+    Only before 4+ digits, so words like 'FCPO' in prose stay as printed."""
+    return re.sub(r"\bF[G6@C]P[O0](?=[\dOo]{4})", "FGPO", text, flags=re.IGNORECASE)
 
 
 def parse_value(rule: FieldRule, text: str, tpl: SpecTemplate) -> tuple[object, bool]:
@@ -300,7 +302,13 @@ def parse_value(rule: FieldRule, text: str, tpl: SpecTemplate) -> tuple[object, 
                 s = max(s, 0.9 - 0.01 * (len(toks) - len(ot)))
             if s > score:
                 best, score = opt, s
-        return (rule.canonical(best), True) if score >= 0.8 and best is not None else (bare, False)
+        if score >= 0.8 and best is not None:
+            return rule.canonical(best), True
+        # Border noise around the words ("�Notch LJ" for "V Notch", FGPO7570: the V read as junk, the
+        # cell's edge as "LJ"): the one option whose every real word (2+ letters) is in the cell is taken,
+        # still marked unsure so it is reviewed. Kept as read only when no option, or several, fit.
+        fits = {rule.canonical(o) for o in rule.all_options() if (w := [t for t in _tokens(o) if len(t) > 1]) and all(t in toks for t in w)}
+        return (fits.pop(), False) if len(fits) == 1 else (bare, False)
     if kind == "film":
         if re.fullmatch(r"(0|0\s*mic\w*)?\s*(none|no|na|n/a|nil|-)?", text.strip(), re.IGNORECASE) and text.strip():
             return None, rule.optional  # "0 None": this layer is not used
@@ -393,6 +401,7 @@ def read_fields(words: list[Word], tpl: SpecTemplate, image_width: int) -> dict[
 
 
 TESSERACT_MAX_PX = 30000  # Tesseract's hard limit is 32767 on either side
+DISAGREE = "table cell reads"  # FieldRead.reason prefix set by pdf_table.merge on a text-vs-cell mismatch
 
 
 def second_pass(image: Image.Image, reads: dict[str, FieldRead], tpl: SpecTemplate, min_confidence: float) -> None:
@@ -403,6 +412,10 @@ def second_pass(image: Image.Image, reads: dict[str, FieldRead], tpl: SpecTempla
     rules = {r.field: r for r in tpl.fields if r.field}
     for name, read in reads.items():
         if read.bbox is None or (read.value is not None and read.confidence >= min_confidence):
+            continue
+        if read.value is not None and read.reason.startswith(DISAGREE):
+            # The PDF's own text and its table cell disagree (pdf_table.merge): a person decides. A third
+            # read must not clear the flag and let a wrong size through without review.
             continue
         if read.value is None and read.format_ok and read.raw and read.confidence >= min_confidence:
             continue  # a printed "NA" / "0 None": read well, and it means blank

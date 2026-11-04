@@ -25,7 +25,7 @@ def staff(client, seeded, tmp_path, monkeypatch):
 
 
 def as_role(c, role):
-    c.post("/api/auth/logout")
+    c.post("/api/auth/logout", headers={"X-Requested-With": "fetch"})
     return login(c, f"{role}@example.com", PASSWORDS[role])
 
 
@@ -198,7 +198,7 @@ def test_jobs_are_their_uploaders_and_errors_reach_the_admin(staff, seeded):
     assert c.get("/api/errors").json()["reports"] == []
 
     # the admin: every job, one user's jobs, the per-user summary, every report to handle
-    c.post("/api/auth/logout")
+    c.post("/api/auth/logout", headers={"X-Requested-With": "fetch"})
     login(c)
     assert c.get("/api/jobs").json()["total"] == 2
     assert [j["id"] for j in c.get(f"/api/jobs?user={ids['manager@example.com']}").json()["jobs"]] == [theirs]

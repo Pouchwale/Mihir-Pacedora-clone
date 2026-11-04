@@ -3,7 +3,7 @@
 // watch the path light up).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, ApiError, emptyNode, type JobWorkflow, type NodeType, type PathRecord, type WfGraph, type WorkflowMeta, type WorkflowOut } from "../api";
+import { api, readBody, ApiError, emptyNode, type JobWorkflow, type NodeType, type PathRecord, type WfGraph, type WorkflowMeta, type WorkflowOut } from "../api";
 import { useSession } from "../App";
 import History from "../components/History";
 import { EdgeSettings, NodeSettings, PALETTE } from "../components/NodeSettings";
@@ -121,7 +121,10 @@ export default function WorkflowEditor() {
     setSide("settings");
   };
 
-  // test mode: run a PDF through the current graph and follow the job
+  // test mode: run a PDF through the current graph and follow the job (null: unmounted, the poll stops)
+  const testTimer = useRef<number | null>(0);
+  useEffect(() => () => { window.clearTimeout(testTimer.current ?? undefined); testTimer.current = null; }, []);
+  const fail = (e: Error) => { if (testTimer.current === null) return; setError(String(e.message ?? e)); setTesting(false); };
   const startTest = (file: File) => {
     if (!graph) return;
     const form = new FormData();
@@ -132,17 +135,18 @@ export default function WorkflowEditor() {
     setError("");
     fetch(`/api/workflows/${key}/test`, { method: "POST", body: form, headers: { "X-Requested-With": "fetch" }, credentials: "same-origin" })
       .then(async (res) => {
-        const body = await res.json();
-        if (!res.ok) throw new Error(typeof body.detail === "string" ? body.detail : (body.detail?.problems ?? []).join("; ") || JSON.stringify(body.detail));
+        const body = await readBody<{ job_id: number }>(res, `/api/workflows/${key}/test`);
         const poll = async () => {
           const d = await api.get<Dict>(`/api/jobs/${body.job_id}`);
+          if (testTimer.current === null) return; // the page is gone
           setTestJob(d);
-          if (["QUEUED", "RUNNING"].includes(d.job.status)) setTimeout(poll, 2000);
+          if (["QUEUED", "RUNNING"].includes(d.job.status)) testTimer.current = window.setTimeout(() => poll().catch(fail), 2000);
           else setTesting(false);
         };
-        poll();
+        testTimer.current = 0;
+        return poll();
       })
-      .catch((e) => { setError(String(e.message ?? e)); setTesting(false); });
+      .catch(fail);
   };
 
   if (error && !graph) return <div className="msg bad">{error}</div>;

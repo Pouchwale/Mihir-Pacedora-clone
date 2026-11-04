@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { centreSeal, DEFAULT_OVERLAY, IDENTITY_PANEL, panelChanged, panelOf, previewUrl, type Draft, type PanelDraft } from "../three/draft";
 import type { Overlay, SceneData, SceneFile } from "../three/types";
+import { hangHoleDims, hangHoleOf, holeAsType } from "../three/hanghole";
 
 type Dict = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -18,7 +19,7 @@ interface Props {
   busy: boolean;
   isAdmin: boolean;
   onChange: (d: Draft) => void;
-  onApply: (saveDefault: boolean) => void;
+  onApply: (saveDefault: boolean, saveTypeDefault: boolean) => void;
   onReset: () => void;
   onUpload: (file: File) => Promise<Uploaded>;
 }
@@ -29,12 +30,12 @@ const LIGHTING = [
 const VIEWS = ["front", "back", "three_quarter_left", "three_quarter_right", "top_down", "turntable"];
 const KEYLINE_FIELDS: [string, string, string][] = [
   ["top_seal_mm", "Top seal", "mm"], ["bottom_seal_mm", "Bottom seal", "mm"], ["side_seal_mm", "Side seal", "mm"],
-  ["zipper_offset_from_top_mm", "Zipper from top", "mm"], ["tear_notch_offset_mm", "Tear notch from top", "mm"],
+  ["zipper_offset_from_top_mm", "Zipper from top", "mm"],
   ["corner_radius_mm", "Corner radius", "mm"], ["gusset_depth_mm", "Gusset depth", "mm"], ["side_gusset_depth_mm", "Side gusset depth", "mm"],
   ["fill_level_percent", "Fill level", "%"], ["body_bulge_percent", "Bulge", "%"],
 ];
 const NOTCHES = [["none", "None"], ["v_notch", "V notch"], ["straight", "Straight"], ["laser_score", "Laser score"]];
-const HANG_HOLES = [["none", "None"], ["round", "Round"], ["euro", "Euro slot"]];
+const HANG_HOLES = [["none", "None"], ["round", "Round"], ["euro", "Euro slot"], ["butterfly", "Butterfly (sombrero)"]];
 const WINDOW_FIELDS: [string, string][] = [["window_x_mm", "From left"], ["window_y_mm", "From top"], ["window_width_mm", "Width"], ["window_height_mm", "Height"], ["window_corner_radius_mm", "Corner radius"]];
 const FIT = [["cover", "Fill the panel (crop)"], ["contain", "Fit inside (show all)"], ["stretch", "Stretch to the panel"]];
 // Per-panel controls kept in the code but hidden from the panel for now: switch on to show them again.
@@ -64,6 +65,7 @@ function UploadButton({ label, busy, onFile, title }: { label: string; busy: boo
 
 export default function AdjustPanel({ scene, job, draft, dirty, busy, isAdmin, onChange, onApply, onReset, onUpload }: Props) {
   const [saveDefault, setSaveDefault] = useState(false);
+  const [saveTypeDefault, setSaveTypeDefault] = useState(false);
   const [uploading, setUploading] = useState<string | null>(null); // "<role>" or "<role>:logo"
   const [uploadError, setUploadError] = useState("");
   const [selected, setSelected] = useState<{ role: string; id: string } | null>(null);
@@ -83,6 +85,15 @@ export default function AdjustPanel({ scene, job, draft, dirty, busy, isAdmin, o
   const keyValue = (key: string) => draft.keyline[key] ?? kl[key]?.value ?? "";
   const keyBool = (key: string, fallback = false) => (typeof draft.keyline[key] === "boolean" ? (draft.keyline[key] as boolean) : kl[key]?.value ?? fallback);
   const keyText = (key: string, fallback = "none") => String(draft.keyline[key] ?? kl[key]?.value ?? fallback);
+  // The hole the pouch actually has (measured on the dieline or the table's butterfly), unless edited here.
+  const holeType = typeof draft.keyline.hang_hole_type === "string" ? draft.keyline.hang_hole_type : hangHoleOf(g, g.width_mm).type;
+  const hole = holeAsType(hangHoleOf(g, g.width_mm), holeType, g.width_mm); // as the preview and Apply will size it
+  const notchType = centreSeal(g) && keyText("tear_notch_type") === "v_notch" ? "none" : keyText("tear_notch_type");
+  const featureValue = (key: string, actual: number) => (typeof draft.keyline[key] === "number" ? draft.keyline[key] as number : kl[key]?.value ?? Math.round(actual * 100) / 100);
+  const holeValue = (key: string, actual: number) => {
+    const v = draft.keyline[key];
+    return typeof v === "number" ? v : Math.round(actual * 100) / 100;
+  };
 
   const upload = async (role: string, what: "art" | "logo", file: File) => {
     setUploading(`${role}:${what}`);
@@ -260,18 +271,23 @@ export default function AdjustPanel({ scene, job, draft, dirty, busy, isAdmin, o
               </select>
             </label>
           )}
-          {"butterfly_notch" in kl && (
-            <label className="check" style={{ alignSelf: "end" }}><input type="checkbox" checked={!!keyBool("butterfly_notch")} onChange={(e) => setKey("butterfly_notch", e.target.checked)} /> Butterfly notch</label>
+          {"tear_notch_type" in kl && notchType !== "none" && (
+            <>
+              <label className="small">Notch from top (mm)<input type="number" step={0.5} value={featureValue("tear_notch_offset_mm", g.tear_notch.y_from_top_mm)} onChange={(e) => setKeyNum("tear_notch_offset_mm", e.target.value)} /></label>
+              <label className="small">Notch depth (mm)<input type="number" step={0.5} min={1} max={15} value={featureValue("tear_notch_depth_mm", g.tear_notch.depth_mm || 4)} onChange={(e) => setKeyNum("tear_notch_depth_mm", e.target.value)} /></label>
+            </>
           )}
           {"hang_hole_type" in kl && (
-            <label className="small">Hang hole
-              <select value={keyText("hang_hole_type")} onChange={(e) => setKey("hang_hole_type", e.target.value)}>{HANG_HOLES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+            <label className="small" title="The spec table's 'Butterfly Notch: Yes' is the butterfly (sombrero) hang hole, not a second notch">Hang hole
+              <select value={holeType} onChange={(e) => setKey("hang_hole_type", e.target.value)}>{HANG_HOLES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
             </label>
           )}
-          {"hang_hole_type" in kl && keyText("hang_hole_type") !== "none" && (
+          {"hang_hole_type" in kl && holeType !== "none" && (
             <>
-              <label className="small">Hole size (mm)<input type="number" step={0.5} value={keyValue("hang_hole_size_mm")} onChange={(e) => setKeyNum("hang_hole_size_mm", e.target.value)} /></label>
-              <label className="small">Hole from top (mm)<input type="number" step={0.5} value={keyValue("hang_hole_offset_mm")} onChange={(e) => setKeyNum("hang_hole_offset_mm", e.target.value)} /></label>
+              <label className="small">{holeType === "round" ? "Hole diameter (mm)" : "Slot height (mm)"}<input type="number" step={0.5} value={holeValue("hang_hole_size_mm", hole.size_mm)} onChange={(e) => setKeyNum("hang_hole_size_mm", e.target.value)} /></label>
+              {holeType !== "round" && <label className="small">Hole width (mm)<input type="number" step={0.5} value={holeValue("hang_hole_width_mm", hangHoleDims(hole, g.width_mm)[0])} onChange={(e) => setKeyNum("hang_hole_width_mm", e.target.value)} /></label>}
+              {holeType === "butterfly" && <label className="small" title="Dome top to slot bottom">Dome height (mm)<input type="number" step={0.5} value={holeValue("hang_hole_height_mm", hangHoleDims(hole, g.width_mm)[1] + hangHoleDims(hole, g.width_mm)[2])} onChange={(e) => setKeyNum("hang_hole_height_mm", e.target.value)} /></label>}
+              <label className="small">Hole centre from top (mm)<input type="number" step={0.5} value={holeValue("hang_hole_offset_mm", hole.offset_mm)} onChange={(e) => setKeyNum("hang_hole_offset_mm", e.target.value)} /></label>
             </>
           )}
         </div>
@@ -353,9 +369,11 @@ export default function AdjustPanel({ scene, job, draft, dirty, busy, isAdmin, o
       </Section>
 
       <div className="row" style={{ flexWrap: "wrap" }}>
-        <button className="primary" disabled={busy || !dirty} onClick={() => onApply(saveDefault)}>Apply and re-render</button>
+        <button className="primary" disabled={busy || !dirty} onClick={() => onApply(saveDefault, saveTypeDefault)}>Apply and re-render</button>
         <button disabled={busy} onClick={onReset}>Reset to automatic</button>
         {isAdmin && job.job?.item_code && <label className="check small"><input type="checkbox" checked={saveDefault} onChange={(e) => setSaveDefault(e.target.checked)} /> also save as default for {job.job.item_code}</label>}
+        {isAdmin && <label className="check small" title="Hang hole size, width, dome height and place, notch place and depth: used by every pouch of this type whose PDF does not draw or state them">
+          <input type="checkbox" checked={saveTypeDefault} onChange={(e) => setSaveTypeDefault(e.target.checked)} /> also save hang hole and notch sizes as the default for all {g.template.replace(/_/g, " ")} pouches</label>}
       </div>
     </div>
   );

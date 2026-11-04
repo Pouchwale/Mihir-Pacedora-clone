@@ -5,6 +5,7 @@ with renders made by app.pdf.render. PyMuPDF's own page space (y down, origin at
 top-left) is converted with the page's transformation matrix, never by hand.
 """
 
+import logging
 from collections import namedtuple
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -242,12 +243,14 @@ def dieline(pdf: Path, layers: list[str] | None, trim: Box, min_span: float = 0.
     tol = tol_mm / PT_TO_MM
     # (one job reads the same drawing's lines a dozen times, for different boxes and spans)
     skey = (id(all_drawings), len(all_drawings), tuple(layers) if layers is not None else None, _DASHED.get())
-    if skey not in _SEGMENT_CACHE:
+    # (the list itself is kept in the entry: a freed list's id is reused by the next file's, and a hit on
+    # the id alone handed that file the old file's lines)
+    if skey not in _SEGMENT_CACHE or _SEGMENT_CACHE[skey][0] is not all_drawings:
         while len(_SEGMENT_CACHE) >= 8:
             _SEGMENT_CACHE.pop(next(iter(_SEGMENT_CACHE)))
         drawings = [d for d in all_drawings if _on(d, layers)]
-        _SEGMENT_CACHE[skey] = (drawings, *_segments(drawings, inv, 0))
-    drawings, hs, vs = _SEGMENT_CACHE[skey]
+        _SEGMENT_CACHE[skey] = (all_drawings, drawings, *_segments(drawings, inv, 0))
+    _, drawings, hs, vs = _SEGMENT_CACHE[skey]
     # A cut edge drawn as pieces that meet at every band line (FGPO7165: one piece per band) is one
     # line as long as its pieces together, whatever their own lengths; only what lies inside the
     # box counts (an up of an imposition shares its heights with the ups beside it).
@@ -283,6 +286,129 @@ def dieline(pdf: Path, layers: list[str] | None, trim: Box, min_span: float = 0.
         if all(abs(y_mm - z) > 3 for z in zippers):
             zippers.append(y_mm)
     return Dieline(_dedupe(xs), _dedupe(ys), sorted(zippers))
+
+
+@dataclass(frozen=True)
+class HangHoleShape:
+    """A hang hole drawn on the dieline, in mm from the searched box's top edge (as drawn)."""
+
+    kind: str  # round / euro / butterfly (sombrero)
+    width_mm: float
+    top_mm: float
+    bottom_mm: float
+    slot_mm: float  # height of the slot (a round hole: its diameter)
+    dome: str | None  # butterfly: the end its dome is on as drawn, "top" or "bottom"
+
+
+def _item_points(item, inv) -> list:
+    """Points on one path item in PDF user space: line ends, and points sampled along curves (a
+    Bezier's control points, and the drawing's own rect that includes them, lie outside the curve
+    and would make a dome look taller than drawn)."""
+    kind = item[0]
+    if kind == "l":
+        return [pymupdf.Point(item[1]) * inv, pymupdf.Point(item[2]) * inv]
+    if kind == "c":
+        p = [pymupdf.Point(q) for q in item[1:5]]
+        out = []
+        for i in range(9):
+            t = i / 8
+            a, b, c, d = (1 - t) ** 3, 3 * t * (1 - t) ** 2, 3 * t * t * (1 - t), t ** 3
+            out.append(pymupdf.Point(a * p[0].x + b * p[1].x + c * p[2].x + d * p[3].x, a * p[0].y + b * p[1].y + c * p[2].y + d * p[3].y) * inv)
+        return out
+    if kind == "re":
+        r = pymupdf.Rect(item[1])
+        return [pymupdf.Point(r.x0, r.y0) * inv, pymupdf.Point(r.x1, r.y1) * inv]
+    if kind == "qu":
+        q = pymupdf.Quad(item[1])
+        return [q.ul * inv, q.ur * inv, q.ll * inv, q.lr * inv]
+    return []
+
+
+MAX_HOLE_MM = 14.0  # largest round hole / slot height taken for a hang hole
+
+
+def hang_hole(pdf: Path, layers: list[str] | None, box: Box, reach_mm: float = 45.0) -> HangHoleShape | None:
+    """The hang hole drawn on the dieline inside `box` (a face, PDF user space): a closed curved
+    outline centred across the face, within `reach_mm` of its top or bottom edge (a face drawn
+    upside down has it at the bottom). Classified from its outline:
+
+    - round: as tall as wide;
+    - butterfly (sombrero, FGPO7700): a wide slot with a dome rising from its middle;
+    - euro: a wide slot with round ends and no dome.
+
+    Text glyphs, zipper teeth, corner arcs and valves are left out by size, place and shape. None
+    when nothing like a hang hole is drawn."""
+    drawings, inv = _drawings(pdf)
+    bw, bh = box.width_mm, box.height_mm
+    if bw <= 0 or bh <= 0:
+        return None
+    reach = min(reach_mm, bh / 2)
+    parts: list[tuple[Box, dict]] = []
+    for d in drawings:
+        if not _on(d, layers) or not any(it[0] == "c" for it in d["items"]):
+            continue  # a hole has round ends: at least one curve
+        b = _to_pdf(d["rect"], inv)
+        if not (0.8 <= b.width_mm <= 60 and 0.4 <= b.height_mm <= 30):
+            continue
+        if not (box.x0 - 0.5 <= b.x0 and b.x1 <= box.x1 + 0.5 and box.y0 - 0.5 <= b.y0 and b.y1 <= box.y1 + 0.5):
+            continue
+        top, bottom = (box.y1 - b.y1) * PT_TO_MM, (box.y1 - b.y0) * PT_TO_MM
+        if bottom <= reach or top >= bh - reach:
+            parts.append((b, d))
+    # Pieces of one outline (a dome drawn apart from its slot) touch: join them.
+    touch = 0.4 / PT_TO_MM
+    clusters: list[list[tuple[Box, dict]]] = []
+    for part in parts:
+        b = part[0]
+        near = [c for c in clusters if any(b.x0 - touch <= o.x1 and o.x0 - touch <= b.x1 and b.y0 - touch <= o.y1 and o.y0 - touch <= b.y1
+                                           for o, _ in c)]
+        merged = [part] + [p for c in near for p in c]
+        clusters = [c for c in clusters if all(c is not n for n in near)] + [merged]
+    cx_box = (box.x0 + box.x1) / 2
+    found: list[tuple[float, HangHoleShape]] = []
+    for c in clusters:
+        pts = [p for _, d in c for it in d["items"] for p in _item_points(it, inv)]
+        if not pts:
+            continue
+        x0, x1 = min(p.x for p in pts), max(p.x for p in pts)
+        y0, y1 = min(p.y for p in pts), max(p.y for p in pts)
+        w, h = (x1 - x0) * PT_TO_MM, (y1 - y0) * PT_TO_MM
+        cx = (x0 + x1) / 2
+        if abs(cx - cx_box) * PT_TO_MM > max(2.0, 0.04 * bw) or not (4.0 <= w <= 60 and 2.5 <= h <= 30) or w > 0.8 * bw:
+            continue
+        top, bottom = (box.y1 - y1) * PT_TO_MM, (box.y1 - y0) * PT_TO_MM
+        if not (bottom <= reach or top >= bh - reach):
+            continue
+        if w / h > 8:
+            continue  # a line with round caps, not a hole
+        if abs(w - h) <= 0.15 * max(w, h):
+            if w > MAX_HOLE_MM:
+                continue  # a one-way valve (20-30 mm) or a mark, not a hang hole (those are 4-12 mm)
+            shape = HangHoleShape("round", round(w, 2), round(top, 2), round(bottom, 2), round(w, 2), None)
+        elif w > h:
+            half = (x1 - x0) / 2
+            side = [p.y for p in pts if abs(p.x - cx) >= 0.6 * half]  # the outer 40 % of each half: the slot's ends
+            mid = [p.y for p in pts if abs(p.x - cx) <= 0.12 * half]
+            if not side:
+                side = [y0, y1]
+            s_top, s_bot = max(side), min(side)
+            slot = (s_top - s_bot) * PT_TO_MM
+            if slot > MAX_HOLE_MM:
+                continue  # too tall a slot for a hang hole
+            dome = None
+            if mid and slot > 0.5:
+                if (max(mid) - s_top) * PT_TO_MM > 0.12 * h:
+                    dome = "top"
+                elif (s_bot - min(mid)) * PT_TO_MM > 0.12 * h:
+                    dome = "bottom"
+            if dome:
+                shape = HangHoleShape("butterfly", round(w, 2), round(top, 2), round(bottom, 2), round(slot, 2), dome)
+            else:
+                shape = HangHoleShape("euro", round(w, 2), round(top, 2), round(bottom, 2), round(h, 2), None)
+        else:
+            continue  # taller than wide: a mark, not a hang hole
+        found.append((min(top, bh - bottom), shape))
+    return min(found, key=lambda f: f[0])[1] if found else None
 
 
 def _dashed_rows(hs, x0: float, x1: float, y0: float, y1: float, min_dashes: int = 4, pos_tol_mm: float = 0.35,
@@ -533,7 +659,12 @@ def dieline_grids(pdf: Path, min_len_mm: float = 20, tol_mm: float = 0.6) -> lis
         hin = [h for h in hs if y0 - tol <= h[0] <= y1 + tol and near(h[1], x0) and near(h[2], x1)]
         if any(near(h[0], y0) for h in hin) and any(near(h[0], y1) for h in hin):
             add(x0, y0, x1, y1, len(vg) + len(hin))
-    if not found:
+    if not found and len(hs) + len(vs) > 600:
+        # ponytail: the relaxed pass below is O(n^3) in the lines; a hatch or barcode drawn in the technical
+        # ink (thousands of strokes) would run for hours. Such a sheet goes without a grid (the page / TrimBox
+        # fallbacks take over); a smarter pass (sort by span, sweep) when a real sheet needs it.
+        logging.getLogger(__name__).warning("dieline grid search skipped: %d technical lines, no closed grid", len(hs) + len(vs))
+    elif not found:
         # Relaxed pass, only when no closed grid exists. Two copies of the dieline side by side (the
         # artwork and its technical preview, FGPO7492) share one long line at one end, so no pair of
         # lines has exactly one copy's extent. Take every pair of parallel lines with the same span
@@ -956,3 +1087,39 @@ def _dedupe(values: set[float], eps: float = 0.1) -> list[float]:
         else:
             runs.append([v])
     return [round(sum(r) / len(r), 4) + 0.0 for r in runs]  # + 0.0 turns -0.0 into 0.0
+
+
+
+def mirror_edges(pdf: Path, box: Box, reach_mm: float = 25.0, depth_mm: float = 45.0) -> Box:
+    """`box` (a closed grid of cut lines) with its top or bottom moved out to the cut line that makes its
+    two ends mirror each other. Front and back of a stand-up sheet are drawn head to head or foot to foot,
+    so the bands under the top edge (top area, zipper, top seal) repeat above the bottom edge. FGPO7700's
+    grid stopped at the front's band line 16 mm in (the outer edge overshoots and closes no cell): the
+    face lost its top area, no longer fitted, and the panels were named wrong. Lines from the bottom edge
+    16 / 20 / 25 / 38 mm in, from the line 16 mm above the grid the same: that line is the edge. Moved
+    only when it matches at least two more lines than the edge found."""
+    reach = reach_mm / PT_TO_MM
+    big = Box(box.x0, box.y0 - reach, box.x1, box.y1 + reach)
+    ys = sorted(dieline(pdf, None, big, min_span=0.5, raster=False).y_mm)  # mm down from big's top
+    top, bottom = reach_mm, reach_mm + box.height_mm
+
+    def depths(edge: float, down: bool) -> list[float]:
+        return [round(abs(y - edge), 1) for y in ys if 0.5 < (y - edge if down else edge - y) <= depth_mm]
+
+    def score(a: list[float], b: list[float]) -> int:
+        return sum(1 for v in a if any(abs(v - o) <= 0.4 for o in b))
+
+    new_top, new_bottom = top, bottom
+    ref = depths(bottom, down=False)
+    best = score(depths(top, True), ref)
+    for y in (y for y in ys if top - reach_mm <= y < top - 0.5):
+        if (n := score(depths(y, True), ref)) >= best + 2:
+            new_top, best = y, n
+    ref = depths(top, down=True)
+    best = score(depths(bottom, False), ref)
+    for y in (y for y in ys if bottom + 0.5 < y <= bottom + reach_mm):
+        if (n := score(depths(y, False), ref)) >= best + 2:
+            new_bottom, best = y, n
+    if (new_top, new_bottom) == (top, bottom):
+        return box
+    return Box(box.x0, big.y1 - new_bottom / PT_TO_MM * 1, box.x1, big.y1 - new_top / PT_TO_MM)

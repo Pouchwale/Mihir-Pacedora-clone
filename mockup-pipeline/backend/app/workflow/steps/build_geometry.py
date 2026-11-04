@@ -68,7 +68,13 @@ def run(ctx: StepContext) -> Output:
     sheet = ctx.output("validate", ValidateOutput).sheet
     type_key = ctx.output("match_pouch_type", MatchOutput).pouch_type
     pouch: PouchType = ctx.index.get("pouch_type", type_key)  # type: ignore[assignment]
-    keyline = ctx.output("resolve_keyline", KeylineOutput).keyline.values()
+    resolved = ctx.output("resolve_keyline", KeylineOutput).keyline
+    keyline = resolved.values()
+    sources = {k: f.source for k, f in resolved.fields.items()}
+    for k, v in (ctx.inputs.get("keyline_overrides") or {}).items():
+        # hang hole values set on the job page that an index seeded before them has no field for
+        if k.startswith("hang_hole_") and k not in keyline and v is not None:
+            keyline[k], sources[k] = v, "item_override"
     panels = ctx.output("link_panels", LinkOutput).panels
     spec_ctx = spec_context(sheet, list(panels))
     spec = spec_ctx["spec"]
@@ -97,7 +103,15 @@ def run(ctx: StepContext) -> Output:
     if changes:
         preset = preset.model_copy(update=changes)
         ctx.log("Scene adjusted by the operator: " + ", ".join(f"{k}={v if not hasattr(v, 'type') else v.type}" for k, v in changes.items()), "audit")
-    geometry = geo.build(pouch, spec, keyline, {r: p.expected_mm for r, p in panels.items()}, materials, preset, preset_key)
+    geometry = geo.build(pouch, spec, keyline, {r: p.expected_mm for r, p in panels.items()}, materials, preset, preset_key,
+                         sources=sources, measured=spec_ctx["measured"])
+    hh = geometry.hang_hole
+    if hh.type != "none":
+        how = ("as drawn on the dieline" if spec_ctx["measured"].get("hang_hole_type") == hh.type and sources.get("hang_hole_type") not in geo.DECIDED
+               else "set for the item / job" if sources.get("hang_hole_type") in geo.DECIDED
+               else "from 'Butterfly Notch: Yes' on the spec table (a sombrero hang hole, not a second notch)")
+        ctx.log(f"Hang hole {hh.type} {how}: {geo.hang_hole_dims(hh, geometry.width_mm)[0]:g} mm wide, "
+                f"centre {hh.offset_mm:g} mm below the top", "audit")
     if pouch.geometry_template == "shrink_sleeve":
         geometry = with_sleeve(ctx, geometry, spec, keyline, panels)
     if adj.windows:

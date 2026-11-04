@@ -26,6 +26,19 @@ def _rq_queue():
 
 def enqueue(job_id: int, from_step: str | None = None, from_node: str | None = None) -> None:
     s = get_settings()
+    if not s.redis_url and (from_step or from_node):
+        # Thread mode keeps the queue in memory: a restart before the job's turn would otherwise rerun it with
+        # no start step and find "everything already done" (an Apply on a finished job came back unapplied).
+        from sqlalchemy.orm import Session
+
+        from app.db import get_engine
+        from app.models import Job
+
+        with Session(get_engine()) as session:
+            job = session.get(Job, job_id)
+            if job is not None:
+                job.inputs = {**(job.inputs or {}), "_queued_from": {"step": from_step, "node": from_node}}
+                session.commit()
     if s.redis_url:
         _rq_queue().enqueue("app.workflow.engine.run_job_safe", job_id, from_step, from_node, job_timeout=3600, result_ttl=0)
     else:

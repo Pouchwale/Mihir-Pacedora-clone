@@ -20,7 +20,9 @@ class Output(BaseModel):
 
 def run(ctx: StepContext) -> Output:
     preset = ctx.output("build_geometry", GeometryOutput).geometry.preset
-    token = tokens.make(ctx.job.id, ttl_s=ctx.settings.render_timeout_s * 3)
+    # (a day: the token only reaches the renderer's own local server, and a long turntable of several designs
+    # outlived the old 3 x render_timeout_s, failing design 2 with a 401 after design 1 had rendered)
+    token = tokens.make(ctx.job.id, ttl_s=24 * 3600)
     want_mp4 = "mp4" in preset.formats and "turntable" in preset.views
     result = headless.render(
         ctx.job.id, token, preset.views, preset.width_px, preset.height_px,

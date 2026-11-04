@@ -48,11 +48,14 @@ class RequestLog(BaseHTTPMiddleware):
         page_view = path == "/api/activity" and request.method == "POST"  # already its own "page" line
         if path.startswith("/api/") and path != "/api/health" and not page_view:
             # every API call, with who made it (app.auth.current_user leaves the user on request.state)
+            import asyncio
+
             from app import activity
 
-            activity.record("request", getattr(request.state, "user", None), request, method=request.method, path=path,
-                            query=dict(request.query_params) or None, status=response.status_code,
-                            ms=round((time.perf_counter() - started) * 1000, 1))
+            # (in a worker thread: the file append must not block the event loop that serves every other request)
+            await asyncio.to_thread(activity.record, "request", getattr(request.state, "user", None), request, method=request.method, path=path,
+                                    query=dict(request.query_params) or None, status=response.status_code,
+                                    ms=round((time.perf_counter() - started) * 1000, 1))
         if path != "/api/health":
             logging.getLogger("http").info(
                 "request",

@@ -163,8 +163,11 @@ x-keyline-common: &common
     min: 3
     max: 150
     enabled_when: [{all: [{field: spec.tear_notch, op: not_in, value: ["no", "none", "na", "n/a", "nil"]}, {field: spec.tear_notch, op: exists}]}]
-    description: "Notch depth below the finished top edge"
-  butterfly_notch: {type: bool, unit: "", default: false, from_spec: "spec.butterfly_notch"}
+    description: "Where the notch sits, below the finished top edge"
+  tear_notch_depth_mm: {default: 4, min: 1, max: 15, description: "How far the notch cuts in from each side edge"}
+  # "Butterfly Notch: Yes" on the table is the butterfly (sombrero) hang hole punched at the top
+  # centre, never a second tear notch (FGPO7700 / 7570 / 0928). Kept as a flag; hang_hole_type uses it.
+  butterfly_notch: {type: bool, unit: "", default: false, from_spec: "spec.butterfly_notch", description: "Butterfly (sombrero) hang hole, from the table's Butterfly Notch"}
   corner_radius_mm: {default: 0, min: 0, max: 30, formula: "6 if spec.round_corner else 0", description: "6 mm when the spec says Round Corner"}
   gusset_depth_mm:
     default: 0
@@ -186,9 +189,19 @@ x-keyline-common: &common
   spout_diameter_mm: {default: 22, min: 8, max: 60}
   spout_cap_diameter_mm: {default: 32, min: 10, max: 80}
   spout_cap_height_mm: {default: 20, min: 5, max: 60}
-  hang_hole_type: {type: enum, unit: "", options: [none, round, euro], default: none}
-  hang_hole_size_mm: {default: 8, min: 3, max: 40}
-  hang_hole_offset_mm: {default: 10, min: 3, max: 60}
+  # The hole drawn on the dieline wins (app.pdf.vector.hang_hole), else the table's Butterfly Notch.
+  hang_hole_type:
+    type: enum
+    unit: ""
+    options: [none, round, euro, butterfly]
+    default: none
+    from_measured: "measured.hang_hole_type"
+    from_spec: "'butterfly' if spec.butterfly_notch else 'none'"
+    description: "round / euro slot / butterfly (sombrero); drawn on the dieline, else Butterfly Notch: Yes"
+  hang_hole_size_mm: {default: 8, min: 2, max: 40, from_measured: "measured.hang_hole_size_mm", description: "Round: diameter; euro / butterfly: slot height"}
+  hang_hole_width_mm: {default: 0, min: 0, max: 80, from_measured: "measured.hang_hole_width_mm", description: "Euro / butterfly: overall width; 0 = from the size"}
+  hang_hole_height_mm: {default: 0, min: 0, max: 60, from_measured: "measured.hang_hole_height_mm", description: "Butterfly: dome top to slot bottom; 0 = from the size"}
+  hang_hole_offset_mm: {default: 10, min: 3, max: 60, from_measured: "measured.hang_hole_y_mm", description: "Slot (circle) centre below the finished top edge"}
   # Off unless an item override switches it on together with the window region: the spec table
   # only says whether the pouch has a window, and nothing on the sheet says where. A guessed
   # rectangle punched into every windowed pouch is worse than no window.
@@ -540,6 +553,13 @@ pdf_profile:
 
 validation_rules:
   default: {}
+
+# Disk housekeeping for finished jobs (app.index.schemas.StorageRules): PNG recompression after N days
+# (every pixel kept), PDF working copies pruned. 0 = never. Edited under Indexing -> Storage & cleanup.
+storage:
+  default:
+    compact_after_days: 30
+    pdf_cache_days: 7
 
 # ------------------------------------------------------------------ the default workflow (index kind workflow)
 # Edited on the canvas (Workflow page); this is the tree of spec 4.3 in an order whose steps feed each
@@ -985,3 +1005,21 @@ container:
     body_color: "#c9ccd1"
     cap_color: "#d9dce1"
     material: metal
+  # Its 3D model ships in seed/containers/ and is put into storage by `app.cli bootstrap` / `seed-apply`.
+  # No match words: picked at upload or on the job page (the "ghee" items still get the Ghee pot automatically).
+  ghee_special_shape:
+    name: GHEE SPECIAL SHAPE
+    shape: bottle
+    description: ''
+    priority: 50
+    default: false
+    match_words: []
+    sleeve_from: 0.05
+    sleeve_to: 0.95
+    min_height_ratio: 0.5
+    lid: false
+    neck_ratio: 0.4
+    body_color: '#c9ccd1'
+    cap_color: '#d9dce1'
+    material: plastic
+    model: containers/0fa7f91a18a55e12ddea00ff533966b02acbd2cd7c4000b73aeb208971cc2827.glb

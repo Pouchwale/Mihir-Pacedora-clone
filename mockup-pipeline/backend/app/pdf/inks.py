@@ -7,8 +7,12 @@ colour printed over white. For the colour texture we rewrite each tint transform
 colorants contribute nothing; for material masks we do the opposite and keep only them.
 """
 
+import logging
+
 from pypdf import PdfWriter
 from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, FloatObject, NameObject, NumberObject
+
+log = logging.getLogger(__name__)
 
 
 def _colorant_names(cs) -> list[str]:
@@ -20,10 +24,15 @@ def _colorant_names(cs) -> list[str]:
     return []
 
 
-def _zero_inputs_function(n_inputs: int, zero: list[int], original) -> DecodedStreamObject:
+_NO_INK = {"/DeviceCMYK": "0 0 0 0", "/DeviceRGB": "1 1 1", "/DeviceGray": "1"}  # the alternate space's "nothing printed"
+
+
+def _zero_inputs_function(n_inputs: int, zero: list[int], original, alternate=None) -> DecodedStreamObject:
     """A Type 4 function that zeroes input components `zero`, then evaluates `original`.
 
-    `original` must be Type 4 (its body is inlined) or Type 2 (inlined as C0 + t*(C1-C0), N=1).
+    `original` must be Type 4 (its body is inlined) or Type 2 (inlined as C0 + t*(C1-C0), N=1). A
+    sampled (Type 0) or stitching (Type 3) transform cannot be inlined: when every input is zeroed
+    the result is the alternate space's unprinted colour, which needs no transform at all.
     """
     prefix = []
     for k in zero:
@@ -32,8 +41,12 @@ def _zero_inputs_function(n_inputs: int, zero: list[int], original) -> DecodedSt
     ftype = int(original["/FunctionType"])
     if ftype == 4:
         body = original.get_data().decode("latin-1").strip()
-        assert body.startswith("{") and body.endswith("}")
+        if not (body.startswith("{") and body.endswith("}")):
+            raise ValueError("malformed Type 4 tint transform")
         body = body[1:-1]
+    elif len(zero) == n_inputs and str(alternate) in _NO_INK:
+        body = " ".join(f"pop" for _ in range(n_inputs)) + " " + _NO_INK[str(alternate)]
+        prefix = []
     elif ftype == 2 and float(original.get("/N", 1)) == 1:
         c0 = [float(v) for v in original.get("/C0", [0])]
         c1 = [float(v) for v in original.get("/C1", [1])]
@@ -77,7 +90,13 @@ def suppress_inks(writer: PdfWriter, inks: set[str]) -> list[str]:
                 seen.add(id(cs))
                 fn_index = 3
                 original = cs[fn_index].get_object()
-                cs[fn_index] = writer._add_object(_zero_inputs_function(len(names), zero, original))
+                alternate = cs[2].get_object() if len(cs) > 2 else None
+                try:
+                    cs[fn_index] = writer._add_object(_zero_inputs_function(len(names), zero, original, alternate if not isinstance(alternate, ArrayObject) else alternate[0]))
+                except ValueError as exc:
+                    # (a DeviceN mixing a kept ink with a sampled transform: the plate stays; the job's log says so)
+                    log.warning("ink not suppressed", extra={"fields": {"colorspace": key, "inks": [names[i] for i in zero], "why": str(exc)}})
+                    continue
                 changed.append(f"{key}:{'+'.join(names[i] for i in zero)}")
     return changed
 

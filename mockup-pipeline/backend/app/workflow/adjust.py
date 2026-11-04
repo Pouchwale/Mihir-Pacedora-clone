@@ -161,7 +161,8 @@ class Adjustments(BaseModel):
             panels[role] = p if b is None else PanelAdjust(**{**b.model_dump(), **p.model_dump(exclude_unset=True)})
         return Adjustments(
             panels=panels,
-            swap_front_back=self.swap_front_back or base.swap_front_back,
+            # (an explicit "no swap" on the job turns off a swap saved as the item default)
+            swap_front_back=self.swap_front_back if "swap_front_back" in self.model_fields_set else base.swap_front_back,
             specs={**base.specs, **self.specs},
             keyline={**base.keyline, **self.keyline},
             material=MaterialAdjust(**{**base.material.model_dump(), **self.material.model_dump(exclude_unset=True)}),
@@ -187,6 +188,41 @@ class Adjustments(BaseModel):
         if any(p.bakes() for p in self.panels.values()):
             return "texture"  # overlays and colour correction are drawn into the finished images
         return "render"  # artwork placement only: applied by the scene, the renders just need redoing
+
+    def changed_step(self, previous: "Adjustments") -> str:
+        """The first step whose result differs between `previous` and these adjustments. Taking
+        something away counts too: removing the last logo must redo the texture, finish back to
+        automatic must redo the geometry (earliest_step looks only at what is set now)."""
+        sizes = ("pouch_height_mm", "pouch_closed_width_mm", "gusset_full_width_mm", "pouch_open_width_mm", "pouch_or_roll_form")
+        if any(previous.specs.get(k) != self.specs.get(k) for k in sizes):
+            return "extract_specs"
+        if previous.specs != self.specs:
+            return "validate"
+        if previous.keyline != self.keyline:
+            return "resolve_keyline"
+        placement = {"rotation", "flip_x", "flip_y", "offset_x_mm", "offset_y_mm", "scale"}
+        baked = {"brightness", "contrast", "saturation", "overlays"}
+
+        def part(a: "Adjustments", role: str, keys: set[str] | None, drop: set[str]) -> dict:
+            d = (a.panels.get(role) or PanelAdjust()).model_dump(mode="json")
+            return {k: v for k, v in d.items() if (keys is None or k in keys) and k not in drop}
+        roles = set(previous.panels) | set(self.panels)
+        if previous.swap_front_back != self.swap_front_back or any(
+                part(previous, r, None, placement | baked) != part(self, r, None, placement | baked) for r in roles):
+            return "link_panels"
+        if previous.material != self.material or previous.scene != self.scene or (previous.windows or None) != (self.windows or None):
+            return "build_geometry"
+        if any(part(previous, r, baked, set()) != part(self, r, baked, set()) for r in roles):
+            return "texture"
+        return "render"
+
+
+STEP_ORDER = ("extract_specs", "validate", "match_pouch_type", "resolve_keyline", "link_panels", "build_geometry", "texture", "render")
+
+
+def earlier(a: str, b: str) -> str:
+    """The step of the two that comes first in the workflow."""
+    return min(a, b, key=lambda s: STEP_ORDER.index(s) if s in STEP_ORDER else len(STEP_ORDER))
 
 
 def adjustments(ctx) -> Adjustments:

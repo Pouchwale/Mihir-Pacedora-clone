@@ -95,9 +95,20 @@ def published_graph(session: Session, key: str, version: int | None = None) -> W
     return WorkflowGraph.model_validate(row.data) if row else None
 
 
-def reset_index(graph: WorkflowGraph, node_id: str) -> int | None:
-    """Index into STEPS of the first step a rerun from `node_id` must redo (None: nothing to redo)."""
-    steps = [s for n in graph.downstream(node_id) for s in NODE_STEPS[graph.node(n).type]]  # type: ignore[union-attr]
+def reset_index(graph: WorkflowGraph, node_id: str, session: Session | None = None, depth: int = 0) -> int | None:
+    """Index into STEPS of the first step a rerun from `node_id` must redo (None: nothing to redo).
+    A SUB-WORKFLOW node stands for every step of its published graph (with `session`), so rerunning
+    from it redoes them."""
+    steps: list[str] = []
+    for n in graph.downstream(node_id):
+        node = graph.node(n)
+        steps += NODE_STEPS[node.type]  # type: ignore[union-attr]
+        if node.type == "sub_workflow" and session is not None and depth < MAX_SUB_DEPTH:  # type: ignore[union-attr]
+            sub = published_graph(session, node.workflow or "")  # type: ignore[union-attr]
+            if sub is not None and sub.start() is not None:
+                i = reset_index(sub, sub.start().id, session, depth + 1)  # type: ignore[union-attr]
+                if i is not None:
+                    steps.append(STEPS[i])
     return min((STEPS.index(s) for s in steps), default=None)
 
 
@@ -388,7 +399,11 @@ class Walker:
         self._save_path()
         started = time.perf_counter()
         try:
-            output = step_module(name).run(ctx)
+            # no_autoflush: the step's log lines and job fields stay in memory until the commit below. Flushed
+            # early (any query inside the step did that), they opened SQLite's write transaction for the
+            # whole step, and every other writer (sign-in, upload, pause) waited on it for minutes.
+            with session.no_autoflush:
+                output = step_module(name).run(ctx)
         except NeedsReview as exc:
             session.rollback()
             row.status, row.finished_at, row.error = "needs_review", utcnow(), exc.message

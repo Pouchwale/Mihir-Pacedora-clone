@@ -62,7 +62,8 @@ def _resume_thread_jobs() -> None:
                 session.commit()
                 stuck += waiting
             for job in stuck:
-                queue.enqueue(job.id, job.current_step if job.current_step != "done" else None)
+                asked = (job.inputs or {}).get("_queued_from") or {}  # the rerun / adjust the queue entry carried
+                queue.enqueue(job.id, asked.get("step") or (job.current_step if job.current_step != "done" else None), asked.get("node"))
     except Exception:  # noqa: BLE001 - e.g. tables not migrated yet
         log.warning("could not resume jobs", exc_info=True)
 
@@ -73,11 +74,30 @@ def create_app(resume_jobs: bool = True) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         if resume_jobs:
+            from app import backup, storage_compact, watchdog
+
+            watchdog.start()  # crash detection and a load line every 5 minutes in logs/server
+            backup.start()  # the database and the stored files, every night
             _resume_thread_jobs()
             tunnel.keep_alive()  # share links work from start-up on, and again if ngrok stops
+            storage_compact.start()  # the index's storage rules: old jobs' files recompressed, PDF cache pruned
         yield
+        if resume_jobs:
+            watchdog.stop()
+            tunnel.stop()  # no ngrok left forwarding to a port this app may not get next time
 
     app = FastAPI(title="Pouch mockup pipeline", docs_url="/api/docs", openapi_url="/api/openapi.json", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def security_headers(request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")  # a file served as PNG is never run as a script
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")  # no clickjacking of the admin pages from another site
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")  # share tokens stay out of other sites' logs
+        if get_settings().cookie_secure:
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+        return response
+
     app.add_middleware(logging_setup.RequestLog)
     app.middleware("http")(tunnel.guard)  # through ngrok: share pages only
     app.add_middleware(GZipMiddleware, minimum_size=1024)  # the 1.2 MB app script goes out as ~0.35 MB

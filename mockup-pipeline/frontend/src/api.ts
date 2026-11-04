@@ -1,5 +1,11 @@
 // Thin fetch wrapper. Every mutating call sends X-Requested-With (the server's CSRF check).
 
+/** Sent with every call the app makes itself: ngrok's free plan answers a browser's request with its
+ *  "You are about to visit" page instead of the app, unless this header is present. It cannot help the
+ *  first page a customer opens from a link (a browser sends no custom headers there); after they click
+ *  "Visit Site" once, ngrok's cookie covers images too. Harmless when the app is not behind ngrok. */
+export const NGROK_HEADERS = { "ngrok-skip-browser-warning": "1" };
+
 export class ApiError extends Error {
   status: number;
   problems: string[];
@@ -20,21 +26,14 @@ function sessionEnded(res: Response, url: string) {
   window.location.assign("/");
 }
 
-async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
-  const res = await fetch(url, {
-    method,
-    credentials: "same-origin",
-    headers: {
-      "X-Requested-With": "fetch",
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+/** Read a response the way every API call does: 401 -> sign-in page, a JSON `detail` or a plain/HTML body
+ *  (a proxy's 502 page, a 413) -> ApiError with a readable message, never a JSON parse error. */
+export async function readBody<T>(res: Response, url: string): Promise<T> {
   sessionEnded(res, url);
   const type = res.headers.get("content-type") ?? "";
-  const payload = type.includes("json") ? await res.json() : await res.text();
+  const payload = type.includes("json") ? await res.json().catch(() => ({})) : await res.text();
   if (!res.ok) {
-    const detail = typeof payload === "object" ? payload.detail : payload;
+    const detail = typeof payload === "object" ? payload.detail : /<html/i.test(payload) ? `Server error ${res.status}` : payload;
     if (detail && typeof detail === "object" && Array.isArray(detail.problems)) {
       throw new ApiError(res.status, detail.problems.join("; "), detail.problems);
     }
@@ -42,9 +41,23 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
       const problems = detail.map((d: { loc?: unknown[]; msg?: string }) => `${(d.loc ?? []).slice(1).join(".")}: ${d.msg}`);
       throw new ApiError(res.status, problems.join("; "), problems);
     }
-    throw new ApiError(res.status, String(detail ?? res.statusText));
+    throw new ApiError(res.status, String(detail || res.statusText || `Server error ${res.status}`));
   }
   return payload as T;
+}
+
+async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method,
+    credentials: "same-origin",
+    headers: {
+      ...NGROK_HEADERS,
+      "X-Requested-With": "fetch",
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  return readBody<T>(res, url);
 }
 
 /** A multipart upload (files + fields) with the same error handling as JSON calls. */
@@ -52,15 +65,8 @@ async function upload<T>(url: string, files: Record<string, File>, fields: Recor
   const fd = new FormData();
   for (const [k, v] of Object.entries(fields)) fd.append(k, v);
   for (const [k, f] of Object.entries(files)) fd.append(k, f, f.name);
-  const res = await fetch(url, { method: "POST", credentials: "same-origin", headers: { "X-Requested-With": "fetch" }, body: fd });
-  sessionEnded(res, url);
-  const type = res.headers.get("content-type") ?? "";
-  const payload = type.includes("json") ? await res.json() : await res.text();
-  if (!res.ok) {
-    const detail = typeof payload === "object" ? payload.detail : payload;
-    throw new ApiError(res.status, Array.isArray(detail) ? detail.map((d: { msg?: string }) => d.msg).join("; ") : String(detail ?? res.statusText));
-  }
-  return payload as T;
+  const res = await fetch(url, { method: "POST", credentials: "same-origin", headers: { ...NGROK_HEADERS, "X-Requested-With": "fetch" }, body: fd });
+  return readBody<T>(res, url);
 }
 
 export const api = {

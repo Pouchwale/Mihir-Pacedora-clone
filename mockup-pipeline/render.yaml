@@ -47,6 +47,9 @@ services:
     region: singapore
     # OCR at 300 dpi and software-WebGL renders need memory: 2 GB minimum.
     plan: standard
+    # The worker deploys on its own: the same migration gate as the web service, so new worker code never
+    # runs against a schema the web deploy has not migrated yet (alembic is idempotent; a second run is a no-op).
+    preDeployCommand: alembic upgrade head
     autoDeployTrigger: commit
     envVars:
       - key: DATABASE_URL

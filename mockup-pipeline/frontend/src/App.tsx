@@ -1,23 +1,25 @@
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useState } from "react";
+import { Navigate, NavLink, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { api, KEYLINE_KINDS, KindInfo, Permission, ROLE_LABELS, User } from "./api";
-import Activity from "./pages/Activity";
+import ErrorBoundary from "./components/ErrorBoundary";
 import Notifications from "./components/Notifications";
 import RaiseError from "./components/RaiseError";
-import ErrorReports from "./pages/ErrorReports";
-import EntryPage from "./pages/EntryPage";
-import ImportExport from "./pages/ImportExport";
 import JobDetail from "./pages/JobDetail";
 import Jobs from "./pages/Jobs";
-import KindList from "./pages/KindList";
 import Login, { Welcome } from "./pages/Login";
 import RenderPage from "./pages/RenderPage";
-import RuleTester from "./pages/RuleTester";
-import Upload from "./pages/Upload";
-import Users from "./pages/Users";
 import SharePage from "./pages/SharePage";
-import WorkflowEditor from "./pages/WorkflowEditor";
-import Workflows from "./pages/Workflows";
+import WorkflowEditor from "./pages/WorkflowEditor"; // (static: JobDetail imports NodeRun from it, so it is in the main chunk anyway)
+// the admin / editing pages load on first visit (the job pages, which need the 3D viewer anyway, are in the main bundle)
+const Activity = lazy(() => import("./pages/Activity"));
+const ErrorReports = lazy(() => import("./pages/ErrorReports"));
+const EntryPage = lazy(() => import("./pages/EntryPage"));
+const ImportExport = lazy(() => import("./pages/ImportExport"));
+const KindList = lazy(() => import("./pages/KindList"));
+const RuleTester = lazy(() => import("./pages/RuleTester"));
+const Upload = lazy(() => import("./pages/Upload"));
+const Users = lazy(() => import("./pages/Users"));
+const Workflows = lazy(() => import("./pages/Workflows"));
 
 interface Session {
   user: User;
@@ -31,22 +33,33 @@ interface Session {
 const SessionContext = createContext<Session | null>(null);
 export const useSession = () => useContext(SessionContext)!;
 
+/** The job page, mounted afresh for each job: nothing of the previous job (its data, scene, draft,
+ *  share link, a poll still running) can land on the next one when a link switches jobs. */
+function JobDetailForId() {
+  const { id = "" } = useParams();
+  return <JobDetail key={id} />;
+}
+
 export default function App() {
   const location = useLocation();
   // Public share page: token-authenticated, no login required.
   if (location.pathname.startsWith("/share/")) {
     return (
-      <Routes>
-        <Route path="/share/:jobId" element={<SharePage />} />
-      </Routes>
+      <ErrorBoundary>
+        <Routes>
+          <Route path="/share/:jobId" element={<SharePage />} />
+        </Routes>
+      </ErrorBoundary>
     );
   }
   // Headless render target: authorised by a signed token, no session or shell.
   if (location.pathname.startsWith("/render/")) {
     return (
-      <Routes>
-        <Route path="/render/:jobId" element={<RenderPage />} />
-      </Routes>
+      <ErrorBoundary>
+        <Routes>
+          <Route path="/render/:jobId" element={<RenderPage />} />
+        </Routes>
+      </ErrorBoundary>
     );
   }
   return <SignedIn />;
@@ -81,11 +94,13 @@ function SignedIn() {
   return (
     <SessionContext.Provider value={{ user, can, canEdit, kinds, refreshKinds }}>
       <Shell>
+        <ErrorBoundary>
+        <Suspense fallback={<div className="muted">Loading…</div>}>
         <Routes>
           <Route path="/" element={<Navigate to="/jobs" replace />} />
           <Route path="/upload" element={<Upload />} />
           <Route path="/jobs" element={<Jobs />} />
-          <Route path="/jobs/:id" element={<JobDetail />} />
+          <Route path="/jobs/:id" element={<JobDetailForId />} />
           <Route path="/workflows" element={<Workflows />} />
           <Route path="/workflows/:key" element={<WorkflowEditor />} />
           <Route path="/index/tools/import-export" element={<ImportExport />} />
@@ -97,6 +112,8 @@ function SignedIn() {
           <Route path="/errors" element={can("manage_errors") ? <ErrorReports /> : <Navigate to="/" />} />
           <Route path="*" element={<p className="muted">Page not found.</p>} />
         </Routes>
+        </Suspense>
+        </ErrorBoundary>
       </Shell>
       {welcome && <Welcome user={user} onClose={() => setWelcome(false)} />}
     </SessionContext.Provider>
@@ -150,8 +167,28 @@ function Shell({ children }: { children: React.ReactNode }) {
     window.location.assign("/");
   };
   const indexKinds = kinds.filter((k) => !k.page);
+  // phones: the sidebar is a drawer behind the top bar's menu button; picking a page closes it
+  const [menu, setMenu] = useState(false);
+  const { pathname } = useLocation();
+  useEffect(() => { setMenu(false); }, [pathname]);
+  useEffect(() => {
+    if (!menu) return;
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setMenu(false); };
+    document.addEventListener("keydown", esc);
+    return () => document.removeEventListener("keydown", esc);
+  }, [menu]);
   return (
-    <div className="shell">
+    <div className={`shell${menu ? " menu-open" : ""}`}>
+      <header className="topbar">
+        <button className="icon-btn topbar-menu" onClick={() => setMenu(!menu)} aria-label={menu ? "Close menu" : "Open menu"} aria-expanded={menu}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
+            <path d={menu ? "M6 6l12 12M18 6L6 18" : "M4 7h16M4 12h16M4 17h16"} />
+          </svg>
+        </button>
+        <span className="brand topbar-brand"><img className="brand-logo" src="/gp3-mark.png" alt="" /> GP3 Mockup</span>
+        <NavLink to="/upload" className="icon-btn topbar-upload" aria-label="Upload PDFs"><NavIcon name="upload" size={20} /></NavLink>
+      </header>
+      {menu && <div className="drawer-backdrop" onClick={() => setMenu(false)} aria-hidden="true" />}
       <aside className="sidebar">
         <div className="brand">
           <img className="brand-logo" src="/gp3-mark.png" alt="" />

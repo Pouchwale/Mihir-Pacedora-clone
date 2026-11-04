@@ -8,7 +8,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { dimensionOverlay } from "../three/dimensions";
-import { buildPouch, measure } from "../three/pouch";
+import { buildPouch, disposeObject, measure } from "../three/pouch";
 import { Stage, VIEWS, type Backdrop, type Floor } from "../three/stage";
 import type { GeometrySpec, SceneData, SceneTexture, WindowShape } from "../three/types";
 import { applyDraft, type Draft } from "../three/draft";
@@ -89,7 +89,7 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
   const [look, setLook] = useState<Look>("realistic");
   const [shadow, setShadow] = useState(true);
   const [picked, setPicked] = useState<number[]>([1]); // which of the sheet's designs stand in the frame (scene.designs)
-  const [showPouch, setShowPouch] = useState(true); // roll form: the formed pouch beside the roll
+  const [showPouch, setShowPouch] = useState(false); // roll form: the formed pouch beside the roll (off unless asked for)
   // several designs in one frame: the pouch picked to turn / move on its own (its design number), and
   // whether a drag turns or slides it; each pouch's place is kept through rebuilds (draft edits)
   const [selPart, setSelPart] = useState<number | null>(null);
@@ -269,11 +269,13 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
       el.style.cursor = "";
     };
     el.addEventListener("pointerdown", down);
-    el.addEventListener("wheel", () => { autoView.current = null; }, { passive: true });
+    const onWheel = () => { autoView.current = null; };
+    const onMenu = (e: Event) => e.preventDefault();
+    el.addEventListener("wheel", onWheel, { passive: true });
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", up);
-    el.addEventListener("contextmenu", (e) => e.preventDefault());
+    el.addEventListener("contextmenu", onMenu);
 
     const resize = () => {
       const box = wrap.current!;
@@ -339,6 +341,8 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);
       el.removeEventListener("pointercancel", up);
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("contextmenu", onMenu);
       oc.dispose();
       stage.dispose();
       if (stageRef.current === stage) stageRef.current = null;
@@ -352,8 +356,9 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
     stage.setPreset({ ...effective.geometry.preset, shadow: shadow && effective.geometry.preset.shadow !== false, shadow_opacity: effective.geometry.preset.shadow_opacity || 0.3, background: { type: "studio_white", colors: [], image: null } });
     stage.setBackdrop(backdrop, floor);
     stage.invalidate();
+    // (the draft's shadow settings too: the Adjust panel's "Contact shadow" box changes only those)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scene, lighting, shadow, backdrop, floor]);
+  }, [scene, lighting, shadow, backdrop, floor, effective.geometry.preset.shadow, effective.geometry.preset.shadow_opacity]);
 
   useEffect(() => { spinRef.current = spin; }, [spin]);
 
@@ -382,7 +387,7 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
       // several designs: each built in full, standing side by side in one frame that turns as one
       Promise.all(chosen.map((n) => { const e = n === chosen[0] ? effective : withLight(adjustedFor(n)); return buildPouch(e.geometry, e.textures, { filled, pouch: showPouch }); }))
         .then((objs) => {
-          if (cancelled || !stageRef.current) return;
+          if (cancelled || !stageRef.current) { objs.forEach(disposeObject); return; } // built for a view that is gone
           const stage = stageRef.current;
           let obj: THREE.Object3D = objs[0];
           if (objs.length > 1) {
@@ -414,7 +419,7 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
           setSelPart(null);
           setSize(objs.length === 1 ? measure(obj) : null); // upright, before the operator's turn applies
           stage.setObject(obj);
-          stage.overlay.clear();
+          stage.clearOverlay(); // (frees the old dimension lines and labels)
           if (objs.length === 1) stage.overlay.add(dimensionOverlay(effective.geometry, filled));
           stage.overlay.visible = dims;
           if (firstBuild.current || builtCount.current !== objs.length) goto(firstBuild.current ? "three_quarter_left" : objs.length > 1 ? "front" : "three_quarter_left");
@@ -422,7 +427,7 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
           firstBuild.current = false;
           stage.invalidate();
         })
-        .catch((e) => setError(String(e)))
+        .catch((e) => !cancelled && setError(String(e)))
         .finally(() => !cancelled && setBusy(false));
     }, delay);
     return () => { cancelled = true; window.clearTimeout(timer); };
@@ -578,7 +583,8 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
     const url = stage.capture(2, kind);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${name ?? "pouch"}_${filled ? "filled" : "flat"}.${kind === "png" ? "png" : "jpg"}`;
+    // a customer's download is simply MOCKUP.png / MOCKUP.jpg; the team's keeps the item code and the state
+    a.download = `${customer ? "MOCKUP" : `${name ?? "pouch"}_${filled ? "filled" : "flat"}`}.${kind === "png" ? "png" : "jpg"}`;
     a.click();
     stage.invalidate();
   };
@@ -627,7 +633,8 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
     <div className="stack">
       <div className={`viewer viewer-${backdrop.kind} ${dark ? "viewer-dark" : ""} ${full ? "viewer-full" : ""} ${tool && onWindows ? "viewer-drawing" : ""}`} ref={wrap}
         tabIndex={0} onKeyDown={onKey} aria-label="3D view: drag or use the arrow keys to turn">
-        <canvas ref={canvas} />
+        {/* a new canvas per stage: Stage.dispose() loses the old one's WebGL context on purpose */}
+        <canvas key={stageKey} ref={canvas} />
         <div className="viewer-bar top">
           <div className="row" style={{ gap: 8 }}>
             <DesignPicker designs={designs} picked={chosen} onChange={setPicked} multi />
@@ -783,9 +790,11 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
           </div>
           <div className="seg">
             <button className={spin ? "on" : ""} onClick={() => setSpin(!spin)} title="Turn the pouch all the way round"><Icon d={ICONS.spin} /> {spin ? "Stop" : "Spin 360°"}</button>
-            <button onClick={recordVideo} disabled={busy || recording} title="A 360 degree turntable video of this view (MP4, about 1080 px; plays in WhatsApp)">
-              <Icon d={ICONS.video} /> {recording ? "Recording…" : "Video"}
-            </button>
+            {!customer && (
+              <button onClick={recordVideo} disabled={busy || recording} title="A 360 degree turntable video of this view (MP4, about 1080 px; plays in WhatsApp)">
+                <Icon d={ICONS.video} /> {recording ? "Recording…" : "Video"}
+              </button>
+            )}
             <button onClick={() => snapshot("png")} disabled={busy} title="The pouch alone on a transparent background (PNG, twice the screen size)"><Icon d={ICONS.download} /> PNG</button>
             <button onClick={() => snapshot("jpeg")} disabled={busy} title="This view with its background and floor (JPEG, twice the screen size)"><Icon d={ICONS.download} /> JPEG</button>
           </div>

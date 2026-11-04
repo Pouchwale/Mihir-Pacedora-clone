@@ -114,6 +114,54 @@ def guide_lines(pdf: Path, box) -> list[tuple[bool, float, float]]:
     return out
 
 
+def callout_leaders(pdf: Path, box) -> list[tuple[bool, float, float, float]]:
+    """Proof-note leaders drawn in pieces: thin straight horizontal / vertical pieces (stroked lines, or hairline
+    filled outlines) joined end to end along one line, kept when the joined line reaches over 6 mm out past
+    `box` and into it. FGPO7838's "FSSAI logo color change into black colour" leader is three 0.2 mm filled
+    strips broken at the panel edge: no single piece both starts outside the print and reaches into it.
+    Returns (vertical, position, start, end) in PDF points (y up)."""
+    import pymupdf
+
+    mm = 72 / 25.4
+    pieces: list[tuple[bool, float, float, float]] = []
+    with pymupdf.open(pdf) as doc:
+        page = doc[0]
+        inv = ~page.transformation_matrix
+        for d in page.get_drawings():
+            items = d.get("items") or []
+            if any(it[0] not in ("l", "re") for it in items):
+                continue  # curves: lettering or a shape, never a leader (small text is under 1.5 mm tall too)
+            r0 = (d["rect"] * inv).normalize()
+            # a filled hairline outline (a stroke turned into a shape) is one thin rectangle as a whole
+            rects = [r0] if len(items) <= 16 and min(r0.width, r0.height) <= 0.8 * mm else []
+            for it in items:
+                if it[0] == "l":
+                    rects.append(pymupdf.Rect(it[1] * inv, it[2] * inv).normalize())
+                elif it[0] == "re":
+                    rects.append((it[1] * inv).normalize())
+            for r in rects:
+                if r.height <= 1.5 * mm and r.width > 3 * r.height and r.width > 2 * mm:
+                    pieces.append((False, (r.y0 + r.y1) / 2, r.x0, r.x1))
+                elif r.width <= 1.5 * mm and r.height > 3 * r.width and r.height > 2 * mm:
+                    pieces.append((True, (r.x0 + r.x1) / 2, r.y0, r.y1))
+    joined: list[list] = []
+    # (grouped by line first, then along it: pieces of one leader differ in position by a hair, and sorted by
+    # exact position they interleaved with the same leader on a preview copy beside it and never met)
+    for vertical, pos, lo, hi in sorted(pieces, key=lambda p: (p[0], round(p[1] / (0.5 * mm)), p[2])):
+        last = joined[-1] if joined else None
+        if last and last[0] == vertical and abs(last[1] - pos) <= 0.5 * mm and lo <= last[3] + 1.5 * mm:
+            last[3] = max(last[3], hi)
+        else:
+            joined.append([vertical, pos, lo, hi])
+    out = []
+    for vertical, pos, lo, hi in joined:
+        x0, x1, y0, y1 = (pos, pos, lo, hi) if vertical else (lo, hi, pos, pos)
+        out_far = x0 < box.x0 - 6 * mm or x1 > box.x1 + 6 * mm or y0 < box.y0 - 6 * mm or y1 > box.y1 + 6 * mm
+        if out_far and x1 > box.x0 + mm and x0 < box.x1 - mm and y1 > box.y0 + mm and y0 < box.y1 - mm:
+            out.append((vertical, pos, lo, hi))
+    return out
+
+
 def has_callout_leaders(pdf: Path, box) -> bool:
     """Whether a proof note's leader runs in from the sheet's margin onto the print (`box`, PDF points, y up):
     a thin straight piece reaching over 6 mm out past it and into it (FGPO5262's "Text Color Change Into
@@ -139,7 +187,7 @@ def has_callout_leaders(pdf: Path, box) -> bool:
                 out_far = x0 < box.x0 - 6 * mm or x1 > box.x1 + 6 * mm or y0 < box.y0 - 6 * mm or y1 > box.y1 + 6 * mm
                 if out_far and x1 > box.x0 + mm and x0 < box.x1 - mm and y1 > box.y0 + mm and y0 < box.y1 - mm:
                     return True
-    return False
+    return bool(callout_leaders(pdf, box))  # (a leader drawn in pieces)
 
 
 def guide_frames(pdf: Path, box) -> list[tuple[float, float, float, float]]:
@@ -189,6 +237,7 @@ def without_guides(pdf: Path, guides: list, out: Path, frames: list | tuple = ()
         return False
 
     MM = 72 / 25.4
+    leaders = callout_leaders(pdf, crossing) if crossing is not None else []
 
     def crosses(m: list[float], sub: list) -> bool:
         if crossing is None:
@@ -209,7 +258,17 @@ def without_guides(pdf: Path, guides: list, out: Path, frames: list | tuple = ()
         b = crossing
         out_far = x0 < b.x0 - 6 * MM or x1 > b.x1 + 6 * MM or y0 < b.y0 - 6 * MM or y1 > b.y1 + 6 * MM
         reaches_in = x1 > b.x0 + MM and x0 < b.x1 - MM and y1 > b.y0 + MM and y0 < b.y1 - MM
-        return out_far and reaches_in
+        if out_far and reaches_in:
+            return True
+        # a piece of a leader drawn in pieces: straight, thin, along one of the joined leaders, within its extent
+        if any(op not in (b"m", b"l", b"re", b"h") for _, op in sub):
+            return False  # (curves: lettering on the line's height, not the leader)
+        for vertical, pos, lo, hi in leaders:
+            if vertical and x1 - x0 <= 1.5 * MM and abs((x0 + x1) / 2 - pos) <= 0.5 * MM and y0 >= lo - MM and y1 <= hi + MM:
+                return True
+            if not vertical and y1 - y0 <= 1.5 * MM and abs((y0 + y1) / 2 - pos) <= 0.5 * MM and x0 >= lo - MM and x1 <= hi + MM:
+                return True
+        return False
 
     def on_frame(m: list[float], x: float, y: float, w: float, h: float) -> bool:
         (ax, ay), (bx, by) = apply(m, x, y), apply(m, x + w, y + h)
@@ -299,15 +358,47 @@ def without_guides(pdf: Path, guides: list, out: Path, frames: list | tuple = ()
     return out
 
 
+def _variety(pdf: Path, box) -> int:
+    """How many distinct colours (each over 0.3 % of the area) `box` shows: a separation preview (the white
+    plate in grey, gloss / matt in two flat tints) has two or three, the printed artwork many more."""
+    import numpy as np
+    import pymupdf
+
+    with pymupdf.open(pdf) as doc:
+        page = doc[0]
+        clip = (pymupdf.Rect(box.x0, box.y0, box.x1, box.y1) * page.transformation_matrix).normalize() & page.rect
+        if clip.is_empty:
+            return 0
+        pix = page.get_pixmap(dpi=25, clip=clip, colorspace=pymupdf.csRGB, alpha=False)
+    rgb = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.stride)[:, : pix.width * 3].reshape(-1, 3) >> 4
+    _, counts = np.unique(rgb, axis=0, return_counts=True)
+    return int((counts >= 0.003 * len(rgb)).sum())
+
+
+def _copy_of(pdf: Path, trim, alike: list):
+    """One of several same-size rectangles: the printed sleeve, not a separation preview of it (FGSL4036's
+    white plate beside it, FGSL4046 / 4109's gloss & matt above it: picked by list order they gave black or
+    empty sleeves). One inside the file's own artwork area first, then the one with the most colours."""
+    def inside(b) -> bool:
+        return b.x0 >= trim.x0 - 3 and b.y0 >= trim.y0 - 3 and b.x1 <= trim.x1 + 3 and b.y1 <= trim.y1 + 3
+
+    pool = [b for b in alike if inside(b)] or alike
+    return max(pool, key=lambda b: _variety(pdf, b))
+
+
 def artwork_box(pdf: Path, trim, width_mm: float | None, height_mm: float | None):
     """The sleeve's printed area on the sheet (PDF points, y up), with its size: the drawn rectangle
     closest to the stated height x printed width (the drawing wins: FGSL4091 states 182 mm, draws 176);
-    with no stated size, the largest rectangle that is not the page frame; else the TrimBox."""
+    with no stated size, the largest rectangle that is not the page frame; else the TrimBox. Of several
+    copies of that size (artwork + separation previews) the printed one (_copy_of)."""
     rects = _rects(pdf)
     if width_mm and height_mm:
         near = [b for b in rects if abs(b.height_mm - height_mm) <= 4 and abs(b.width_mm - width_mm) <= 12]
         if near:
-            return min(near, key=lambda b: 2 * abs(b.height_mm - height_mm) + abs(b.width_mm - width_mm))
+            score = lambda b: 2 * abs(b.height_mm - height_mm) + abs(b.width_mm - width_mm)  # noqa: E731
+            best = min(near, key=score)
+            alike = [b for b in near if score(b) <= score(best) + 3]
+            return best if len(alike) == 1 else _copy_of(pdf, trim, alike)
     else:
         import pymupdf
 
@@ -318,6 +409,8 @@ def artwork_box(pdf: Path, trim, width_mm: float | None, height_mm: float | None
         inner = [b for b in rects if b.width_mm < 0.95 * trim.width_mm and b.height_mm < 0.95 * trim.height_mm
                  and 1.0 <= b.width_mm / max(b.height_mm, 1) <= 6]
         if inner:
-            return max(inner, key=lambda b: b.width_mm * b.height_mm)
+            big = max(inner, key=lambda b: b.width_mm * b.height_mm)
+            alike = [b for b in inner if abs(b.width_mm - big.width_mm) <= 3 and abs(b.height_mm - big.height_mm) <= 3]
+            return big if len(alike) == 1 else _copy_of(pdf, trim, alike)
     return trim
 

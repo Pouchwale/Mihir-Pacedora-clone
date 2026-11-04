@@ -129,6 +129,12 @@ class MeasuredKeyline(BaseModel):
     valve_panel: str | None = Field(None, description="Panel a 'valve' label over the dieline marks (coffee degassing valve): front / back")
     valve_x_mm: float | None = Field(None, description="Valve centre from that panel's left edge, as printed")
     valve_y_mm: float | None = Field(None, description="Valve centre below the finished top edge (the dimension under the label)")
+    # A hang hole drawn on the dieline (app.pdf.vector.hang_hole), centred across the face.
+    hang_hole_type: str | None = Field(None, description="round / euro / butterfly (sombrero) as drawn; None = none drawn")
+    hang_hole_width_mm: float | None = Field(None, description="Overall width of the hole")
+    hang_hole_size_mm: float | None = Field(None, description="Round: diameter; euro / butterfly: height of the slot")
+    hang_hole_height_mm: float | None = Field(None, description="Whole hole, dome top to slot bottom")
+    hang_hole_y_mm: float | None = Field(None, description="Slot (circle) centre below the finished top edge")
     labels: list[DimensionLabel] = Field(default_factory=list, description="Every dimension label number OCR read")
 
 

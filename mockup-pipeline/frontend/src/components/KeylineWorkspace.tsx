@@ -14,6 +14,7 @@ import {
   type Check, type PanelBox,
 } from "../three/dieline";
 import { paintWindows } from "../three/surface";
+import { hangHoleDims, hangHoleOf, hangHolePath } from "../three/hanghole";
 import type { GeometrySpec, Overlay, SceneData, SceneTexture, WindowShape } from "../three/types";
 import DesignPicker from "./DesignPicker";
 
@@ -627,7 +628,8 @@ function Studio({ job, liveScene, draft, dirty, busy, running, isAdmin, onChange
       if (kind === "svg") download(new Blob([svg], { type: "image/svg+xml" }), `${stem}.svg`);
       else if (kind === "png") {
         const dpi = 300, scale = Math.min(dpi / 25.4, 16000 / Math.max(w, h));
-        const img = await loadImage(URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" })));
+        const svgUrl = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+        const img = await loadImage(svgUrl).finally(() => URL.revokeObjectURL(svgUrl)); // (the whole sheet: not kept)
         const c = document.createElement("canvas");
         c.width = Math.round(w * scale);
         c.height = Math.round(h * scale);
@@ -674,6 +676,7 @@ function Studio({ job, liveScene, draft, dirty, busy, running, isAdmin, onChange
     const spoutCut = p.face && g.spout && g.spout.position !== "top_center" ? (g.spout.cap_diameter_mm ?? 30) * 1.1 : 0;
     const spoutRight = g.spout?.position === "top_right_corner" ? p.role === "front" : p.role === "back";
     const nd = g.tear_notch.depth_mm || 4, ny = g.tear_notch.y_from_top_mm;
+    const hole = hangHoleOf(g, p.w);
     const kw = g.window;
     const windows = draft.windows.map((w, i) => ({ w, i })).filter(({ w }) => w.face === p.role);
     return (
@@ -711,13 +714,12 @@ function Studio({ job, liveScene, draft, dirty, busy, running, isAdmin, onChange
               ? <><rect x={0} y={ny - 0.35} width={nd} height={0.7} className="dl-cut" /><rect x={p.w - nd} y={ny - 0.35} width={nd} height={0.7} className="dl-cut" /></>
               : g.tear_notch.type === "laser_score" ? <line x1={s.side} y1={ny} x2={p.w - s.side} y2={ny} className="dl-score" />
               : <><path d={`M0 ${ny - nd / 2} L${nd} ${ny} L0 ${ny + nd / 2} Z`} className="dl-cut" /><path d={`M${p.w} ${ny - nd / 2} L${p.w - nd} ${ny} L${p.w} ${ny + nd / 2} Z`} className="dl-cut" /></>}
-            {g.butterfly_notch && <><path d={`M0 ${ny + 6 - 1.5} L3 ${ny + 6} L0 ${ny + 6 + 1.5} Z`} className="dl-cut" /><path d={`M${p.w} ${ny + 6 - 1.5} L${p.w - 3} ${ny + 6} L${p.w} ${ny + 6 + 1.5} Z`} className="dl-cut" /></>}
             <text x={nd + 1.5} y={ny + 1} className="dl-note">{g.tear_notch.type.replace(/_/g, " ")} {ny} mm</text>
           </g>
         )}
-        {layers.cuts && p.face && g.hang_hole.type === "round" && <circle cx={p.w / 2} cy={g.hang_hole.offset_mm} r={g.hang_hole.size_mm / 2} className="dl-cut" />}
-        {layers.cuts && p.face && g.hang_hole.type === "euro" && (
-          <rect x={p.w / 2 - g.hang_hole.size_mm * 1.6} y={g.hang_hole.offset_mm - g.hang_hole.size_mm / 2} width={g.hang_hole.size_mm * 3.2} height={g.hang_hole.size_mm} rx={g.hang_hole.size_mm / 2} className="dl-cut" />
+        {layers.cuts && p.face && hole.type !== "none" && (
+          <g><path d={hangHolePath(hole, p.w)} className="dl-cut" />
+            <text x={p.w / 2 + hangHoleDims(hole, p.w)[0] / 2 + 1.5} y={hole.offset_mm + 1} className="dl-note">{hole.type === "butterfly" ? "butterfly hang hole" : `${hole.type} hang hole`} {hole.offset_mm} mm</text></g>
         )}
         {layers.cuts && spoutCut > 0 && <path d={spoutRight ? `M${p.w - spoutCut} 0 L${p.w} 0 L${p.w} ${spoutCut} Z` : `M0 0 L${spoutCut} 0 L0 ${spoutCut} Z`} className="dl-cut" />}
         {layers.windows && p.face && kw.enabled && (
@@ -753,7 +755,7 @@ function Studio({ job, liveScene, draft, dirty, busy, running, isAdmin, onChange
             {s.side > 0 && lineHandle("side_seal_mm", p.role, s.side, 0, s.side, p.h)}
             {s.side > 0 && lineHandle("side_seal_mm", p.role, p.w - s.side, 0, p.w - s.side, p.h)}
             {g.tear_notch.type !== "none" && lineHandle("tear_notch_offset_mm", p.role, 0, ny, nd * 3, ny)}
-            {g.hang_hole.type !== "none" && lineHandle("hang_hole_offset_mm", p.role, p.w / 2 - g.hang_hole.size_mm * 2, g.hang_hole.offset_mm, p.w / 2 + g.hang_hole.size_mm * 2, g.hang_hole.offset_mm)}
+            {hole.type !== "none" && lineHandle("hang_hole_offset_mm", p.role, p.w / 2 - hangHoleDims(hole, p.w)[0] / 2 - 2, hole.offset_mm, p.w / 2 + hangHoleDims(hole, p.w)[0] / 2 + 2, hole.offset_mm)}
           </g>
         )}
         {!inside && layers.artwork && overlays.length > 0 && (

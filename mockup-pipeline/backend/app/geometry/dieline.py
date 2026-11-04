@@ -11,7 +11,7 @@ from xml.sax.saxutils import escape
 
 from PIL import Image
 
-from app.geometry.spec import GeometrySpec
+from app.geometry.spec import GeometrySpec, hang_hole_path
 
 M = 22.0  # margin around the panel for dimension labels, mm
 BLUE = "#1f5bd6"
@@ -83,12 +83,9 @@ def panel_svg(role: str, g: GeometrySpec, image: Image.Image | None, color: str 
             parts.append(f'<path d="M0 {ny - d / 2} L{d} {ny} L0 {ny + d / 2} Z" class="cut"/>')
             parts.append(f'<path d="M{w} {ny - d / 2} L{w - d} {ny} L{w} {ny + d / 2} Z" class="cut"/>')
             parts.append(f'<text x="{d + 1.5}" y="{ny + 1}" class="note">{escape(g.tear_notch.type.replace("_", " "))} {_fmt(ny)} mm</text>')
-        if g.hang_hole.type != "none":
-            hs, ho = g.hang_hole.size_mm, g.hang_hole.offset_mm
-            if g.hang_hole.type == "round":
-                parts.append(f'<circle cx="{w / 2}" cy="{ho}" r="{hs / 2}" class="cut"/>')
-            else:
-                parts.append(f'<rect x="{w / 2 - hs * 1.6}" y="{ho - hs / 2}" width="{hs * 3.2}" height="{hs}" rx="{hs / 2}" class="cut"/>')
+        hole = hang_hole_path(g.hang_hole, w)  # (the same outline the 3D cut mask uses)
+        if hole:
+            parts.append(f'<path d="{hole}" class="cut"/>')
         if g.window.enabled:
             win = g.window
             parts.append(f'<rect x="{win.x_mm}" y="{win.y_mm}" width="{win.width_mm}" height="{win.height_mm}" rx="{win.radius_mm}" class="win"/>')

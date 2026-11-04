@@ -8,14 +8,18 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
   const [show, setShow] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // the account is signed in somewhere else (409): an administrator's password lets this place take over
+  const [elsewhere, setElsewhere] = useState(false);
+  const [adminPassword, setAdminPassword] = useState("");
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setError("");
     try {
-      onLogin(await api.post<User>("/api/auth/login", { email, password }));
+      onLogin(await api.post<User>("/api/auth/login", { email, password, ...(elsewhere && adminPassword ? { admin_password: adminPassword } : {}) }));
     } catch (err) {
+      if (err instanceof ApiError && err.status === 409) setElsewhere(true);
       setError(err instanceof ApiError ? err.message : "Sign-in failed");
     } finally {
       setBusy(false);
@@ -55,8 +59,13 @@ export default function Login({ onLogin }: { onLogin: (u: User) => void }) {
               </button>
             </span>
           </label>
+          {elsewhere && (
+            <label className="field">Administrator password
+              <input type="password" autoComplete="off" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} required />
+            </label>
+          )}
           {error && <div className="msg bad" role="alert">{error}</div>}
-          <button className="primary login-submit" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
+          <button className="primary login-submit" disabled={busy}>{busy ? "Signing in…" : elsewhere ? "Sign in here, sign out there" : "Sign in"}</button>
           <div className="muted small login-foot">Gujarat Print Pack Publications Pvt. Ltd.</div>
         </form>
       </section>

@@ -51,6 +51,15 @@ ROOT = HERE.parent  # mockup-pipeline/
 WORKFLOW_KEY = "phase1"
 WORKFLOW_FILE = HERE / "workflow.yaml"
 LOCAL_SERVER = "http://127.0.0.1:8765"
+PORT_FILE = ROOT / "backend" / ".work" / "port"  # run_local.ps1 writes the port it used (8765, or the next free one)
+
+
+def local_server() -> str:
+    """Where run_local.ps1 put the app: 8765 unless another program held that port when it started."""
+    try:
+        return f"http://127.0.0.1:{int(PORT_FILE.read_text().strip())}"
+    except (OSError, ValueError):
+        return LOCAL_SERVER
 
 # --details keys -> spec table fields (the review form's correction paths)
 DETAIL_KEYS = {
@@ -540,14 +549,16 @@ def server_up(base: str) -> bool:
         return False
 
 
-def start_server(base: str, log=print) -> None:
+def start_server(base: str, log=print) -> str:
+    """Start run_local.ps1 and return where the app came up (its port may not be 8765)."""
     script = ROOT / "backend" / "run_local.ps1"
     log(f"nothing answers on {base}; starting {script.name} (first start builds the UI and migrates the database)")
+    PORT_FILE.unlink(missing_ok=True)  # an old run's port must not be mistaken for this one's
     creation = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
     proc = subprocess.Popen(["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)], cwd=str(script.parent), creationflags=creation)
     for _ in range(120):
-        if server_up(base):
-            return
+        if PORT_FILE.exists() and server_up(url := local_server()):
+            return url
         if proc.poll() is not None:
             raise SystemExit(f"{script.name} exited with code {proc.returncode} before the app answered; run it by hand to see why")
         time.sleep(2)
@@ -557,9 +568,9 @@ def start_server(base: str, log=print) -> None:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Phase 1: a dimensionally exact 3D pouch from any approval PDF")
     p.add_argument("pdfs", nargs="+", type=Path)
-    p.add_argument("--server", default=os.environ.get("PHASE1_SERVER", LOCAL_SERVER))
-    p.add_argument("--email", default=os.environ.get("ADMIN_EMAIL", "admin@example.com"))
-    p.add_argument("--password", default=os.environ.get("ADMIN_PASSWORD", "change-me-please-1"))
+    p.add_argument("--server", default=os.environ.get("PHASE1_SERVER"), help="the app's address (default: the local app, wherever run_local.ps1 put it)")
+    p.add_argument("--email", default=os.environ.get("ADMIN_EMAIL"), help="an account of the app (default: ADMIN_EMAIL)")
+    p.add_argument("--password", default=os.environ.get("ADMIN_PASSWORD"), help="its password (default: ADMIN_PASSWORD); no built-in account exists")
     p.add_argument("--wait", type=float, default=120, help="seconds to wait for an operator on the job page before the runner answers a pause itself")
     p.add_argument("--details", nargs="*", action="extend", default=[], help="pouch details as key=value: height width open_width gusset gusset_type sealing zipper notch client item finish")
     p.add_argument("--pouch-type", default=None, help="index key to use when the match rules cannot decide (default: three_side_seal / the first candidate)")
@@ -567,11 +578,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--open", action="store_true", help="open the job page (3D viewer) in the browser when done")
     p.add_argument("--no-start", action="store_true", help="do not start the app when nothing answers on --server")
     args = p.parse_args(argv)
+    if not args.email or not args.password:
+        p.error("--email / --password (or ADMIN_EMAIL / ADMIN_PASSWORD in the environment or backend/.env) are needed to sign in")
 
+    local = args.server is None
+    args.server = args.server or local_server()
     if not server_up(args.server):
-        if args.no_start or args.server.rstrip("/") != LOCAL_SERVER:
+        if args.no_start or not local:
             raise SystemExit(f"nothing answers on {args.server}")
-        start_server(args.server)
+        args.server = start_server(args.server)
     api = Api(args.server)
     runner = Phase1(api, args.out, wait_s=args.wait, details=parse_details(args.details), pouch_type=args.pouch_type)
     try:

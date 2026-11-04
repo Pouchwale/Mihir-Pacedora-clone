@@ -18,6 +18,7 @@ os.environ["AUTO_REVIEW"] = "false"
 # The pouch tests walk the default graph; Phase 4 (pouches + sleeves) has its own tests.
 os.environ.setdefault("DEFAULT_WORKFLOW", "default")
 os.environ["PUBLIC_URL"] = ""  # (tests never start the ngrok tunnel)
+os.environ["SINGLE_SESSION"] = "false"  # (tests sign the same accounts in many times; test_api covers the policy)
 
 from app.config import get_settings  # noqa: E402
 from app.specs.schema import Extraction  # noqa: E402

@@ -55,10 +55,17 @@ def record(action: str, user=None, request=None, **fields) -> None:
     entry = {"ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"), "action": action,
              "user": getattr(user, "email", None), "role": getattr(user, "role", None)}
     if request is not None:
-        entry["ip"] = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else None)
+        # The connection's own address; X-Forwarded-For is whatever the client wrote (anyone can forge it),
+        # kept apart as what the proxy / client claimed (ngrok's real visitor address arrives only there).
+        entry["ip"] = request.client.host if request.client else None
+        claimed = request.headers.get("x-forwarded-for", "").split(",")[0].strip()[:64]
+        if claimed and claimed != entry["ip"]:
+            entry["forwarded_for"] = claimed
     entry.update(scrub(fields))
     try:
-        _append(_dir("logs", "activity") / f"{date.today().isoformat()}.jsonl", json.dumps(entry, default=str), sync=True)
+        # fsync for what a person did (sign-in, upload, change); the per-request lines are flushed only: an
+        # fsync on every API call stalled the whole server on a slow disk
+        _append(_dir("logs", "activity") / f"{date.today().isoformat()}.jsonl", json.dumps(entry, default=str), sync=action != "request")
     except OSError:
         logging.getLogger(__name__).exception("activity log not written")  # never fail the request over its log
 

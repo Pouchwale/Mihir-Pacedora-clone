@@ -65,6 +65,9 @@ def app_client(engine, seeded, tmp_path, monkeypatch):
             yield s
 
     main.app.dependency_overrides[get_session] = override
+    from app.api import auth_routes
+
+    auth_routes._FAILED.clear()  # (every test starts with a clean sign-in throttle)
     seeded.add(User(email="op@example.com", role="designer", password_hash=auth.hash_password("operator-password-1")))
     seeded.add(User(email="admin@example.com", role="admin", password_hash=auth.hash_password("admin-password-1")))
     seeded.commit()
@@ -140,7 +143,7 @@ def test_sample_job_end_to_end(app_client, monkeypatch):
 
     # designers cannot approve; admins can
     assert c.post(f"/api/jobs/{job_id}/approve", headers=H).status_code == 403
-    c.post("/api/auth/logout")
+    c.post("/api/auth/logout", headers={"X-Requested-With": "fetch"})
     c.post("/api/auth/login", json={"email": "admin@example.com", "password": "admin-password-1"}).raise_for_status()
     assert c.post(f"/api/jobs/{job_id}/approve", headers=H).json()["approved_by"] == "admin@example.com"
 
@@ -332,7 +335,7 @@ def test_job_page_adjustments(app_client, monkeypatch):
     # designers cannot save keyline values as an item default; an admin can, and a new upload of the item starts from them
     r = c.post(f"/api/jobs/{job_id}/adjust", json={"adjust": {**adjust, "keyline": {"zipper_offset_from_top_mm": 31}}, "save_item_default": True}, headers=H)
     assert r.status_code == 403
-    c.post("/api/auth/logout")
+    c.post("/api/auth/logout", headers={"X-Requested-With": "fetch"})
     c.post("/api/auth/login", json={"email": "admin@example.com", "password": "admin-password-1"}).raise_for_status()
     r = c.post(f"/api/jobs/{job_id}/adjust", json={"adjust": {"scene": {"lighting": "daylight"}}, "save_item_default": True, "note": "client wants daylight"}, headers=H)
     assert r.status_code == 200, r.text
@@ -341,6 +344,16 @@ def test_job_page_adjustments(app_client, monkeypatch):
     job2 = _upload(c, COMBINED)["jobs"][0]
     d2 = c.get(f"/api/jobs/{job2}").json()
     assert d2["job"]["status"] == "DONE" and d2["outputs"]["build_geometry"]["geometry"]["preset"]["lighting"] == "daylight"
+
+    # hang hole / notch sizes as the default of every pouch of the job's keyline template
+    template = c.get(f"/api/jobs/{job_id}").json()["keyline_template"]
+    r = c.post(f"/api/jobs/{job_id}/adjust", json={"adjust": {"keyline": {"hang_hole_width_mm": 24, "tear_notch_depth_mm": 6}},
+                                                   "save_type_default": True}, headers=H)
+    assert r.status_code == 200, r.text
+    fields = c.get(f"/api/index/keyline_template/{template}").json()["data"]["fields"]
+    assert (fields["hang_hole_width_mm"]["default"], fields["tear_notch_depth_mm"]["default"]) == (24, 6)
+    r = c.post(f"/api/jobs/{job_id}/adjust", json={"adjust": {"scene": {"lighting": "daylight"}}, "save_type_default": True}, headers=H)
+    assert r.status_code == 422  # (nothing to save)
 
     # reset: back to the automatic result for this job (the item default still applies)
     r = c.post(f"/api/jobs/{job_id}/adjust", json={"reset": True}, headers=H)
@@ -603,6 +616,78 @@ def test_ngrok_address_reaches_share_pages_only(app_client):
     assert c.post("/api/auth/login", json={"email": "admin@example.com", "password": "x"}, headers=out).status_code == 404
     ok = f"/api/jobs/999/scene?token={tokens.make(999, ttl_s=60)}"  # a real share token passes to the route
     assert c.get(ok, headers=out).json() == c.get(ok, headers=H).json() != {"detail": "Not found"}
+    # a share call with a bad token says why, through the tunnel and on this PC alike
+    old, wrong = tokens.make(999, ttl_s=-1), tokens.make(998, ttl_s=60)
+    anon = TestClient(main.app)  # no session: a customer
+    for client, headers in ((c, out), (anon, H)):
+        r = client.get(f"/api/jobs/999/scene?token={old}", headers=headers)
+        assert r.status_code == 401 and r.json()["detail"] == tokens.EXPIRED
+        r = client.get(f"/api/jobs/999/share-info?token={wrong}", headers=headers)
+        assert r.status_code == 401 and r.json()["detail"] == tokens.INVALID
+    assert anon.get("/api/jobs/999/scene?token=not.a.token", headers=H).json()["detail"] == tokens.INVALID
+
+
+def test_share_page_details_reach_a_customer_without_internals(app_client, monkeypatch):
+    monkeypatch.setattr(queue, "enqueue", lambda *a, **k: None)  # the job itself need not run
+    job_id = _upload(app_client)["jobs"][0]
+    token = tokens.make(job_id, ttl_s=60)
+    for headers in ({"Host": "abc.ngrok-free.app", **H}, H):
+        info = TestClient(main.app).get(f"/api/jobs/{job_id}/share-info?token={token}", headers=headers)
+        assert info.status_code == 200, info.text
+        assert set(info.json()["job"]) == {"item_code", "client_name", "pouch_type", "approved", "approved_at"}
+    # the full job (inputs, events, emails) stays behind sign-in
+    assert TestClient(main.app).get(f"/api/jobs/{job_id}?token={token}", headers=H).status_code == 401
+
+
+def test_tunnel_hands_out_only_a_tunnel_to_this_app(monkeypatch):
+    from app.api import tunnel
+
+    monkeypatch.setattr(tunnel, "_tunnels", lambda: [
+        {"url": "https://other.ngrok-free.app", "addr": "http://localhost:5173"},
+        {"url": "http://ours.ngrok-free.app", "addr": "http://localhost:8765"},
+        {"url": "https://ours.ngrok-free.app", "addr": "http://localhost:8765"},
+    ])
+    assert tunnel._running_url() == "https://ours.ngrok-free.app"
+    monkeypatch.setattr(tunnel, "_tunnels", lambda: [{"url": "https://other.ngrok-free.app", "addr": "localhost:5173"}])
+    assert tunnel._running_url() is None
+
+
+def test_tunnel_follows_the_port_the_app_got(monkeypatch):
+    """run_local.ps1 moves to the next free port when 8765 is taken: the tunnel must forward there."""
+    from app.api import tunnel
+
+    monkeypatch.setattr(get_settings(), "internal_base_url", "http://127.0.0.1:8766")
+    monkeypatch.setattr(tunnel, "_tunnels", lambda: [
+        {"url": "https://old.ngrok-free.app", "addr": "http://localhost:8765"},  # left from the last run
+        {"url": "https://new.ngrok-free.app", "addr": "http://localhost:8766"},
+    ])
+    assert tunnel._port() == "8766" and tunnel._running_url() == "https://new.ngrok-free.app"
+
+
+def test_leftover_ngrok_stop_never_touches_another_program(monkeypatch, tmp_path):
+    import os
+
+    from app.api import tunnel
+
+    pid_file = tmp_path / "ngrok.pid"
+    pid_file.write_text(str(os.getpid()))  # a PID that is alive but is python, not ngrok
+    monkeypatch.setattr(tunnel, "_pid_file", lambda: pid_file)
+    tunnel._stop_leftover()
+    assert not pid_file.exists()  # forgotten, and this test process is still running
+
+
+def test_tunnel_reports_why_ngrok_did_not_start(monkeypatch, tmp_path):
+    from app.api import tunnel
+
+    log = tmp_path / "ngrok.log"
+    log.write_text('t=2026-10-13 lvl=eror msg="failed to start" err="authentication failed: ERR_NGROK_4018"\n')
+    monkeypatch.setattr(tunnel, "_log_file", lambda: log)
+    said = tunnel._ngrok_said()
+    assert "add-authtoken" in said and "ERR_NGROK_4018" in said
+    monkeypatch.setattr(tunnel, "_tunnels", lambda: [])
+    monkeypatch.setattr(tunnel.shutil, "which", lambda _: None)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    assert tunnel.public_base() is None and "not installed" in tunnel.last_error()
 
 
 def test_startup_hands_old_review_stops_to_the_automatic_reviewer(app_client, engine, monkeypatch):
@@ -623,7 +708,7 @@ def test_startup_hands_old_review_stops_to_the_automatic_reviewer(app_client, en
     queued = []
     monkeypatch.setattr(main, "get_engine", lambda: engine)
     monkeypatch.setattr(main.get_settings(), "auto_review", True)
-    monkeypatch.setattr(queue, "enqueue", lambda job_id, from_step=None, **k: queued.append((job_id, from_step)))
+    monkeypatch.setattr(queue, "enqueue", lambda job_id, from_step=None, from_node=None, **k: queued.append((job_id, from_step)))
     main._resume_thread_jobs()
     assert (old_id, "validate") in queued and gave_up_id not in {j for j, _ in queued}
     with Session(engine) as s:

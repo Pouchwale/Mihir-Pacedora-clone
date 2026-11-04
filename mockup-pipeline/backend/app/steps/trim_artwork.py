@@ -14,6 +14,7 @@ the 3D geometry shapes them on top of the whole texture.
 
 import hashlib
 import io
+import re
 import tempfile
 from pathlib import Path
 
@@ -96,6 +97,22 @@ class FinishOutput(BaseModel):
     preview_key: str | None  # highlighted preview when marks were found
 
 
+PLATE_LAYER = re.compile(r"white|under\s*(print|lay)|opaque|\buv\b|varnish|gloss|matt", re.I)
+
+
+def plate_only_layer(pdf: Path, layer: str, plates: set[str], trim: Box, tmp: Path) -> bool:
+    """A layer holding only a hidden plate (white underprint, spot varnish), drawn over the artwork as
+    a sheet-size fill in its preview colour: FGPO7846's "White Underprint" (pink) and FGSL4101's
+    "Matt UV" / "Gloss UV". Shown it hides the print; with its ink suppressed it still knocks the print
+    out to paper white. Either way the mockup came out blank. Named as a plate, and blank once those
+    inks are taken out: nothing of the colour artwork is on it."""
+    if not PLATE_LAYER.search(layer):
+        return False
+    out = tmp / "plate_probe.pdf"
+    write_layer_copy(pdf, out, [layer], trim, strip=plates)
+    return bool(np.asarray(pdftoppm_png(out, tmp / "plate_probe.png", 20, None).convert("L")).min() >= 250)
+
+
 def _name(item: str | None, panel: str, kind: str) -> str:
     return f"{item or 'UNKNOWN'}_{panel}_{kind}.png"
 
@@ -129,11 +146,15 @@ def run(inp: TrimArtworkInput, profile: PdfProfile, storage: Storage) -> TrimArt
         from app.services import sleeve as sleeve_impl
 
         src = inp.pdf_path
-        if sleeve_impl.has_callout_leaders(inp.pdf_path, trim):
+        leaders = sleeve_impl.callout_leaders(inp.pdf_path, trim)
+        if leaders or sleeve_impl.has_callout_leaders(inp.pdf_path, trim):
             src = sleeve_impl.without_guides(inp.pdf_path, [], Path(tmp) / "no_callouts.pdf", crossing=trim)
         if sheet.mode == "layers":
             layers = sheet.texture_layers(profile)
             require_layers(facts, layers)
+            plates = {*sheet.inks.white, *sheet.inks.varnish}
+            if plates and len(layers) > 1:
+                layers = [n for n in layers if not plate_only_layer(src, n, plates, trim, Path(tmp))] or layers
             # (technical ink drawn on an artwork layer is stripped, not just switched off: switched off it
             # still knocks out the print under it, and the white hairlines it left were blurred over later,
             # smearing text across FGSL4089's nutrition table)
@@ -150,6 +171,28 @@ def run(inp: TrimArtworkInput, profile: PdfProfile, storage: Storage) -> TrimArt
             if sheet.inks.technical:
                 changed.append("strip:" + "+".join(sorted(sheet.inks.technical)))
         image = pdftoppm_png(prepared, Path(tmp) / "full.png", profile.texture_dpi, icc, exact_size=True)
+        if leaders:
+            # The print under a leader is often cut out round it, as a notch from the edge (FGPO7838's orange
+            # back): taking the leader out leaves a white line. Its path is filled straight across from the print
+            # on its two sides (not blended from all round: the white box a leader points at bled in pale).
+            sx, sy = image.width / (trim.x1 - trim.x0), image.height / (trim.y1 - trim.y0)
+            half = 0.5 * 72 / 25.4
+            a = np.asarray(image.convert("RGB")).astype(np.float32)
+            for vertical, pos, lo, hi in leaders:
+                x0, x1, y0, y1 = (pos - half, pos + half, lo, hi) if vertical else (lo, hi, pos - half, pos + half)
+                c0, c1 = max(0, int((x0 - trim.x0) * sx)), min(a.shape[1], int((x1 - trim.x0) * sx) + 1)
+                r0, r1 = max(0, int((trim.y1 - y1) * sy)), min(a.shape[0], int((trim.y1 - y0) * sy) + 1)
+                if r1 <= r0 or c1 <= c0:
+                    continue
+                if vertical and c0 >= 2 and c1 + 2 <= a.shape[1]:
+                    left, right = a[r0:r1, c0 - 2], a[r0:r1, c1 + 1]
+                    t = np.linspace(0, 1, c1 - c0)[None, :, None]
+                    a[r0:r1, c0:c1] = left[:, None] * (1 - t) + right[:, None] * t
+                elif not vertical and r0 >= 2 and r1 + 2 <= a.shape[0]:
+                    top, bottom = a[r0 - 2, c0:c1], a[r1 + 1, c0:c1]
+                    t = np.linspace(0, 1, r1 - r0)[:, None, None]
+                    a[r0:r1, c0:c1] = top[None] * (1 - t) + bottom[None] * t
+            image = Image.fromarray(a.clip(0, 255).astype(np.uint8))
         if annotation:
             # The artwork under annotation lines is often knocked out: removing the red leaves white
             # hairlines (FGPO4004). Fill where the red was from the artwork around it.

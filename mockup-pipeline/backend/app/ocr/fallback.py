@@ -11,11 +11,11 @@ import json
 import logging
 
 from PIL import Image
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.config import Settings
 from app.ocr import groq
-from app.ocr.table import FieldRead, parse_value
+from app.ocr.table import DISAGREE, FieldRead, parse_value
 from app.ocr.template import SpecTemplate
 
 log = logging.getLogger(__name__)
@@ -28,6 +28,8 @@ PROMPT = (
 
 
 class CellAnswer(BaseModel):
+    # (a model answers a number cell with a JSON number: 210, not "210")
+    model_config = ConfigDict(coerce_numbers_to_str=True)
     value: str | None
     confidence: float
 
@@ -64,12 +66,14 @@ def apply(image: Image.Image, reads: dict[str, FieldRead], tpl: SpecTemplate, mi
     for name, read in reads.items():
         if read.bbox is None or read.confidence >= min_confidence:
             continue
+        if read.value is not None and read.reason.startswith(DISAGREE):
+            continue  # text and table cell disagree: a person decides (see table.second_pass)
         x0, y0, x1, y1 = read.bbox
         pad = max(8, (y1 - y0) // 2)
         cell = image.crop((max(0, x0 - pad), max(0, y0 - pad), min(image.width, x1 + pad), min(image.height, y1 + pad)))
         try:
             answer = ask(cell, rules[name].label, settings)
-        except (groq.Unavailable, ValueError) as exc:  # network, quota, bad JSON: the cell stays weak and goes to review
+        except (groq.Unavailable, ValueError, TypeError, KeyError) as exc:  # network, quota, bad / empty reply: the cell stays weak, goes to review
             log.warning("vision fallback %s failed on %s: %s", provider, name, exc)
             continue
         if answer.value is None:

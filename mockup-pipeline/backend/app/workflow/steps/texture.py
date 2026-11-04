@@ -160,7 +160,9 @@ def run(ctx: StepContext) -> Output:
     # Sizes the operator typed or corrected win over the drawing (spec review, details form, job-page
     # adjustments): artwork cut at the dieline that comes out another size is fitted to the panel.
     corrections = ctx.inputs.get("spec_corrections") or {}
-    operator_sized = {f for f in ("pouch_closed_width_mm", "pouch_height_mm", "pouch_open_width_mm") if f"spec_table.{f}" in corrections}
+    # (a value, not a bare confirmation: the automatic reviewer confirms weak reads with None, and a
+    # misread 1600 for 160 must not become "the operator typed 1600" and stretch the artwork to it)
+    operator_sized = {f for f in ("pouch_closed_width_mm", "pouch_height_mm", "pouch_open_width_mm") if corrections.get(f"spec_table.{f}") is not None}
     tol = profile.finished_size_tolerance_mm
     # design 1 (the sheet's first lane or the job's own files) under its roles; the sheet's other designs
     # (link_panels.designs) under "front@2", "back@2", ... made the same way
@@ -222,7 +224,9 @@ def run(ctx: StepContext) -> Output:
         # turn and a mirror, on top of what the panel itself needs to stand upright.
         rule = profile.panel_rule(role)
         # the job's own front takes the keyline's bleed; a front replaced by another PDF, its measured one
-        bleed = front_bleed if role == "front" and (p.file_id == ctx.job.file_id or p.bleed is None) else p.bleed
+        # (a panel cut out of a small-printed strip is cut at its edges: the keyline's bleed, measured on the
+        # whole page, cut into FGPO7570's front and lost its right side)
+        bleed = front_bleed if role == "front" and p.bleed_source != "strip" and (p.file_id == ctx.job.file_id or p.bleed is None) else p.bleed
         if p.source == "blank":
             bleed = Sides.uniform(0)  # the blank is cut exactly at the dieline
         elif role != "front" and p.source == "file" and rule.bleed_mm is not None:
@@ -241,6 +245,13 @@ def run(ctx: StepContext) -> Output:
             fitted = tuple(exc.details["finished_mm"])
             fin = trim_impl.finish(trim, pdf, bleed, *fitted, ctx.prefix, profile, ctx.storage)
         img = _load(ctx, fin.finished_key)
+        edged = 0
+        if role not in ("roll", "sleeve"):
+            # the pouch's own outline caught at the cut edge (FGPO7838: 0.25 mm of black down both sides of
+            # every panel): a dark border on the model, and it joined the corner eyemarks into one long shape
+            img, edged = trim_edge_lines(img, fin.finished_mm[0])
+            if edged:
+                ctx.log(f"{role}: {edged} dark outline edge(s) of the cut taken off", "audit")
         labels: list[str] = []
         face_window = None  # a window drawn in the face's artwork, transformed with the image below
         if role in ("front", "back"):
@@ -284,8 +295,9 @@ def run(ctx: StepContext) -> Output:
             img, ruled = drop_drawn_rules(img, w, geo.seals.top, geo.seals.bottom)
             if ruled:
                 ctx.log(f"{role}: {ruled} dieline / seal line(s) drawn in the artwork removed", "audit")
-        if role not in ("roll", "sleeve") and not profile.include_eyemarks:
-            # (sides and gussets carry eyemarks too: FGPO7030's black squares in the gussets' bottom corners)
+        if role not in ("roll", "sleeve", "gusset") and not profile.include_eyemarks:
+            # (a gusset keeps its eyemarks: the squares in its corners are printed there for pouch forming and
+            # show on the base as on the real pouch, FGPO7838; side panels carry them too and are cleaned)
             img, marks = drop_eyemarks(img, w, geo.seals.side, geo.seals.top, geo.seals.bottom)
             if marks:
                 ctx.log(f"{role}: {len(marks)} eyemark(s) in the seals removed: " + ", ".join(f"{a:g} x {b:g} mm" for a, b in marks), "audit")
@@ -301,7 +313,7 @@ def run(ctx: StepContext) -> Output:
         # a flat blank's two faces are cut from one render: each keeps its own file (sharing the blank's,
         # the back overwrote the front, and "back: same as front" or a download got the wrong face)
         finished_key = f"{base}_finished.png" if p.source == "blank" else fin.finished_key
-        if turn or rule.mirror or p.source == "blank" or fitted or changed or labels or marks or ruled:
+        if turn or rule.mirror or p.source == "blank" or fitted or changed or labels or marks or ruled or edged:
             ctx.storage.put_bytes(finished_key, _png(img), "image/png")
         if rule.rotation or rule.mirror or (rule.bleed_mm is not None and role != "front"):
             ctx.log(f"{role}: panel rule applied (turn {rule.rotation}, mirror {rule.mirror}, bleed {rule.bleed_mm})", "audit")
@@ -330,6 +342,12 @@ def run(ctx: StepContext) -> Output:
                                       px=img.size, masks=masks, preview_key=prev, technical_preview_key=fin.preview_key,
                                       raw_web_key=raw_web(base, raw if changed else None),
                                       blank=float(np.asarray(img.convert("L").resize((64, 64), Image.BOX)).std()) < 1.5)
+        # (a plain white panel is common, FGPO7838's gusset: only a flat colour is suspect, FGPO7846's pink)
+        if textures[tkey].blank and np.asarray(img.convert("L")).mean() < 245 and _holds_artwork(pdf):
+            # a flat colour from a PDF that draws pictures and hundreds of shapes: something covers the print
+            issues.append(Issue(code="artwork_hidden", field=f"artwork.{role}", severity="warning",
+                                message=f"{role}: the artwork rendered as one flat colour though the PDF holds images; check its layers"))
+            ctx.log(f"{role}: rendered as one flat colour though the PDF holds artwork", "warning")
         ctx.log(f"{role}: finished {img.width}x{img.height} px = {fin.finished_mm[0]} x {fin.finished_mm[1]} mm", "audit",
                 {"bleed": bleed.model_dump(), "technical_pixels": fin.technical_pixels})
         if role == "roll":
@@ -712,6 +730,33 @@ def drop_drawn_rules(img: Image.Image, width_mm: float, top: float, bottom: floa
     return mask_out(img, mask, radius=max(4, round(1.5 * k))), len(rows) + len(cols)
 
 
+def trim_edge_lines(img: Image.Image, width_mm: float, max_mm: float = 0.6) -> tuple[Image.Image, int]:
+    """A thin dark line hugging an edge of the cut panel (the outline of the pouch drawn round the artwork,
+    caught by a cut a fraction of a millimetre wide of it): each outer row / column within `max_mm` that is
+    mostly dark, where the artwork just inside is not, takes the colour just inside it. Returns the image and
+    how many edges changed. A design that is dark at its edge (inside too) is left as it is."""
+    k = img.width / width_mm
+    n = max(1, round(max_mm * k))
+    a = np.asarray(img.convert("RGB")).copy()
+    h, w = a.shape[:2]
+    if min(h, w) <= 4 * n:
+        return img, 0
+    changed = 0
+    # (row / column views of each edge, outermost first)
+    for get in (lambda i: a[i], lambda i: a[h - 1 - i], lambda i: a[:, i], lambda i: a[:, w - 1 - i]):
+        dark = [float((get(i).max(axis=1) < 90).mean()) for i in range(n + 1)]
+        if dark[n] >= 0.5:
+            continue  # dark inside as well: the design's own
+        lines = [i for i in range(n) if dark[i] >= 0.8]
+        if not lines:
+            continue
+        last = max(lines)
+        for i in range(last + 1):
+            get(i)[...] = get(last + 1)
+        changed += 1
+    return (Image.fromarray(a), changed) if changed else (img, 0)
+
+
 def drop_eyemarks(img: Image.Image, width_mm: float, side: float, top: float, bottom: float) -> tuple[Image.Image, list[tuple[float, float]]]:
     """The print eyemark (the sensor mark the bag machine reads) out of a face: a solid near-black block
     lying in a seal and touching the panel edge (FGPO7150: 10 x 10 mm in the back's bottom corners).
@@ -733,10 +778,40 @@ def drop_eyemarks(img: Image.Image, width_mm: float, side: float, top: float, bo
     # back: white squares in the green bottom corners). (All dark / all white: a photo's area reaching into
     # a seal is one blob with it, and stays.)
     for dark, stands_out in ((small.max(axis=2) < 70, lambda med: med > 110), (small.min(axis=2) > 240, lambda med: med < 150)):
-        _eyemark_blocks(small, dark, band, stands_out, mm, cell, mask, marks)
+        # (a hairline touching a mark, an outline or a dieline, made them one long shape that was never
+        # taken for a mark: lines up to 1 mm wide are left out of the search, the marks' own size is kept)
+        _eyemark_blocks(small, _without_hairlines(dark), band, stands_out, mm, cell, mask, marks)
     if not marks:
         return img, []
-    return mask_out(img, mask, radius=max(4, round(2 * k))), marks
+    # A mark touching a side edge is filled by carrying each row's colour in from just inside it: the seal
+    # band it sits in continues exactly (a blurred fill pulled in the colour of a band above or below it:
+    # FGPO7838's back got red-brown corners on its orange bottom). What touches no side is blended in.
+    a = np.asarray(img.convert("RGB")).copy()
+    rest = mask.copy()
+    w = a.shape[1]
+    off = max(3, round(0.6 * k))  # (past the mark's rim and a seal line drawn along it)
+    for y in np.nonzero(mask[:, 0] | mask[:, -1])[0]:
+        row = mask[y]
+        if row[0]:
+            n = int(np.argmin(row)) if not row.all() else w
+            if n + off < w:
+                a[y, :n] = a[y, n + off]
+                rest[y, :n] = False
+        if row[-1]:
+            n = int(np.argmin(row[::-1])) if not row.all() else w
+            if n + off < w:
+                a[y, w - n:] = a[y, w - n - 1 - off]
+                rest[y, w - n:] = False
+    out = Image.fromarray(a)
+    return (mask_out(out, rest, radius=max(4, round(2 * k))) if rest.any() else out), marks
+
+
+def _without_hairlines(m: np.ndarray) -> np.ndarray:
+    """`m` opened by one cell (0.5 mm): shapes up to two cells wide go, larger shapes keep their extent."""
+    p = np.pad(m, 1)
+    core = p[1:-1, 1:-1] & p[:-2, 1:-1] & p[2:, 1:-1] & p[1:-1, :-2] & p[1:-1, 2:]
+    q = np.pad(core, 1)
+    return m & (q[1:-1, 1:-1] | q[:-2, 1:-1] | q[2:, 1:-1] | q[1:-1, :-2] | q[1:-1, 2:])
 
 
 def _eyemark_blocks(small, dark, band, stands_out, mm: float, cell: int, mask, marks) -> None:
@@ -795,12 +870,21 @@ def _unprinted_mask(img: Image.Image) -> Image.Image:
     return Image.fromarray((unprinted * 255).astype(np.uint8), "L")
 
 
+def _holds_artwork(pdf: Path) -> bool:
+    import pymupdf
+
+    with pymupdf.open(pdf) as d:
+        return bool(d.page_count and (d[0].get_images() or len(d[0].get_drawings()) > 200))
+
+
 def _spot_mask(pdf: Path, trim: trim_impl.TrimArtworkOutput, bleed: Sides, profile, turn: int) -> Image.Image | None:
     """Where a spot varnish separation (Gloss UV / Matt UV) prints, from the PDF itself."""
     varnish = set(trim.inks.get("varnish") or profile.varnish_inks)
     icc = output_intent_profile(pdf)
     box = Box(*trim.trim_box_pt)
-    layers = trim.layers_rendered if trim.mode == "layers" else None
+    # every layer: the varnish plates are left out of the colour render (trim_artwork.plate_only_layer), and
+    # the two copies differ only where varnish prints
+    layers = None
     with tempfile.TemporaryDirectory() as tmp:
         t = Path(tmp)
         write_layer_copy(pdf, t / "off.pdf", layers, box, suppress=varnish)

@@ -67,6 +67,8 @@ def holds(cond: Condition, ctx: dict) -> bool:
     if op in ("contains", "not_contains"):
         needles = v if isinstance(v, list) else [v]
         haystack = a if isinstance(a, list) else str(a)
+        if isinstance(haystack, str):
+            needles = [str(n) for n in needles]  # (a number typed as the value: `240 in "240.0"` is a TypeError)
         found = any((n in haystack) for n in needles)
         return found if op == "contains" else not found
     try:
