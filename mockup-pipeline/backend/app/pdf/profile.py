@@ -114,7 +114,9 @@ class PdfProfile(BaseModel):
     # (plates are named "White_", "White-_", "white.", "Uv White.", "W-": \b would miss "White_")
     white_ink_patterns: list[str] = [r"white", r"\bopaque\b", r"^w[\W_]*$"]
     varnish_ink_patterns: dict[str, str] = {r"gloss": "gloss", r"\bmatt?e?\b.*\b(uv|varnish)\b|\b(uv|varnish)\b.*\bmatt?e?\b": "matt", r"\buv\b|varnish": "gloss"}
-    technical_ink_patterns: list[str] = [r"dimension", r"die\s*line", r"key\s*line", r"\bcutter\b", r"\btechnical\b"]
+    # ("KLD" = key line drawing: FGPO3719 draws its dieline in a spot ink of that name; unread, the whole
+    # sheet, spec table included, became the roll)
+    technical_ink_patterns: list[str] = [r"dimension", r"die\s*line", r"key\s*line", r"\bcutter\b", r"\btechnical\b", r"\bkld\b"]
     # A PDF with no dieline and no spec table (plain artwork): pause for the pouch details instead of
     # rejecting it; the whole page is the front artwork.
     page_fallback: bool = True

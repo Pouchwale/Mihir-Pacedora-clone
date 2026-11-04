@@ -246,6 +246,39 @@ def check_layers_pdf(facts: PdfFacts, profile: PdfProfile, strict: bool = False)
     return [w["message"] for w in warnings]
 
 
+def _artwork_copy_left(pdf: Path, technical: Path, box: Box) -> Box | None:
+    """`box` when it is a flat separation preview (a white plate shown in pink, gloss / matt tints: a
+    handful of colours), the same-size copy to its left that carries the print. FGPO7876: only the pink
+    white-plate preview closed into a grid (the artwork copy's outline is not in the technical ink), so
+    both faces came out as one flat colour; _is_preview knows grey previews only. The copy is found by
+    dieline lines at both its edges the copy's width apart, or by a large shape of the preview (a panel
+    rectangle, a placed picture) repeated at the same height further left: the distance between the two
+    is the distance between the copies. None when `box` is no flat preview, or no richer copy is found."""
+    from app.pdf.vector import _drawings, _segments
+    from app.services.sleeve import _rects, _variety
+
+    own = _variety(pdf, box)
+    if own > 8:
+        return None
+    tol = 1.5 / PT_TO_MM
+    width = box.x1 - box.x0
+    starts: set[float] = set()
+    drawings, inv = _drawings(technical)
+    _, vs = _segments(drawings, inv, 0.5 * (box.y1 - box.y0))
+    full = [x for x, y0, y1 in vs if y0 <= box.y0 + tol and y1 >= box.y1 - tol]
+    starts |= {x for x in full if x < box.x0 - tol and any(abs(x2 - (x + width)) <= tol for x2 in full)}
+    rects = _rects(pdf)
+    inner = [r for r in rects if r.x0 >= box.x0 - tol and r.x1 <= box.x1 + tol and r.y0 >= box.y0 - tol and r.y1 <= box.y1 + tol
+             and r.width_mm >= 0.3 * box.width_mm and r.height_mm >= 0.8 * box.height_mm]
+    for r in inner:
+        for q in rects:
+            if q.x1 <= box.x0 + tol and abs(q.width_mm - r.width_mm) <= 1.5 and abs(q.height_mm - r.height_mm) <= 1.5 and abs(q.y0 - r.y0) <= tol:
+                starts.add(box.x0 - (r.x0 - q.x0))
+    found = [(_variety(pdf, c), c) for c in (Box(x, box.y0, x + width, box.y1) for x in starts)]
+    best = max(found, key=lambda f: f[0], default=None)
+    return best[1] if best is not None and best[0] >= max(12, 2 * own) else None
+
+
 def _is_dimension_layer(name: str, profile: PdfProfile) -> bool:
     return name in profile.dimension_layers or any(re.search(p, name.lower()) for p in profile.technical_ink_patterns)
 
@@ -562,6 +595,12 @@ def _analyse(pdf: Path, profile: PdfProfile) -> Sheet:
                     warnings.append(f"Dieline grid {best.height_mm:.2f} mm tall stopped at a band line: its ends mirror each other "
                                     f"at {mirrored.height_mm:.2f} mm, used")
                     best, technical = mirrored, painted_extent(only, mirrored)
+            if best is not None and offset == (0.0, 0.0):
+                art = _artwork_copy_left(pdf, only, best)
+                if art is not None:
+                    warnings.append(f"The closed dieline ({best.width_mm:.2f} x {best.height_mm:.2f} mm) is a flat separation preview; "
+                                    "the printed copy to its left is used")
+                    best, technical = art, painted_extent(only, art)
     if best is not None:
         return Sheet("separation", best, technical, facts, inks, repeats=repeats, warnings=tuple(warnings), drawing_offset=offset)
     arrows = _dimension_layer_box(pdf, facts, profile)
