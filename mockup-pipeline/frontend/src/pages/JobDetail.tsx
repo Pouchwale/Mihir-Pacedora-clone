@@ -191,6 +191,35 @@ export default function JobDetail() {
               {shareCopied ? "✓ Link Copied!" : "🔗 Share 3D"}
             </button>
           )}
+          {job.status === "DONE" && hasScene && (
+            <button
+              className="btn"
+              title="Open a Gmail message with the share link, written from the index's email template"
+              onClick={async () => {
+                const to = window.prompt("Customer's email address (or leave blank and fill it in Gmail):", "");
+                if (to === null) return;
+                const tab = window.open("", "_blank"); // opened now, while the click still allows a new tab
+                try {
+                  const res = await api.get<{ share_url: string; public: boolean; tunnel_error: string | null; mail: { subject: string; body: string } }>(`/api/jobs/${jobId}/share-token`);
+                  if (!res.public) {
+                    tab?.close();
+                    setMsg(`Cannot mail the link: it would open on this PC only (the ngrok tunnel is not up). ${res.tunnel_error ?? "ngrok is not running or not installed."}`);
+                    return;
+                  }
+                  setMsg("");
+                  setShareLink(res.share_url);
+                  const q = (k: string, v: string) => `&${k}=${encodeURIComponent(v)}`;
+                  const gmail = `https://mail.google.com/mail/?view=cm&fs=1${q("to", to.trim())}${q("su", res.mail.subject)}${q("body", res.mail.body)}`;
+                  if (tab) { tab.opener = null; tab.location.href = gmail; } else window.open(gmail, "_blank", "noopener");
+                } catch (e) {
+                  tab?.close();
+                  setMsg("Could not make the mail: " + String(e));
+                }
+              }}
+            >
+              ✉ Send to Mail
+            </button>
+          )}
           {job.status === "DONE" && can("approve") && !job.approved_by && <button className="primary" onClick={() => act(() => api.post(`/api/jobs/${jobId}/approve`), "Approved.")}>Approve</button>}
         </div>
       </div>

@@ -3,6 +3,7 @@ import { Navigate, useLocation, useNavigate, useParams } from "react-router-dom"
 import { api, ApiError, Entry } from "../api";
 import { useSession } from "../App";
 import CatalogEditor from "../components/CatalogEditor";
+import EmailTemplateEditor from "../components/EmailTemplateEditor";
 import FieldEditor from "../components/FieldEditor";
 import ContainerModel from "../components/ContainerModel";
 import History from "../components/History";
@@ -25,6 +26,7 @@ const FORMS: Record<string, (p: { data: Data; onChange: (d: Data) => void }) => 
   material: MaterialEditor as never,
   standard_size: SizeEditor as never,
   pdf_profile: ProfileEditor as never,
+  email_template: EmailTemplateEditor as never,
 };
 
 export default function EntryPage() {
@@ -61,7 +63,7 @@ export default function EntryPage() {
       setYamlText(e.yaml);
       setLoaded(true);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 404 && (state.isNew || info?.singleton)) {
+      if (err instanceof ApiError && err.status === 404 && (state.isNew || info?.singleton || key === "default")) { // (key: a link opened before the kinds list loaded)
         let start: Data = clone(STARTERS[kind] ?? {});
         if (state.copyFrom) start = clone((await api.get<Entry>(`/api/index/${kind}/${state.copyFrom}`)).data);
         setEntry(null);

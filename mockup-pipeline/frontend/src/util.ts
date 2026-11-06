@@ -12,6 +12,20 @@ export const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
 
 // Starting data for a brand-new entry that is not copied from another one.
 export const STARTERS: Record<string, Record<string, unknown>> = {
+  // (the same text as app.index.schemas.EmailTemplate's defaults)
+  email_template: {
+    subject: "3D mockup for {item_code}",
+    body: `Dear {client},
+
+Please find the 3D mockup of {item_code} at the link below. You can turn it around and download the images:
+
+{link}
+
+The link works for {days} days.
+
+Regards,
+{sender}`,
+  },
   client: { client_name: "", default_output_preset: null, include_eyemarks: false, keyline_overrides: {}, notes: "" },
   item_override: { pouch_type: null, keyline_overrides: {}, output_preset: null, notes: "" },
   output_preset: { name: "", is_default: false, views: ["front"], width_px: 2000, height_px: 2000, background: { type: "studio_white", colors: [] }, formats: ["png"] },

@@ -202,3 +202,19 @@ def test_keyline_formula_problems_reach_review_not_a_crash(seeded):
     assert "keyline.top_seal_mm" in problems and "keyline.side_seal_mm" in problems
     with pytest.raises(formula.FormulaError):
         formula.evaluate("9 ** 9 ** 9", lambda ns, n: None)
+
+
+def test_share_token_fills_the_index_email_template(client, seeded):
+    from app.index import store
+
+    job_id = _job(seeded, "admin@example.com")
+    login(client)
+    mail = client.get(f"/api/jobs/{job_id}/share-token", headers=H).json()["mail"]
+    assert mail["subject"] == "3D mockup for FGPO0001"  # the shipped default, no entry saved yet
+    assert "/share/" in mail["body"] and "Sir/Madam" in mail["body"] and "admin@example.com" in mail["body"]
+    store.save(seeded, "email_template", "default", {"subject": "{item_code} for {client}", "body": "See {link} {unknown}"},
+               store.Author(id=None, email="t"), "test")
+    seeded.commit()
+    mail = client.get(f"/api/jobs/{job_id}/share-token", headers=H).json()["mail"]
+    assert mail["subject"] == "FGPO0001 for Sir/Madam"
+    assert mail["body"].startswith("See ") and "/share/" in mail["body"] and mail["body"].endswith("{unknown}")

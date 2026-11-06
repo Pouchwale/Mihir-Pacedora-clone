@@ -372,6 +372,18 @@ class StorageRules(BaseModel):
                                "deleted; the upload itself stays in storage and is copied back when needed. 0 = never")
 
 
+MAIL_PLACEHOLDERS = ("link", "item_code", "client", "pouch_type", "days", "sender")
+
+
+class EmailTemplate(BaseModel):
+    """The mail 'Send to Mail' opens in Gmail beside a share link (singleton `default`). Placeholders in
+    {braces} are filled per job: {link} {item_code} {client} {pouch_type} {days} {sender}."""
+
+    subject: str = "3D mockup for {item_code}"
+    body: str = ("Dear {client},\n\nPlease find the 3D mockup of {item_code} at the link below. You can turn it "
+                 "around and download the images:\n\n{link}\n\nThe link works for {days} days.\n\nRegards,\n{sender}")
+
+
 # ---------------------------------------------------------------- registry
 KINDS: dict[str, type[BaseModel]] = {
     "field": FieldDef,
@@ -388,14 +400,15 @@ KINDS: dict[str, type[BaseModel]] = {
     "workflow": WorkflowGraph,
     "container": Container,
     "storage": StorageRules,
+    "email_template": EmailTemplate,
 }
-SINGLETONS = {"pdf_profile", "validation_rules", "pouch_catalog", "storage"}  # only key "default"
+SINGLETONS = {"pdf_profile", "validation_rules", "pouch_catalog", "storage", "email_template"}  # only key "default"
 KIND_LABELS = {
     "field": "Field dictionary", "pouch_catalog": "Pouch catalog", "pouch_type": "Pouch types",
     "keyline_template": "Keyline templates", "standard_size": "Size rules", "pdf_profile": "PDF profile & panels",
     "material": "Materials", "output_preset": "Output presets", "client": "Clients", "item_override": "Item overrides",
     "validation_rules": "Validation rules", "workflow": "Workflows", "container": "Sleeve containers",
-    "storage": "Storage & cleanup",
+    "storage": "Storage & cleanup", "email_template": "Email template",
 }
 # Kinds with their own editor page rather than the generic entry page.
 KIND_PAGES = {"workflow": "/workflows"}

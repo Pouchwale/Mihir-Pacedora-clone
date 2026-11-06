@@ -21,6 +21,7 @@ from app.api.limits import max_bytes, read_limited
 from app.config import get_settings
 from app.db import get_session
 from app.index import store
+from app.index.schemas import EmailTemplate
 from app.models import Batch, Job, JobEvent, JobStep, UploadedFile, User, utcnow
 from app.render import tokens
 from app.storage import get_storage
@@ -422,15 +423,26 @@ def _authorized_for_job(request: Request, session: Session, job_id: int) -> None
 
 
 @router.get("/jobs/{job_id}/share-token")
-def share_token(job_id: int, session: Session = Depends(get_session), _: User = Depends(auth.current_user)) -> dict:
+def share_token(job_id: int, session: Session = Depends(get_session), user: User = Depends(auth.current_user)) -> dict:
     """Generate a long-lived (7-day) signed token for sharing a job's 3D mockup publicly.
-    The token authorises read-only access to the job's scene data and file assets."""
-    _job(session, job_id)  # 404 if job does not exist
+    The token authorises read-only access to the job's scene data and file assets.
+    `mail` is the index's email template filled in for this job (the 'Send to Mail' button)."""
+    job = _job(session, job_id)  # 404 if job does not exist
     token = tokens.make(job_id, ttl_s=7 * 24 * 3600)  # 7-day share link
     share_url = f"/share/{job_id}?token={token}"
     base = tunnel.public_base()  # the ngrok address (started on the first share); None = this PC only
-    return {"token": token, "share_url": (base or "") + share_url, "public": bool(base), "expires_in_days": 7,
-            "tunnel_error": None if base else tunnel.last_error()}
+    row = store.get_version(session, "email_template", "default")
+    template = EmailTemplate.model_validate(row.data) if row else EmailTemplate()
+    values = {"link": (base or "") + share_url, "item_code": (job.item_code or "").upper(), "client": job.client_name or "Sir/Madam",
+              "pouch_type": (job.pouch_type or "").replace("_", " "), "days": "7", "sender": user.name or user.email}
+
+    def fill(text: str) -> str:  # plain replace: an unknown {placeholder} stays as typed
+        for k, v in values.items():
+            text = text.replace("{" + k + "}", v)
+        return text
+
+    return {"token": token, "share_url": values["link"], "public": bool(base), "expires_in_days": 7,
+            "tunnel_error": None if base else tunnel.last_error(), "mail": {"subject": fill(template.subject), "body": fill(template.body)}}
 
 
 @router.get("/jobs/{job_id}/share-info")
