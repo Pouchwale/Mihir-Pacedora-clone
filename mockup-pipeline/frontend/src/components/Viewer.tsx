@@ -522,11 +522,24 @@ export default function Viewer({ scene, draft, name, onWindows, customer = false
     pendingView.current = null;
     autoView.current = view;
     const t = VIEW_TURN[view] ?? VIEW_TURN.front;
-    stage.resetTurn();
-    stage.spin(THREE.MathUtils.degToRad(t.az));
     const aspect = wrap.current.clientWidth / wrap.current.clientHeight;
+    const parts = stage.parts();
+    stage.resetTurn();
+    if (parts.length) {
+      // several pouches: the row stays in order and each pouch turns about its own centre to the view
+      // (turning the row as one hid the pouches behind each other at 3/4 and reversed them at the back)
+      resetParts();
+      stage.frame({ az: 0, el: VIEWS.front.el + 8 }, aspect, 1.25); // square on first: turnPart turns about the camera's axes
+      for (const p of parts) stage.turnPart(p, THREE.MathUtils.degToRad(t.az), THREE.MathUtils.degToRad(t.el));
+    } else {
+      stage.spin(THREE.MathUtils.degToRad(t.az));
+      if (t.el) {
+        stage.frame({ az: 0, el: VIEWS.front.el + 8 }, aspect, 1.25); // (the tip turns about the camera's axes)
+        stage.turn(0, THREE.MathUtils.degToRad(t.el));
+      }
+    }
+    // framed as it now stands (the top view was framed upright, then tipped: its base ran under the buttons)
     const center = stage.frame({ az: 0, el: VIEWS.front.el + 8 }, aspect, 1.25);
-    if (t.el) stage.turn(0, THREE.MathUtils.degToRad(t.el));
     controls.current.target.copy(center as THREE.Vector3);
     controls.current.update();
     stage.invalidate();
